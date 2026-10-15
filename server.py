@@ -116,9 +116,14 @@ def init():
     CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, ref TEXT, data TEXT, staff TEXT, at TEXT, bad INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS days(date TEXT PRIMARY KEY, staff TEXT, at TEXT, summary TEXT);
     CREATE TABLE IF NOT EXISTS shifts(id INTEGER PRIMARY KEY, date TEXT, staff TEXT, area TEXT, start_at TEXT, end_at TEXT, hours REAL);
-    CREATE TABLE IF NOT EXISTS submissions(id INTEGER PRIMARY KEY, date TEXT, area TEXT, staff TEXT, at TEXT, snapshot TEXT, email_status TEXT, email_error TEXT);
+    CREATE TABLE IF NOT EXISTS submissions(id INTEGER PRIMARY KEY, date TEXT, area TEXT, staff TEXT, at TEXT, snapshot TEXT, email_status TEXT, email_error TEXT, webhook_status TEXT);
     CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, date TEXT, at TEXT, staff TEXT, action TEXT, detail TEXT);
     """)
+    c.commit()
+    try:  # migrate older submissions tables
+        c.execute("ALTER TABLE submissions ADD COLUMN webhook_status TEXT"); c.commit()
+    except Exception:
+        if PG: c.c.rollback()
     if not c.execute("SELECT 1 FROM items LIMIT 1").fetchone():
         for i, (k, n, t, ex) in enumerate(STARTERS):
             c.execute("INSERT INTO items(kind,name,type,example,sort) VALUES(?,?,?,?,?)", (k, n, t, ex, i))
@@ -265,6 +270,31 @@ def send_email(sub_id, subject, html_body):
             msg += " (Gmail rejected the login: SMTP_PASS must be a 16-letter Google App Password for SMTP_USER)"
         set_status("failed", msg[:300]); return "failed", msg[:300]
 
+def webhook_payload(sub, snap):
+    return {"date": snap["date"], "area": sub["area"], "submitted_by": sub["staff"], "submitted_at": sub["at"],
+            "alerts": snap["alerts"], "not_logged": snap["not_logged"], "temperatures": snap["temps"],
+            "jobs_done": [j for j in snap["jobs"] if j["done"]], "jobs_not_done": [j for j in snap["jobs"] if not j["done"]],
+            "prep": snap.get("prep", []), "hotbox_rotation": snap.get("hotbox", []), "fuel": snap.get("fuel", []),
+            "shifts": snap["shifts"]}
+
+def post_webhook(sub_id, payload):
+    """POST JSON to WEBHOOK_URL with Authorization: WEBHOOK_AUTH. Returns a short status string (no secrets)."""
+    import urllib.request, urllib.error
+    url = os.environ.get("WEBHOOK_URL", "").strip()
+    auth = re.sub(r"^\s*Authorization:\s*", "", os.environ.get("WEBHOOK_AUTH", ""), flags=re.I).strip()
+    if not url: st = "not_configured"
+    else:
+        hd = {"Content-Type": "application/json", "User-Agent": "silkwood-dashboard"}
+        if auth: hd["Authorization"] = auth
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, json.dumps(payload).encode(), hd, method="POST"), timeout=20) as r:
+                st = f"sent {r.status}"
+        except urllib.error.HTTPError as e: st = f"failed HTTP {e.code}"
+        except Exception as e: st = f"failed {type(e).__name__}"
+    if sub_id is not None:
+        c = db(); c.execute("UPDATE submissions SET webhook_status=? WHERE id=?", (st, sub_id)); c.commit(); c.close()
+    return st
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def send(self, code, obj, ctype="application/json"):
@@ -291,6 +321,18 @@ class H(BaseHTTPRequestHandler):
             st, info = send_email(None, f"TEST – Silkwood dashboard email check – {now():%Y-%m-%d %H:%M}",
                 f'<div style="font-family:system-ui;padding:16px"><h2 style="color:#C62828">TEST email</h2><p>Sent from the Silkwood dashboard by {H_.escape(who)} at {now():%Y-%m-%d %H:%M} (Brisbane). Daily submissions will arrive like this.</p></div>')
             return self.send(200, {"status": st, "info": info})
+        if u.path == "/api/test-webhook":  # manager only; sends a clearly-marked TEST payload synchronously
+            if q.get("pin") != MANAGER_PIN: return self.send(403, {"error": "wrong PIN"})
+            t = now().strftime("%Y-%m-%d %H:%M:%S")
+            st = post_webhook(None, {"TEST": True, "note": "TEST payload from the Silkwood dashboard — not a real submission",
+                "date": t[:10], "area": "kitchen", "submitted_by": "TEST", "submitted_at": t,
+                "alerts": ["TEST Kitchen Freezer 1: -10.0°C"], "not_logged": ["TEST Walk-In Cool Room"],
+                "temperatures": [{"unit": "TEST Kitchen Freezer 1", "temp": -10.0, "ok": False, "at": t[11:16], "staff": "TEST"}],
+                "jobs_done": [{"title": "TEST Wipe benches", "done": True, "by": "TEST", "at": t[11:16]}],
+                "jobs_not_done": [{"title": "TEST Clean fryer oil", "done": False}],
+                "prep": [{"item": "TEST Chips", "qty": "2", "staff": "TEST"}], "hotbox_rotation": [{"box": "TEST Hot Box", "item": "Pies", "qty": "6", "time": t[11:16]}],
+                "fuel": [], "shifts": [{"staff": "TEST", "area": "kitchen", "start_at": t[:11] + "06:00:00", "end_at": t, "hours": 1.0}]})
+            return self.send(200, {"status": st})
         if u.path == "/api/pincheck":  # manager PIN check (read-only)
             return self.send(200 if q.get("pin") == MANAGER_PIN else 403, {"ok": q.get("pin") == MANAGER_PIN})
         if u.path == "/api/day":
@@ -305,7 +347,7 @@ class H(BaseHTTPRequestHandler):
                 s = day_state(d)
                 names = sorted({r["staff"] for r in c.execute("SELECT staff FROM logs WHERE date=? UNION SELECT staff FROM task_done WHERE date=? UNION SELECT staff FROM audit WHERE date=?", (d, d, d)) if r["staff"]})
                 out.append({"date": d, "locked": s["locked"], "summary": s["summary"], "logs": len(s["logs"]), "staff": names, "shifts": s["shifts"],
-                            "submissions": [dict(r) for r in c.execute("SELECT id,area,staff,at,email_status,email_error FROM submissions WHERE date=? ORDER BY id", (d,))]})
+                            "submissions": [dict(r) for r in c.execute("SELECT id,area,staff,at,email_status,email_error,webhook_status FROM submissions WHERE date=? ORDER BY id", (d,))]})
             c.close(); return self.send(200, out)
         self.send(404, {"error": "not found"})
     def authed(self):
@@ -379,6 +421,7 @@ class H(BaseHTTPRequestHandler):
                 sub = {"area": area, "staff": staff, "at": ts}
                 subj = f"Silkwood daily log – {d} – {AREAS[area]} – submitted by {staff}"
                 after.append(lambda: threading.Thread(target=send_email, args=(sid, subj, snapshot_html(sub, snap)), daemon=True).start())
+                after.append(lambda: threading.Thread(target=post_webhook, args=(sid, webhook_payload(sub, snap)), daemon=True).start())
             elif p == "/api/shift":  # staff start/end shift (server time, Brisbane)
                 td = today()
                 cur = c.execute("SELECT * FROM shifts WHERE date=? AND staff=? AND end_at IS NULL", (td, staff)).fetchone()
