@@ -333,6 +333,14 @@ class H(BaseHTTPRequestHandler):
                 "prep": [{"item": "TEST Chips", "qty": "2", "staff": "TEST"}], "hotbox_rotation": [{"box": "TEST Hot Box", "item": "Pies", "qty": "6", "time": t[11:16]}],
                 "fuel": [], "shifts": [{"staff": "TEST", "area": "kitchen", "start_at": t[:11] + "06:00:00", "end_at": t, "hours": 1.0}]})
             return self.send(200, {"status": st})
+        if u.path == "/api/data-dump":  # TEMPORARY read-only analysis endpoint, manager only
+            if q.get("pin") != MANAGER_PIN: return self.send(403, {"error": "wrong PIN"})
+            c = db(); out = {}
+            for t in ("items", "tasks", "task_done", "logs", "days", "audit", "shifts", "submissions"):
+                out[t] = [dict(r) for r in c.execute(f"SELECT * FROM {t}")]
+            c.close()
+            for r in out["submissions"]: r.pop("snapshot", None)
+            return self.send(200, out)
         if u.path == "/api/pincheck":  # manager PIN check (read-only)
             return self.send(200 if q.get("pin") == MANAGER_PIN else 403, {"ok": q.get("pin") == MANAGER_PIN})
         if u.path == "/api/day":
