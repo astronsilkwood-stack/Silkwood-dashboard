@@ -196,7 +196,7 @@ def snapshot(ds, area):
         for l in L:
             if l["kind"] in tk[t]:
                 temps.append({"area": t, "unit": l["data"].get("name") or units.get(l["ref"], {}).get("name", "?"), "type": l["data"].get("type"),
-                              "temp": l["data"].get("temp"), "ok": not l["bad"], "at": l["at"][11:16], "staff": l["staff"]})
+                              "temp": l["data"].get("temp"), "ok": not l["bad"], "at": l["at"][11:16], "staff": l["staff"], "action": l["data"].get("action")})
     jobs = [{"area": t["tab"], "title": t["title"], "done": bool(t["done"]), "by": (t["done"] or {}).get("staff"), "at": ((t["done"] or {}).get("at") or "")[11:16]}
             for t in ds["tasks"] if t["tab"] in tabs]
     pick = lambda k: [dict(l["data"], staff=l["staff"], at=l["at"][11:16]) for l in L if l["kind"] == k]
@@ -225,7 +225,7 @@ def snapshot_html(sub, snap, standalone=False):
         out.append('<div style="background:#C62828;color:#fff;padding:12px 14px;border-radius:8px;font-weight:700">⚠ ALERTS – tell the manager<br>' + "<br>".join(e(a) for a in snap["alerts"]) + "</div>")
     else: out.append('<div style="background:#E8F5E9;color:#2E7D32;padding:12px 14px;border-radius:8px;font-weight:700">✅ No alerts</div>')
     if snap["not_logged"]: out.append(f'<p style="color:#C62828;font-weight:700">Not logged: {e(", ".join(snap["not_logged"]))}</p>')
-    out.append(h2("🌡 Temperatures") + table(["Unit", "Temp", "Result", "Time", "By"], [[(e(t["unit"]), ""), (e(t["temp"]) + "°C", ""), ok(t["ok"]), (e(t["at"]), ""), (e(t["staff"]), "")] for t in snap["temps"]]))
+    out.append(h2("🌡 Temperatures") + table(["Unit", "Temp", "Result", "Time", "By"], [[(e(t["unit"]), ""), (e(t["temp"]) + "°C", ""), (ok(t["ok"])[0] + (" – " + e(t["action"]) if t.get("action") else ""), ok(t["ok"])[1]), (e(t["at"]), ""), (e(t["staff"]), "")] for t in snap["temps"]]))
     out.append(h2("✅ Jobs") + table(["Job", "Status", "By"], [[(e(j["title"]), ""), ("✓ Done " + e(j["at"]), "color:#2E7D32;font-weight:700") if j["done"] else ("✗ Not done", "color:#C62828;font-weight:700"), (e(j["by"]), "")] for j in snap["jobs"]]))
     if "prep" in snap:
         out.append(h2("🍳 Prep") + table(["Item", "Qty", "Prepped", "Use by", "By"], [[(e(r.get("item")), ""), (e(r.get("qty")), ""), (e(r.get("time")), ""), (e(r.get("use_by")), ""), (e(r["staff"]), "")] for r in snap["prep"]]))
