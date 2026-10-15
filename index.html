@@ -32,7 +32,7 @@ main{max-width:1100px;margin:0 auto;padding:12px 12px 120px;display:grid;gap:14p
 .unit{display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid #f1f1f1;flex-wrap:wrap}
 .unit .nm{flex:1;min-width:130px;font-weight:600}.unit .nm .mini{font-weight:400}
 input,select{font-size:17px;padding:10px;border:1px solid #ccc;border-radius:10px;min-height:48px;background:#fff}
-.num{width:96px}.btn{background:var(--red);color:#fff;border:0;border-radius:12px;padding:12px 18px;font-size:16px;font-weight:700;min-height:48px}
+.num{width:80px}.sign{min-width:44px;min-height:48px;border-radius:12px;border:2px solid var(--bd);background:#fff;font-size:22px;font-weight:800;color:#555}.sign.on{background:#1565C0;border-color:#1565C0;color:#fff}.btn{background:var(--red);color:#fff;border:0;border-radius:12px;padding:12px 18px;font-size:16px;font-weight:700;min-height:48px}
 .btn.ghost{background:#fff;color:var(--red);border:2px solid var(--red)}.btn:disabled{opacity:.4}
 .read{font-weight:700;border-radius:8px;padding:4px 8px;background:#E8F5E9;color:var(--ok)}.read.bad{background:var(--red);color:#fff}
 .missing{color:var(--red);font-size:13px;font-weight:600}
@@ -121,10 +121,14 @@ function todo(){const t=S.tasks.filter(x=>x.tab==tab);if(!t.length)return'<p cla
 async function tick(id,done){if(!done&&!needStaff())return;await post('/api/tick',{id,undo:done});if(!done)toast('Ticked ✓')}
 function temps(kind,lk,title){const its=items(kind);
  return `<section class="card"><h2>🌡 ${title}<span class="sp"></span><button class="edit" onclick="manage('${kind}')">Edit list</button></h2>
- ${its.map(i=>{const ls=logs(lk,i.id),last=ls[ls.length-1];return `<div class="unit"><div class="nm">${esc(i.name)}${i.example?'<span class="ex">example</span>':''}<br><span class="mini">${TYPES[i.type]||''}${ls.length>1?' · '+ls.length+' readings':''}</span></div>
+ ${its.map(i=>{const ls=logs(lk,i.id),last=ls[ls.length-1];return `<div class="unit"><div class="nm">${esc(i.name)}${i.example?'<span class="ex">example</span>':''}<br><span class="mini">${TYPES[i.type]||''}${ls.length>1?' · '+ls.length+' readings':''}${i.type=='freezer'?'<br><b>Freezer:</b> type 18 → saved as −18°C':''}</span></div>
  ${last?`<span class="read ${last.bad?'bad':''}">${last.data.temp}°C ${last.at.slice(11,16)} ${esc(last.staff)}</span>`:'<span class="missing">not logged</span>'}
- <input class="num" type="number" inputmode="decimal" step="0.1" id="t${i.id}" placeholder="°C"><button class="btn" onclick="logTemp('${lk}',${i.id})">Log</button></div>`}).join('')||'<p class="mini">Nothing set up — tap Edit list.</p>'}</section>`}
-async function logTemp(lk,id){if(!needStaff())return;const v=$('#t'+id).value;if(v==='')return toast('Enter a temperature');
+ ${i.type=='freezer'?`<button class="sign on" id="s${i.id}" onclick="flipSign(${i.id})" aria-label="Toggle minus sign" title="Freezer readings are below zero">−</button>`:`<button class="sign" id="s${i.id}" onclick="flipSign(${i.id})" aria-label="Toggle minus sign">±</button>`}<input class="num" type="text" inputmode="decimal" autocomplete="off" id="t${i.id}" placeholder="${i.type=='freezer'?'e.g. 18':'°C'}"><button class="btn" onclick="logTemp('${lk}',${i.id})">Log</button></div>`}).join('')||'<p class="mini">Nothing set up — tap Edit list.</p>'}</section>`}
+function flipSign(id){const b=$('#s'+id),on=!b.classList.contains('on');b.classList.toggle('on',on);b.textContent=on?'−':'±'}
+function readTemp(id){let r=$('#t'+id).value.trim().replace(/\s|°|c$/gi,'').replace(',','.').replace(/[\u2212\u2013\u2014]/g,'-');
+ if(r==='')return null;let neg=r.startsWith('-');r=r.replace(/^[-+]/,'');if(!/^\d+(\.\d+)?$/.test(r))return NaN;
+ if(!neg&&$('#s'+id)?.classList.contains('on'))neg=true;return neg?-parseFloat(r):parseFloat(r)}
+async function logTemp(lk,id){if(!needStaff())return;const v=readTemp(id);if(v===null)return toast('Enter a temperature');if(Number.isNaN(v))return toast('Type a number, e.g. 18');
  await post('/api/log',{kind:lk,ref:id,data:{temp:v}});const l=logs(lk,id).pop();toast(l.bad?'⚠ OUT OF RANGE — tell the manager':'Logged ✓')}
 function opts(k){return items(k).map(i=>`<option value="${esc(i.name)}">${esc(i.name)}</option>`).join('')}
 function logTable(rows,cols,del){if(!rows.length)return'<p class="mini">Nothing logged yet today.</p>';
