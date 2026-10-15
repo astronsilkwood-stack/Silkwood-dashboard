@@ -291,6 +291,28 @@ class H(BaseHTTPRequestHandler):
             st, info = send_email(None, f"TEST – Silkwood dashboard email check – {now():%Y-%m-%d %H:%M}",
                 f'<div style="font-family:system-ui;padding:16px"><h2 style="color:#C62828">TEST email</h2><p>Sent from the Silkwood dashboard by {H_.escape(who)} at {now():%Y-%m-%d %H:%M} (Brisbane). Daily submissions will arrive like this.</p></div>')
             return self.send(200, {"status": st, "info": info})
+        if u.path == "/api/smtp-diag":  # TEMPORARY diagnostic, manager only; AUTH lines and secrets redacted
+            if q.get("pin") != MANAGER_PIN: return self.send(403, {"error": "wrong PIN"})
+            import io, contextlib, socket, base64
+            user = os.environ.get("SMTP_USER", "").strip(); pw = os.environ.get("SMTP_PASS", "").replace(" ", "").strip()
+            secrets = [x for x in (pw, base64.b64encode(pw.encode()).decode(), base64.b64encode(f"\0{user}\0{pw}".encode()).decode()) if x]
+            def red(t):
+                for x in secrets: t = t.replace(x, "[REDACTED]")
+                return "\n".join(("[AUTH line redacted]" if re.search(r"auth|AUTH", l) and "send:" in l else l) for l in t.splitlines())
+            res = {"pass_len": len(pw), "pass_alpha": pw.isalpha(), "fqdn": socket.getfqdn()[:60]}
+            for name, port, mech in (("587-LOGIN", 587, "LOGIN"), ("587-PLAIN", 587, "PLAIN"), ("465-LOGIN", 465, "LOGIN"), ("465-PLAIN", 465, "PLAIN")):
+                buf = io.StringIO(); out = "?"
+                with contextlib.redirect_stderr(buf):
+                    try:
+                        srv = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20, local_hostname="silkwood-dashboard.onrender.com") if port == 465 else smtplib.SMTP("smtp.gmail.com", 587, timeout=20, local_hostname="silkwood-dashboard.onrender.com")
+                        srv.set_debuglevel(1); srv.ehlo()
+                        if port == 587: srv.starttls(context=ssl.create_default_context()); srv.ehlo()
+                        srv.user, srv.password = user, pw
+                        code, resp = srv.auth(mech, srv.auth_login if mech == "LOGIN" else srv.auth_plain, initial_response_ok=(mech == "PLAIN"))
+                        out = f"AUTH OK {code}"; srv.quit()
+                    except Exception as ex: out = f"{type(ex).__name__}: {ex}"[:300]
+                res[name] = {"result": red(out), "log": red(buf.getvalue())[-1500:]}
+            return self.send(200, res)
         if u.path == "/api/pincheck":  # manager PIN check (read-only)
             return self.send(200 if q.get("pin") == MANAGER_PIN else 403, {"ok": q.get("pin") == MANAGER_PIN})
         if u.path == "/api/day":
