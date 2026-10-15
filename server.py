@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Silkwood daily ops dashboard: stdlib HTTP server + SQLite. Run: python3 server.py (port 8787)."""
-import json, sqlite3, os, re
+import json, sqlite3, os, re, threading, smtplib, ssl, html as H_
+from email.message import EmailMessage
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -115,6 +116,7 @@ def init():
     CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, ref TEXT, data TEXT, staff TEXT, at TEXT, bad INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS days(date TEXT PRIMARY KEY, staff TEXT, at TEXT, summary TEXT);
     CREATE TABLE IF NOT EXISTS shifts(id INTEGER PRIMARY KEY, date TEXT, staff TEXT, area TEXT, start_at TEXT, end_at TEXT, hours REAL);
+    CREATE TABLE IF NOT EXISTS submissions(id INTEGER PRIMARY KEY, date TEXT, area TEXT, staff TEXT, at TEXT, snapshot TEXT, email_status TEXT, email_error TEXT);
     CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, date TEXT, at TEXT, staff TEXT, action TEXT, detail TEXT);
     """)
     if not c.execute("SELECT 1 FROM items LIMIT 1").fetchone():
@@ -177,6 +179,86 @@ def summarise(items, logs, tasks):
     return {"tasks_done": sum(v["tasks_done"] for v in tabs.values()), "tasks_total": sum(v["tasks_total"] for v in tabs.values()),
             "missing": sum(len(v["missing"]) for v in tabs.values()), "alerts": alerts, "tabs": tabs}
 
+AREAS = {"kitchen": "Kitchen", "shop": "Shop", "both": "Kitchen + Shop"}
+
+def snapshot(ds, area):
+    """Full record of the day for one area (kitchen/shop) or both."""
+    tabs = ["kitchen", "shop"] if area == "both" else [area]
+    L = ds["logs"]; units = {str(i["id"]): i for i in ds["items"]}
+    tk = {"kitchen": ("ktemp",), "shop": ("stemp",)}
+    temps = []
+    for t in tabs:
+        for l in L:
+            if l["kind"] in tk[t]:
+                temps.append({"area": t, "unit": l["data"].get("name") or units.get(l["ref"], {}).get("name", "?"), "type": l["data"].get("type"),
+                              "temp": l["data"].get("temp"), "ok": not l["bad"], "at": l["at"][11:16], "staff": l["staff"]})
+    jobs = [{"area": t["tab"], "title": t["title"], "done": bool(t["done"]), "by": (t["done"] or {}).get("staff"), "at": ((t["done"] or {}).get("at") or "")[11:16]}
+            for t in ds["tasks"] if t["tab"] in tabs]
+    pick = lambda k: [dict(l["data"], staff=l["staff"], at=l["at"][11:16]) for l in L if l["kind"] == k]
+    snap = {"date": ds["date"], "area": area, "temps": temps, "jobs": jobs,
+            "not_logged": sum((ds["summary"]["tabs"][t]["missing"] for t in tabs), []),
+            "shifts": [x for x in ds["shifts"] if area == "both" or x["area"] in (area, "")]}
+    if "kitchen" in tabs: snap.update(prep=pick("prep"), hotbox=pick("hotbox"), tomorrow=pick("tomorrow"))
+    if "shop" in tabs: snap["fuel"] = [dict(l["data"], tank=l["ref"], staff=l["staff"], at=l["at"][11:16]) for l in L if l["kind"] == "fuel"]
+    alerts = [f'{t["unit"]}: {t["temp"]}°C' for t in temps if not t["ok"]]
+    alerts += [f'Tank {f["tank"]}: WATER {f.get("water_mm")}mm' for f in snap.get("fuel", []) if f.get("water") == "yes"]
+    snap["alerts"] = alerts
+    return snap
+
+def snapshot_html(sub, snap, standalone=False):
+    e = lambda v: H_.escape(str(v if v is not None else ""))
+    def table(head, rows):
+        if not rows: return '<p style="color:#666">None.</p>'
+        th = "".join(f'<th style="text-align:left;padding:6px;border-bottom:2px solid #C62828">{e(h)}</th>' for h in head)
+        trs = "".join("<tr>" + "".join(f'<td style="padding:6px;border-bottom:1px solid #eee;{st}">{v}</td>' for v, st in r) + "</tr>" for r in rows)
+        return f'<table style="border-collapse:collapse;width:100%;font-size:14px"><tr>{th}</tr>{trs}</table>'
+    ok = lambda b: ("✅ OK", "color:#2E7D32;font-weight:700") if b else ("⚠ ALERT", "color:#C62828;font-weight:700")
+    h2 = lambda t: f'<h2 style="font-size:18px;margin:22px 0 6px;color:#C62828">{t}</h2>'
+    out = [f'<h1 style="font-size:22px;margin:0">Silkwood daily log – {e(snap["date"])} – {e(AREAS.get(sub["area"], sub["area"]))}</h1>',
+           f'<p style="margin:4px 0 14px">Submitted by <b>{e(sub["staff"])}</b> at {e(sub["at"])}</p>']
+    if snap["alerts"]:
+        out.append('<div style="background:#C62828;color:#fff;padding:12px 14px;border-radius:8px;font-weight:700">⚠ ALERTS – tell the manager<br>' + "<br>".join(e(a) for a in snap["alerts"]) + "</div>")
+    else: out.append('<div style="background:#E8F5E9;color:#2E7D32;padding:12px 14px;border-radius:8px;font-weight:700">✅ No alerts</div>')
+    if snap["not_logged"]: out.append(f'<p style="color:#C62828;font-weight:700">Not logged: {e(", ".join(snap["not_logged"]))}</p>')
+    out.append(h2("🌡 Temperatures") + table(["Unit", "Temp", "Result", "Time", "By"], [[(e(t["unit"]), ""), (e(t["temp"]) + "°C", ""), ok(t["ok"]), (e(t["at"]), ""), (e(t["staff"]), "")] for t in snap["temps"]]))
+    out.append(h2("✅ Jobs") + table(["Job", "Status", "By"], [[(e(j["title"]), ""), ("✓ Done " + e(j["at"]), "color:#2E7D32;font-weight:700") if j["done"] else ("✗ Not done", "color:#C62828;font-weight:700"), (e(j["by"]), "")] for j in snap["jobs"]]))
+    if "prep" in snap:
+        out.append(h2("🍳 Prep") + table(["Item", "Qty", "Prepped", "Use by", "By"], [[(e(r.get("item")), ""), (e(r.get("qty")), ""), (e(r.get("time")), ""), (e(r.get("use_by")), ""), (e(r["staff"]), "")] for r in snap["prep"]]))
+        out.append(h2("🔥 Hot box") + table(["Hot box", "Item", "Qty", "In", "Discard", "By"], [[(e(r.get("box")), ""), (e(r.get("item")), ""), (e(r.get("qty")), ""), (e(r.get("time")), ""), (e(r.get("discard")), ""), (e(r["staff"]), "")] for r in snap["hotbox"]]))
+        out.append(h2("📋 For tomorrow") + table(["Item", "Qty / note", "By"], [[(e(r.get("item")), ""), (e(r.get("qty")), ""), (e(r["staff"]), "")] for r in snap["tomorrow"]]))
+    if "fuel" in snap:
+        out.append(h2("⛽ Fuel water check") + table(["Tank", "Result", "Time", "By"], [[(e(f["tank"]), ""), ("⚠ WATER " + e(f.get("water_mm")) + "mm", "color:#C62828;font-weight:700") if f.get("water") == "yes" else ("No water", "color:#2E7D32"), (e(f["at"]), ""), (e(f["staff"]), "")] for f in snap["fuel"]]))
+    hm = lambda t: (t or "")[11:16] or "on shift"
+    out.append(h2("🕒 Shifts") + table(["Name", "Area", "Start", "End", "Hours"], [[(e(x["staff"]), ""), (e(AREAS.get(x["area"], x["area"])), ""), (e(hm(x["start_at"])), ""), (e(hm(x["end_at"])), ""), (e(x["hours"]), "")] for x in snap["shifts"]]))
+    body = f'<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:0 auto;color:#111;padding:16px">{"".join(out)}</div>'
+    if not standalone: return body
+    em = {"sent": "✅ Email sent", "failed": "⚠ Email failed", "not_configured": "Email not configured", "sending": "Email sending…"}.get(sub["email_status"], sub["email_status"])
+    bar = f'<div class="np" style="background:#C62828;color:#fff;padding:10px 16px;display:flex;gap:10px;align-items:center;font-family:system-ui"><b style="flex:1">{e(em)}</b><button onclick="print()" style="font-size:17px;padding:10px 18px;border:0;border-radius:10px;font-weight:700">🖨 Print</button><button onclick="history.length>1?history.back():close()" style="font-size:17px;padding:10px 18px;border:0;border-radius:10px">Close</button></div>'
+    return f'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Silkwood log {e(snap["date"])}</title><style>@media print{{.np{{display:none}}}}</style></head><body style="margin:0">{bar}{body}</body></html>'
+
+def send_email(sub_id, subject, html_body):
+    host, port = os.environ.get("SMTP_HOST", "").strip(), int(os.environ.get("SMTP_PORT") or 587)
+    user, pw = os.environ.get("SMTP_USER", "").strip(), os.environ.get("SMTP_PASS", "")
+    to = os.environ.get("MAIL_TO", "").strip() or "silkwoodup@gmail.com"
+    def set_status(st, err=""):
+        if sub_id is None: return
+        c = db(); c.execute("UPDATE submissions SET email_status=?, email_error=? WHERE id=?", (st, err[:300], sub_id)); c.commit(); c.close()
+    if not host:
+        set_status("not_configured"); return "not_configured", ""
+    try:
+        m = EmailMessage(); m["Subject"] = subject; m["From"] = os.environ.get("MAIL_FROM") or user or "silkwood@localhost"; m["To"] = to
+        m.set_content("This email is HTML. Open it in a mail app that shows HTML."); m.add_alternative(html_body, subtype="html")
+        if port == 465: srv = smtplib.SMTP_SSL(host, port, timeout=30, context=ssl.create_default_context())
+        else:
+            srv = smtplib.SMTP(host, port, timeout=30); srv.ehlo()
+            if srv.has_extn("starttls"): srv.starttls(context=ssl.create_default_context()); srv.ehlo()
+        with srv:
+            if user: srv.login(user, pw)
+            srv.send_message(m)
+        set_status("sent"); return "sent", to
+    except Exception as ex:
+        set_status("failed", f"{type(ex).__name__}: {ex}"); return "failed", f"{type(ex).__name__}: {ex}"[:300]
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def send(self, code, obj, ctype="application/json"):
@@ -192,6 +274,17 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
         if u.path == "/healthz": return self.send(200, {"ok": True})
         if not self.authed(): return self.send(401, {"error": "staff PIN required", "pin": True})
+        m = re.fullmatch(r"/submission/(\d+)", u.path)
+        if m:
+            c = db(); r = c.execute("SELECT * FROM submissions WHERE id=?", (int(m.group(1)),)).fetchone(); c.close()
+            if not r: return self.send(404, {"error": "not found"})
+            r = dict(r); return self.send(200, snapshot_html(r, json.loads(r["snapshot"]), True).encode(), "text/html; charset=utf-8")
+        if u.path == "/api/test-email":  # manager only; sends synchronously and reports the result
+            if q.get("pin") != MANAGER_PIN: return self.send(403, {"error": "wrong PIN"})
+            who = (q.get("staff") or "manager")[:40]
+            st, info = send_email(None, f"TEST – Silkwood dashboard email check – {now():%Y-%m-%d %H:%M}",
+                f'<div style="font-family:system-ui;padding:16px"><h2 style="color:#C62828">TEST email</h2><p>Sent from the Silkwood dashboard by {H_.escape(who)} at {now():%Y-%m-%d %H:%M} (Brisbane). Daily submissions will arrive like this.</p></div>')
+            return self.send(200, {"status": st, "info": info})
         if u.path == "/api/pincheck":  # manager PIN check (read-only)
             return self.send(200 if q.get("pin") == MANAGER_PIN else 403, {"ok": q.get("pin") == MANAGER_PIN})
         if u.path == "/api/day":
@@ -205,7 +298,8 @@ class H(BaseHTTPRequestHandler):
             for d in dates:
                 s = day_state(d)
                 names = sorted({r["staff"] for r in c.execute("SELECT staff FROM logs WHERE date=? UNION SELECT staff FROM task_done WHERE date=? UNION SELECT staff FROM audit WHERE date=?", (d, d, d)) if r["staff"]})
-                out.append({"date": d, "locked": s["locked"], "summary": s["summary"], "logs": len(s["logs"]), "staff": names, "shifts": s["shifts"]})
+                out.append({"date": d, "locked": s["locked"], "summary": s["summary"], "logs": len(s["logs"]), "staff": names, "shifts": s["shifts"],
+                            "submissions": [dict(r) for r in c.execute("SELECT id,area,staff,at,email_status,email_error FROM submissions WHERE date=? ORDER BY id", (d,))]})
             c.close(); return self.send(200, out)
         self.send(404, {"error": "not found"})
     def authed(self):
@@ -220,7 +314,7 @@ class H(BaseHTTPRequestHandler):
         p = urlparse(self.path).path; c = db(); ts = now().strftime("%Y-%m-%d %H:%M:%S")
         d = b.get("date") or today()
         def locked(): return c.execute("SELECT 1 FROM days WHERE date=?", (d,)).fetchone()
-        staff = (b.get("staff") or "").strip()[:40]
+        staff = (b.get("staff") or "").strip()[:40]; after = []
         try:
             if not staff:  # every write must carry the staff member's name
                 return self.send(400, {"error": "staff name required", "name": True})
@@ -271,7 +365,14 @@ class H(BaseHTTPRequestHandler):
             elif p == "/api/submit":
                 if not staff: return self.send(400, {"error": "staff name required"})
                 ds = day_state(d); s = ds["summary"]; s["shifts"] = ds["shifts"]
+                area = b.get("area") if b.get("area") in AREAS else "both"
                 c.execute("INSERT INTO days VALUES(?,?,?,?)", (d, staff, ts, json.dumps(s)))
+                snap = snapshot(ds, area)
+                sid = c.execute("INSERT INTO submissions(date,area,staff,at,snapshot,email_status) VALUES(?,?,?,?,?,?) RETURNING id",
+                                (d, area, staff, ts, json.dumps(snap), "sending")).fetchone()["id"]
+                sub = {"area": area, "staff": staff, "at": ts}
+                subj = f"Silkwood daily log – {d} – {AREAS[area]} – submitted by {staff}"
+                after.append(lambda: threading.Thread(target=send_email, args=(sid, subj, snapshot_html(sub, snap)), daemon=True).start())
             elif p == "/api/shift":  # staff start/end shift (server time, Brisbane)
                 td = today()
                 cur = c.execute("SELECT * FROM shifts WHERE date=? AND staff=? AND end_at IS NULL", (td, staff)).fetchone()
@@ -304,6 +405,7 @@ class H(BaseHTTPRequestHandler):
             detail = {k: v for k, v in b.items() if k not in ("pin", "staff", "date")}
             c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)", (d, ts, staff, p.removeprefix("/api/"), json.dumps(detail)[:500]))
             c.commit()
+            for f in after: f()
         finally: c.close()
         self.send(200, day_state(d))
 

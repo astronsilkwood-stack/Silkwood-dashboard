@@ -159,6 +159,8 @@ function endShift(){const m=myShift();if(!m)return;const h=((Date.now()-new Date
  $('#cEnd').onclick=async()=>{await post('/api/shift',{action:'end'});dlg.close();const x=S.shifts.filter(x=>x.staff==staffEl.value.trim()).pop();toast('■ Shift ended · '+(x?.hours??'')+' h')}}
 const AREA={kitchen:'🍳 Kitchen',shop:'🏪 Shop'};
 function shiftTable(sh,edit){if(!sh?.length)return'<p class="mini">No shifts.</p>';return `<table><tr><th>Name</th><th>Area</th><th>Start</th><th>End</th><th>Hours</th>${edit?'<th></th>':''}</tr>${sh.map(x=>`<tr><td>${esc(x.staff)}</td><td>${AREA[x.area]||''}</td><td>${hm12(x.start_at)}</td><td>${x.end_at?hm12(x.end_at):'<b style="color:var(--ok)">on shift</b>'}</td><td>${x.hours??''}</td>${edit?`<td><button class="edit keep" onclick="fixShift(${x.id})">Fix</button></td>`:''}</tr>`).join('')}</table>`}
+async function testEmail(){toast('✉ Sending…');const r=await (await fetch('/api/test-email?pin='+encodeURIComponent(sessionStorage.sw_mpin||'')+'&staff='+encodeURIComponent(staffEl.value))).json();
+ toast(r.status=='sent'?'✅ Test email sent to '+r.info:r.status=='not_configured'?'✉ Email not set up on the server':'⚠ Email failed: '+(r.info||r.error||''))}
 async function fixShift(id){const x=S.shifts.find(s=>s.id==id);
  openDlg('Fix shift — '+x.staff,`<label>Start<input type="time" id="fsS" value="${x.start_at.slice(11,16)}"></label><label>End<input type="time" id="fsE" value="${x.end_at?x.end_at.slice(11,16):''}"></label><button class="btn" id="fsSave">Save</button>`);
  $('#fsSave').onclick=async()=>{await post('/api/shift/fix',{id,start:$('#fsS').value,end:$('#fsE').value,pin:sessionStorage.sw_mpin});dlg.close();toast('Saved ✓')}}
@@ -177,7 +179,7 @@ function _render(){
  const jl=T.tasks_total-T.tasks_done, cl=T.missing.length, done=!jl&&!cl;
  let h=`<section class="left wide ${done?'alldone':''}"><h3>${done?'✅ All done here':'Left today: '+[jl?`${jl} job${jl>1?'s':''}`:'',cl?`${cl} check${cl>1?'s':''}`:''].filter(Boolean).join(' + ')}</h3>
  <div class="bar"><i style="width:${T.progress}%"></i></div></section>
- ${shiftCard()}${mgr?`<section class="card wide"><h2>🕒 Shifts today</h2>${shiftTable(S.shifts,1)}</section>`:''}<section class="card wide"><h2>✅ Jobs <span class="sp"></span><span class="mini">${T.tasks_done}/${T.tasks_total} done</span></h2>${todo()}</section>`;
+ ${shiftCard()}${mgr?`<section class="card wide"><h2>🕒 Shifts today</h2>${shiftTable(S.shifts,1)}<div class="row" style="margin-top:12px"><button class="btn ghost keep" onclick="testEmail()">✉ Send test email</button></div></section>`:''}<section class="card wide"><h2>✅ Jobs <span class="sp"></span><span class="mini">${T.tasks_done}/${T.tasks_total} done</span></h2>${todo()}</section>`;
  if(tab=='kitchen') h+=temps('kcheck','ktemp','🌡 Kitchen temps')+prep()+hotbox()+tomorrow();
  else h+=temps('fridge','stemp','🥤 Fridges')+temps('freezer','stemp','🧊 Freezers')+fuel();
  if(T.missing.length) h+=`<section class="card wide"><h2>⏳ Not logged yet</h2><div class="missing" style="font-size:16px">${T.missing.map(esc).join(' · ')}</div></section>`;
@@ -258,14 +260,14 @@ $('#submitBtn').onclick=()=>{if(!needStaff())return;const s=S.summary;
  openDlg('Submit '+S.date,`<p><b>${s.tasks_done}/${s.tasks_total}</b> tasks done · <b>${s.missing}</b> logs missing · <b>${s.alerts.length}</b> alerts</p>
  ${s.alerts.length?`<p class="missing">⚠ ${s.alerts.map(esc).join('<br>⚠ ')}</p>`:''}${s.missing?`<p class="mini">Missing: ${[...s.tabs.kitchen.missing,...s.tabs.shop.missing].map(esc).join(', ')}</p>`:''}
  ${S.shifts?.length?'<p><b>Shifts</b></p>'+shiftTable(S.shifts):''}<p>This locks today under <b>${esc(staffEl.value)}</b>. Only the manager can reopen it.</p><div class="row"><button class="btn ghost" onclick="dlg.close()">Cancel</button><button class="btn" id="cSub">Yes, submit 🔒</button></div>`);
- $('#cSub').onclick=async()=>{await post('/api/submit',{});dlg.close();toast('Day submitted 🔒')}};
+ $('#cSub').onclick=async()=>{await post('/api/submit',{area:mgr?'both':(localStorage.sw_area||'both')});dlg.close();toast('Day submitted 🔒')}};
 async function unlock(){const pin=prompt('Manager PIN to reopen this day');if(pin)await post('/api/unlock',{pin})}
 $('#histBtn').onclick=showHist;
 async function showHist(){const H=await api('/api/history');
  openDlg('History',`<div class="hist">${H.map(d=>`<div class="hd"><div class="ring" style="--p:${Math.round((d.summary.tabs.kitchen.progress+d.summary.tabs.shop.progress)/2)}"><span>${Math.round((d.summary.tabs.kitchen.progress+d.summary.tabs.shop.progress)/2)}%</span></div>
  <div style="flex:1"><b>${d.date}</b> ${d.locked?'🔒 '+esc(d.locked.staff)+' '+d.locked.at.slice(11,16):'<span class="missing">not submitted</span>'}<br>
  <span class="mini">${d.staff?.length?'👤 '+d.staff.map(esc).join(', ')+'<br>':''}${d.summary.tasks_done}/${d.summary.tasks_total} tasks · ${d.logs} entries · ${d.summary.missing} missing</span>${d.summary.alerts.length?`<br><span class="missing">⚠ ${d.summary.alerts.map(esc).join(' · ')}</span>`:''}</div>
- ${d.shifts?.length?`<div class="mini" style="width:100%">🕒 ${d.shifts.map(x=>esc(x.staff)+' '+hm12(x.start_at)+'–'+(x.end_at?hm12(x.end_at):'…')+(x.hours!=null?' ('+x.hours+'h)':'')).join(' · ')}</div>`:''}<button class="btn ghost" onclick="dlg.close();load('${d.date}')">Open</button></div>`).join('')||'<p>No days yet.</p>'}</div>`)}
+ ${(d.submissions||[]).map(x=>`<div style="width:100%;display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px solid #eee;padding-top:8px"><span style="flex:1">📝 <b>${{kitchen:'Kitchen',shop:'Shop',both:'Kitchen + Shop'}[x.area]||esc(x.area)}</b> · ${esc(x.staff)} · ${x.at.slice(11,16)}<br><span class="mini" style="color:${x.email_status=='sent'?'var(--ok)':x.email_status=='failed'?'var(--red)':'#444'}">${{sent:'✅ Email sent',failed:'⚠ Email failed',not_configured:'✉ Email not set up',sending:'✉ Sending…'}[x.email_status]||esc(x.email_status)}</span></span><a class="btn keep" style="text-decoration:none;display:inline-flex;align-items:center" href="/submission/${x.id}" target="_blank">View</a></div>`).join('')}${d.shifts?.length?`<div class="mini" style="width:100%">🕒 ${d.shifts.map(x=>esc(x.staff)+' '+hm12(x.start_at)+'–'+(x.end_at?hm12(x.end_at):'…')+(x.hours!=null?' ('+x.hours+'h)':'')).join(' · ')}</div>`:''}<button class="btn ghost" onclick="dlg.close();load('${d.date}')">Open</button></div>`).join('')||'<p>No days yet.</p>'}</div>`)}
 load().then(()=>{if(location.hash=='#add')taskDlg();if(location.hash=='#history')showHist()});
 setInterval(()=>{if(!dlg.open&&document.activeElement.tagName!='INPUT'&&document.activeElement.tagName!='SELECT')load(dateEl.value)},60000);
 </script></body></html>
