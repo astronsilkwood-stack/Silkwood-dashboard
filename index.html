@@ -1,0 +1,179 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#C62828"><meta name="apple-mobile-web-app-capable" content="yes">
+<title>Silkwood Daily Ops</title>
+<style>
+:root{--red:#C62828;--red2:#8E0000;--lt:#FFEBEE;--ok:#2E7D32;--g:#666;--bd:#e6e6e6}
+*{box-sizing:border-box}body{margin:0;font:16px/1.35 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#fff;color:#222}
+header{background:var(--red);color:#fff;padding:12px 16px calc(12px) ;position:sticky;top:0;z-index:5}
+.top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.brand{font-weight:800;font-size:20px;letter-spacing:.5px;flex:1}
+.brand small{display:block;font-weight:500;font-size:12px;opacity:.9}
+header input{border:0;border-radius:10px;padding:10px;font-size:16px;min-height:44px}
+.hbtn{background:#fff;color:var(--red);border:0;border-radius:10px;padding:10px 14px;font-weight:700;min-height:44px;font-size:15px}
+.sum{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}.chip{background:rgba(255,255,255,.16);border-radius:12px;padding:8px 12px;font-size:14px}
+.chip b{font-size:18px;display:block}.chip.alert{background:#fff;color:var(--red)}
+.tabs{display:flex;border-bottom:1px solid var(--bd);position:sticky;top:var(--hh,150px);background:#fff;z-index:4}
+.tab{flex:1;display:flex;align-items:center;justify-content:center;gap:10px;padding:12px;font-weight:700;font-size:17px;border:0;background:#fff;color:var(--g);border-bottom:4px solid transparent;min-height:64px}
+.tab.on{color:var(--red);border-color:var(--red)}
+.ring{--p:0;width:44px;height:44px;border-radius:50%;background:conic-gradient(var(--red) calc(var(--p)*1%),#eee 0);display:grid;place-items:center;font-size:12px}
+.ring span{background:#fff;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;color:#222}
+main{max-width:1100px;margin:0 auto;padding:12px 12px 120px;display:grid;gap:14px;grid-template-columns:1fr}
+@media(min-width:760px){main{grid-template-columns:1fr 1fr}.wide{grid-column:1/-1}}
+.card{border:1px solid var(--bd);border-radius:16px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.card h2{margin:0 0 10px;font-size:18px;display:flex;align-items:center;gap:8px}.card h2 .sp{flex:1}
+.bar{height:8px;background:#eee;border-radius:9px;overflow:hidden;margin:-4px 0 10px}.bar i{display:block;height:100%;background:var(--red)}
+.mini{font-size:13px;color:var(--g)}
+.edit{background:#fff;border:1px solid var(--bd);border-radius:10px;padding:8px 12px;color:var(--red);font-weight:600;min-height:40px}
+.task{display:flex;align-items:center;gap:12px;padding:10px 4px;border-top:1px solid #f1f1f1;min-height:60px}
+.chk{width:44px;height:44px;border-radius:12px;border:3px solid var(--red);background:#fff;flex:none;font-size:24px;color:#fff;display:grid;place-items:center}
+.done .chk{background:var(--red)}.done .tt{text-decoration:line-through;color:var(--g)}
+.tt{flex:1}.tag{font-size:12px;background:var(--lt);color:var(--red2);border-radius:8px;padding:2px 7px;margin-left:4px;white-space:nowrap}
+.dots{border:0;background:none;font-size:22px;min-width:44px;min-height:44px;color:var(--g)}
+.unit{display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid #f1f1f1;flex-wrap:wrap}
+.unit .nm{flex:1;min-width:130px;font-weight:600}.unit .nm .mini{font-weight:400}
+input,select{font-size:17px;padding:10px;border:1px solid #ccc;border-radius:10px;min-height:48px;background:#fff}
+.num{width:96px}.btn{background:var(--red);color:#fff;border:0;border-radius:12px;padding:12px 18px;font-size:16px;font-weight:700;min-height:48px}
+.btn.ghost{background:#fff;color:var(--red);border:2px solid var(--red)}.btn:disabled{opacity:.4}
+.read{font-weight:700;border-radius:8px;padding:4px 8px;background:#E8F5E9;color:var(--ok)}.read.bad{background:var(--red);color:#fff}
+.missing{color:var(--red);font-size:13px;font-weight:600}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}.row>*{flex:1;min-width:110px}
+table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:7px 4px;border-top:1px solid #f1f1f1;text-align:left}
+tr.bad td{color:var(--red);font-weight:700}
+.fab{position:fixed;right:16px;bottom:88px;background:var(--red);color:#fff;border:0;border-radius:32px;padding:16px 22px;font-size:18px;font-weight:800;box-shadow:0 4px 12px rgba(198,40,40,.4);z-index:6}
+.foot{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--bd);padding:10px 16px calc(10px + env(safe-area-inset-bottom));display:flex;gap:10px;z-index:6}
+.foot .btn{flex:1;font-size:18px}
+.lockbar{background:var(--lt);color:var(--red2);padding:10px 16px;font-weight:700;text-align:center}
+dialog{border:0;border-radius:18px;padding:0;width:min(560px,94vw);max-height:90vh}dialog::backdrop{background:rgba(0,0,0,.45)}
+.dh{background:var(--red);color:#fff;padding:14px 18px;font-weight:800;font-size:19px;display:flex}.dh span{flex:1}.dh button{background:none;border:0;color:#fff;font-size:24px}
+.db{padding:16px 18px;display:grid;gap:12px}.db label{font-weight:600;font-size:14px;display:grid;gap:4px}
+.seg{display:flex;border:2px solid var(--red);border-radius:12px;overflow:hidden}.seg button{flex:1;border:0;background:#fff;color:var(--red);font-weight:700;font-size:16px;min-height:50px}
+.seg button.on{background:var(--red);color:#fff}
+.hist{display:grid;gap:10px}.hd{border:1px solid var(--bd);border-radius:14px;padding:12px;display:flex;gap:12px;align-items:center}
+.ex{font-size:11px;background:#FFF3E0;color:#E65100;border-radius:6px;padding:1px 6px;margin-left:6px;font-weight:600}
+.toast{position:fixed;left:50%;bottom:150px;transform:translateX(-50%);background:#222;color:#fff;padding:12px 18px;border-radius:12px;opacity:0;transition:.3s;z-index:9}.toast.on{opacity:1}
+[hidden]{display:none!important}
+</style></head><body>
+<header id="hdr"><div class="top">
+ <div class="brand">SILKWOOD UNITED <small>Daily operations · servo + kitchen</small></div>
+ <input type="date" id="date" aria-label="Date"><input id="staff" placeholder="Your name" style="width:140px" aria-label="Staff name">
+ <button class="hbtn" id="histBtn">History</button></div>
+ <div class="sum" id="sum"></div></header>
+<div class="lockbar" id="lockbar" hidden></div>
+<nav class="tabs" id="tabs">
+ <button class="tab on" data-t="kitchen"><div class="ring" id="r-kitchen"><span>0%</span></div>Kitchen</button>
+ <button class="tab" data-t="shop"><div class="ring" id="r-shop"><span>0%</span></div>Shop / Site</button></nav>
+<main id="main"></main>
+<button class="fab" id="fab">＋ Add task</button>
+<div class="foot"><button class="btn" id="submitBtn">Submit day ✓</button></div>
+<dialog id="dlg"><div class="dh"><span id="dt"></span><button onclick="dlg.close()" aria-label="Close">✕</button></div><div class="db" id="dbody"></div></dialog>
+<div class="toast" id="toast"></div>
+<script>
+const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let S=null, tab=location.hash.includes('shop')?'shop':'kitchen';
+const staffEl=$('#staff'), dateEl=$('#date'); staffEl.value=localStorage.sw_staff||''; staffEl.onchange=()=>localStorage.sw_staff=staffEl.value.trim();
+const nowHM=()=>new Date().toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'Australia/Brisbane'});
+const DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'], TYPES={fridge:'Fridge ≤5°C',freezer:'Freezer ≤-15°C',hot:'Hot hold ≥60°C',core:'Cooked core ≥75°C'};
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),2200)}
+async function api(p,b){const hd={'X-Staff-Pin':localStorage.sw_pin||''};const o=b?{method:'POST',headers:{...hd,'Content-Type':'application/json'},body:JSON.stringify({date:S?.date,staff:staffEl.value.trim(),...b})}:{headers:hd};
+ const r=await fetch(p,o), j=await r.json();
+ if(r.status==401&&j.pin){const pin=prompt((localStorage.sw_pin?'Wrong PIN. ':'')+'Enter the Silkwood staff PIN');if(pin!==null){localStorage.sw_pin=pin.trim();return api(p,b)}throw j}
+ if(!r.ok){toast(j.error||'Error');throw j} return j}
+function needStaff(){if(!staffEl.value.trim()){toast('Enter your name first (top right)');staffEl.focus();return false}localStorage.sw_staff=staffEl.value.trim();return true}
+async function load(d){S=await api('/api/day?date='+(d||dateEl.value||''));dateEl.value=S.date;render()}
+async function post(p,b){S=await api(p,b);render();return S}
+dateEl.onchange=()=>load(dateEl.value);
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{tab=b.dataset.t;history.replaceState(0,'','#'+tab);render();scrollTo(0,0)});
+const items=k=>S.items.filter(i=>i.kind==k), logs=(k,r)=>S.logs.filter(l=>l.kind==k&&(r==null||l.ref==String(r)));
+function ring(id,p){const e=$(id);e.style.setProperty('--p',p);e.firstChild.textContent=p+'%'}
+function render(){
+ const s=S.summary, L=S.locked;
+ $('#sum').innerHTML=`<div class="chip"><b>${s.tasks_done}/${s.tasks_total}</b>tasks done</div><div class="chip"><b>${s.missing}</b>logs missing</div>
+ <div class="chip ${s.alerts.length?'alert':''}"><b>${s.alerts.length}</b>${s.alerts.length?'⚠ '+esc(s.alerts.slice(0,3).join(' · ')):'alerts'}</div>
+ ${S.date!=S.today?`<div class="chip"><b>${S.date}</b>viewing past/future day</div>`:''}`;
+ ring('#r-kitchen',s.tabs.kitchen.progress);ring('#r-shop',s.tabs.shop.progress);
+ document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b.dataset.t==tab));
+ $('#lockbar').hidden=!L; if(L)$('#lockbar').innerHTML=`🔒 Day submitted by ${esc(L.staff)} at ${esc(L.at)} — read only <button class="edit" onclick="unlock()">Reopen</button>`;
+ $('#submitBtn').disabled=!!L; $('#submitBtn').textContent=L?'Day submitted 🔒':'Submit day ✓';
+ document.documentElement.style.setProperty('--hh',$('#hdr').offsetHeight+'px');
+ const T=s.tabs[tab];
+ let h=`<section class="card wide"><h2>To-do <span class="sp"></span><span class="mini">${T.tasks_done}/${T.tasks_total}</span></h2>
+ <div class="bar"><i style="width:${100*T.tasks_done/Math.max(1,T.tasks_total)}%"></i></div>${todo()}</section>`;
+ if(tab=='kitchen') h+=temps('kcheck','ktemp','Kitchen temperature log')+prep()+hotbox()+tomorrow();
+ else h+=temps('fridge','stemp','Fridge temperatures')+temps('freezer','stemp','Freezer temperatures')+fuel();
+ if(T.missing.length) h+=`<section class="card wide"><h2>Still to log</h2><div class="missing">${T.missing.map(esc).join(' · ')}</div></section>`;
+ $('#main').innerHTML=h; $('#main').querySelectorAll('input,select,button.btn,button.chk,button.dots').forEach(e=>{if(L&&!e.classList.contains('keep'))e.disabled=true});
+}
+function todo(){const t=S.tasks.filter(x=>x.tab==tab);if(!t.length)return'<p class="mini">No tasks yet — tap ＋ Add task.</p>';
+ return t.map(x=>`<div class="task ${x.done?'done':''}"><button class="chk" onclick="tick(${x.id},${!!x.done})" aria-label="Tick">${x.done?'✓':''}</button>
+ <div class="tt">${esc(x.title)}${x.example?'<span class="ex">example</span>':''}<br><span class="mini">${x.due_time?'⏰ '+x.due_time+' · ':''}${x.repeat=='weekly'?'Weekly '+DAYS[x.weekday]:x.repeat=='daily'?'Daily':'One-off'}
+ ${x.done?` · ✓ ${esc(x.done.staff)} ${x.done.at.slice(11,16)}`:''}</span></div><button class="dots" onclick="taskDlg(${x.id})" aria-label="Edit">✎</button></div>`).join('')}
+async function tick(id,done){if(!done&&!needStaff())return;await post('/api/tick',{id,undo:done});if(!done)toast('Ticked ✓')}
+function temps(kind,lk,title){const its=items(kind);
+ return `<section class="card"><h2>🌡 ${title}<span class="sp"></span><button class="edit" onclick="manage('${kind}')">Edit list</button></h2>
+ ${its.map(i=>{const ls=logs(lk,i.id),last=ls[ls.length-1];return `<div class="unit"><div class="nm">${esc(i.name)}${i.example?'<span class="ex">example</span>':''}<br><span class="mini">${TYPES[i.type]||''}${ls.length>1?' · '+ls.length+' readings':''}</span></div>
+ ${last?`<span class="read ${last.bad?'bad':''}">${last.data.temp}°C ${last.at.slice(11,16)} ${esc(last.staff)}</span>`:'<span class="missing">not logged</span>'}
+ <input class="num" type="number" inputmode="decimal" step="0.1" id="t${i.id}" placeholder="°C"><button class="btn" onclick="logTemp('${lk}',${i.id})">Log</button></div>`}).join('')||'<p class="mini">Nothing set up — tap Edit list.</p>'}</section>`}
+async function logTemp(lk,id){if(!needStaff())return;const v=$('#t'+id).value;if(v==='')return toast('Enter a temperature');
+ await post('/api/log',{kind:lk,ref:id,data:{temp:v}});const l=logs(lk,id).pop();toast(l.bad?'⚠ OUT OF RANGE — tell the manager':'Logged ✓')}
+function opts(k){return items(k).map(i=>`<option value="${esc(i.name)}">${esc(i.name)}</option>`).join('')}
+function logTable(rows,cols,del){if(!rows.length)return'<p class="mini">Nothing logged yet today.</p>';
+ return `<table><tr>${cols.map(c=>`<th>${c[0]}</th>`).join('')}<th></th></tr>${rows.map(r=>`<tr class="${r.bad?'bad':''}">${cols.map(c=>`<td>${esc(c[1](r))}</td>`).join('')}<td><button class="dots" onclick="delLog(${r.id})" aria-label="Delete">🗑</button></td></tr>`).join('')}</table>`}
+async function delLog(id){if(confirm('Delete this entry?'))await post('/api/log/delete',{id})}
+function prep(){return `<section class="card"><h2>🔪 Preparation log<span class="sp"></span><button class="edit" onclick="manage('prep')">Edit items</button></h2>
+ <div class="row"><select id="pI">${opts('prep')}</select><input id="pQ" placeholder="Qty" inputmode="decimal"></div>
+ <div class="row"><label class="mini">Prepped<input type="time" id="pT" value="${nowHM()}"></label><label class="mini">Use by<input type="date" id="pU"></label><button class="btn" onclick="logPrep()">Log</button></div>
+ ${logTable(logs('prep'),[['Item',r=>r.data.item],['Qty',r=>r.data.qty],['Prepped',r=>r.data.time],['Use by',r=>r.data.use_by||''],['By',r=>r.staff]])}</section>`}
+async function logPrep(){if(!needStaff())return;if(!$('#pI').value)return toast('Add a prep item first');await post('/api/log',{kind:'prep',data:{item:$('#pI').value,qty:$('#pQ').value,time:$('#pT').value,use_by:$('#pU').value}});toast('Logged ✓')}
+function hotbox(){return `<section class="card"><h2>🔥 Hot box rotation<span class="sp"></span><button class="edit" onclick="manage('hotbox')">Edit items</button></h2>
+ <div class="row"><select id="hB">${items('kcheck').filter(i=>i.type=='hot'&&/hot box/i.test(i.name)).map(i=>`<option>${esc(i.name)}</option>`).join('')}</select><select id="hI">${opts('hotbox')}</select><input id="hQ" placeholder="Qty in" inputmode="numeric"></div>
+ <div class="row"><label class="mini">Time in<input type="time" id="hT" value="${nowHM()}"></label><label class="mini">Discard by (+4h)<input type="time" id="hD"></label><button class="btn" onclick="logHot()">Log</button></div>
+ ${logTable(logs('hotbox'),[['Hot box',r=>r.data.box||''],['Item',r=>r.data.item],['Qty',r=>r.data.qty],['In',r=>r.data.time],['Discard',r=>r.data.discard],['By',r=>r.staff]])}</section>`}
+function plus4(t){if(!t)return'';let[h,m]=t.split(':').map(Number);return String((h+4)%24).padStart(2,'0')+':'+String(m).padStart(2,'0')}
+async function logHot(){if(!needStaff())return;const t=$('#hT').value;await post('/api/log',{kind:'hotbox',data:{box:$('#hB').value,item:$('#hI').value,qty:$('#hQ').value,time:t,discard:$('#hD').value||plus4(t)}});toast('Logged ✓')}
+function tomorrow(){return `<section class="card wide"><h2>📋 Prep for tomorrow</h2>
+ <div class="row"><select id="mI">${opts('prep')}${opts('hotbox')}</select><input id="mQ" placeholder="Qty / note"><button class="btn" onclick="logTom()">Add</button></div>
+ ${logTable(logs('tomorrow'),[['Item',r=>r.data.item],['Qty / note',r=>r.data.qty],['By',r=>r.staff]])}</section>`}
+async function logTom(){if(!needStaff())return;await post('/api/log',{kind:'tomorrow',data:{item:$('#mI').value,qty:$('#mQ').value}});toast('Added ✓')}
+function fuel(){return `<section class="card wide"><h2>⛽ Fuel tank water paste</h2><p class="mini">Dip each tank with water-finding paste. Any water = tell the manager.</p>
+ ${S.tanks.map(t=>{const l=logs('fuel',t).pop();return `<div class="unit"><div class="nm">Tank ${esc(t)}</div>
+ ${l?`<span class="read ${l.data.water=='yes'?'bad':''}">${l.data.water=='yes'?'WATER '+esc(l.data.water_mm)+'mm':'No water'} ${l.at.slice(11,16)} ${esc(l.staff)}</span>`:'<span class="missing">not checked</span>'}
+ <button class="btn ghost" onclick="logFuel('${t}','no')">No water</button><input class="num" id="w${t[0]}" placeholder="mm" inputmode="numeric"><button class="btn" onclick="logFuel('${t}','yes')">Water</button></div>`}).join('')}</section>`}
+async function logFuel(t,w){if(!needStaff())return;const mm=$('#w'+t[0]).value;if(w=='yes'&&!mm)return toast('Enter water mm');await post('/api/log',{kind:'fuel',ref:t,data:{water:w,water_mm:w=='yes'?mm:0}});toast(w=='yes'?'⚠ Water logged — tell the manager':'Logged ✓')}
+function openDlg(t,h){$('#dt').textContent=t;$('#dbody').innerHTML=h;dlg.showModal()}
+function taskDlg(id){const x=id?S.tasks.find(t=>t.id==id):{tab,repeat:'once',title:'',due_time:''};
+ openDlg(id?'Edit task':'Add task',`<label>Task<input id="fT" value="${esc(x.title)}" placeholder="e.g. Restock cups and lids"></label>
+ <label>Tab<div class="seg" id="fTab"><button data-v="kitchen">Kitchen</button><button data-v="shop">Shop / Site</button></div></label>
+ <label>Repeat<div class="seg" id="fR"><button data-v="once">One-off</button><button data-v="daily">Daily</button><button data-v="weekly">Weekly</button></div></label>
+ <label id="fWl">Day of week<select id="fW">${DAYS.map((d,i)=>`<option value="${i}">${d}</option>`).join('')}</select></label>
+ <label>Due time (optional)<input type="time" id="fD" value="${x.due_time||''}"></label>
+ <div class="row"><button class="btn" id="fSave">Save task</button>${id?'<button class="btn ghost" id="fDel">Delete</button>':''}</div>`);
+ const seg=(sel,v)=>{document.querySelectorAll(sel+' button').forEach(b=>{b.classList.toggle('on',b.dataset.v==v);b.onclick=e=>{e.preventDefault();seg(sel,b.dataset.v)}});if(sel=='#fR')$('#fWl').hidden=v!='weekly'};
+ seg('#fTab',x.tab);seg('#fR',x.repeat);$('#fW').value=x.weekday??((new Date(S.date).getDay()+6)%7);
+ const val=s=>document.querySelector(s+' button.on').dataset.v;
+ $('#fSave').onclick=async()=>{if(!$('#fT').value.trim())return toast('Type the task');await post('/api/task',{id,title:$('#fT').value,tab:val('#fTab'),repeat:val('#fR'),weekday:$('#fW').value,due_time:$('#fD').value});dlg.close();toast('Saved ✓')};
+ if(id)$('#fDel').onclick=async()=>{if(confirm('Delete this task?')){await post('/api/task',{id,delete:1});dlg.close()}}}
+$('#fab').onclick=()=>taskDlg();
+const KN={fridge:'Fridges',freezer:'Freezers',kcheck:'Kitchen temp check points',prep:'Prep items',hotbox:'Hot box items'};
+function manage(kind){const its=items(kind),typ=kind=='kcheck';
+ openDlg('Edit '+KN[kind],`${its.map(i=>`<div class="row"><input id="m${i.id}" value="${esc(i.name)}">${typ?`<select id="y${i.id}">${Object.entries(TYPES).map(([k,v])=>`<option value="${k}" ${i.type==k?'selected':''}>${v}</option>`).join('')}</select>`:''}
+ <button class="btn ghost" style="flex:none" onclick="ren(${i.id},'${kind}')">Save</button><button class="btn ghost" style="flex:none" onclick="rem(${i.id},'${kind}')">🗑</button></div>`).join('')}
+ <hr><div class="row"><input id="mNew" placeholder="New ${KN[kind].toLowerCase().replace(/s$/,'')}">${typ?`<select id="yNew">${Object.entries(TYPES).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select>`:''}<button class="btn" style="flex:none" onclick="addItem('${kind}')">Add</button></div>
+ <p class="mini">Items marked “example” are starter entries — rename or remove them. Past logs are kept.</p>`)}
+async function ren(id,k){await post('/api/item',{id,name:$('#m'+id).value,type:$('#y'+id)?.value});manage(k);toast('Saved ✓')}
+async function rem(id,k){if(confirm('Remove from the list? (past logs kept)')){await post('/api/item',{id,delete:1});manage(k)}}
+async function addItem(k){if(!$('#mNew').value.trim())return;await post('/api/item',{kind:k,name:$('#mNew').value,type:$('#yNew')?.value});manage(k);toast('Added ✓')}
+$('#submitBtn').onclick=()=>{if(!needStaff())return;const s=S.summary;
+ openDlg('Submit '+S.date,`<p><b>${s.tasks_done}/${s.tasks_total}</b> tasks done · <b>${s.missing}</b> logs missing · <b>${s.alerts.length}</b> alerts</p>
+ ${s.alerts.length?`<p class="missing">⚠ ${s.alerts.map(esc).join('<br>⚠ ')}</p>`:''}${s.missing?`<p class="mini">Missing: ${[...s.tabs.kitchen.missing,...s.tabs.shop.missing].map(esc).join(', ')}</p>`:''}
+ <p>Submitting locks the day as <b>${esc(staffEl.value)}</b>.</p><button class="btn" id="cSub">Lock & submit</button>`);
+ $('#cSub').onclick=async()=>{await post('/api/submit',{});dlg.close();toast('Day submitted 🔒')}};
+async function unlock(){const pin=prompt('Manager PIN to reopen this day');if(pin)await post('/api/unlock',{pin})}
+$('#histBtn').onclick=showHist;
+async function showHist(){const H=await api('/api/history');
+ openDlg('History',`<div class="hist">${H.map(d=>`<div class="hd"><div class="ring" style="--p:${Math.round((d.summary.tabs.kitchen.progress+d.summary.tabs.shop.progress)/2)}"><span>${Math.round((d.summary.tabs.kitchen.progress+d.summary.tabs.shop.progress)/2)}%</span></div>
+ <div style="flex:1"><b>${d.date}</b> ${d.locked?'🔒 '+esc(d.locked.staff)+' '+d.locked.at.slice(11,16):'<span class="missing">not submitted</span>'}<br>
+ <span class="mini">${d.summary.tasks_done}/${d.summary.tasks_total} tasks · ${d.logs} entries · ${d.summary.missing} missing</span>${d.summary.alerts.length?`<br><span class="missing">⚠ ${d.summary.alerts.map(esc).join(' · ')}</span>`:''}</div>
+ <button class="btn ghost" onclick="dlg.close();load('${d.date}')">Open</button></div>`).join('')||'<p>No days yet.</p>'}</div>`)}
+load().then(()=>{if(location.hash=='#add')taskDlg();if(location.hash=='#history')showHist()});
+setInterval(()=>{if(!dlg.open&&document.activeElement.tagName!='INPUT'&&document.activeElement.tagName!='SELECT')load(dateEl.value)},60000);
+</script></body></html>

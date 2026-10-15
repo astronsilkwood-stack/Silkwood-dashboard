@@ -1,0 +1,19 @@
+# Render Blueprint: free web service; data lives in Neon Postgres (DATABASE_URL).
+services:
+  - type: web
+    name: silkwood-ops
+    runtime: python
+    plan: free            # change to "starter" ($7/mo) for always-on, no cold starts
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATABASE_URL
+        sync: false       # paste the Neon connection string in the Render dashboard
+      - key: STAFF_PIN
+        sync: false
+      - key: MANAGER_PIN
+        sync: false

@@ -1,0 +1,11 @@
+silkwood.db
+*.log
+shots/
+__pycache__/
+.neon
+node_modules/
+.env.local
+.env
+*.db
+.env.*
+!.env.example

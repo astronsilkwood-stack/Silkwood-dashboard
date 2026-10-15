@@ -1,0 +1,4 @@
+silkwood.db
+*.log
+shots/
+__pycache__/
