@@ -186,6 +186,8 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
         if u.path == "/healthz": return self.send(200, {"ok": True})
         if not self.authed(): return self.send(401, {"error": "staff PIN required", "pin": True})
+        if u.path == "/api/pincheck":  # manager PIN check (read-only)
+            return self.send(200 if q.get("pin") == MANAGER_PIN else 403, {"ok": q.get("pin") == MANAGER_PIN})
         if u.path == "/api/day":
             d = q.get("date") or today()
             if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d): return self.send(400, {"error": "bad date"})
