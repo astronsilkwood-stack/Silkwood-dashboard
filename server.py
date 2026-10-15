@@ -114,6 +114,7 @@ def init():
     CREATE TABLE IF NOT EXISTS task_done(task_id INT, date TEXT, staff TEXT, at TEXT, PRIMARY KEY(task_id,date));
     CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, ref TEXT, data TEXT, staff TEXT, at TEXT, bad INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS days(date TEXT PRIMARY KEY, staff TEXT, at TEXT, summary TEXT);
+    CREATE TABLE IF NOT EXISTS shifts(id INTEGER PRIMARY KEY, date TEXT, staff TEXT, area TEXT, start_at TEXT, end_at TEXT, hours REAL);
     CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, date TEXT, at TEXT, staff TEXT, action TEXT, detail TEXT);
     """)
     if not c.execute("SELECT 1 FROM items LIMIT 1").fetchone():
@@ -148,9 +149,14 @@ def day_state(d):
     logs = [dict(r, data=json.loads(r["data"])) for r in c.execute("SELECT * FROM logs WHERE date=? ORDER BY at", (d,))]
     tasks = tasks_for(c, d)
     lock = c.execute("SELECT * FROM days WHERE date=?", (d,)).fetchone()
+    shifts = [dict(r) for r in c.execute("SELECT * FROM shifts WHERE date=? ORDER BY start_at", (d,))]
     c.close()
     return {"date": d, "today": today(), "items": items, "logs": logs, "tasks": tasks, "tanks": TANKS,
-            "rules": RULES, "locked": dict(lock) if lock else None, "summary": summarise(items, logs, tasks)}
+            "rules": RULES, "locked": dict(lock) if lock else None, "shifts": shifts, "summary": summarise(items, logs, tasks)}
+
+def shift_hours(a, b):
+    f = "%Y-%m-%d %H:%M:%S"
+    return round((datetime.strptime(b, f) - datetime.strptime(a, f)).total_seconds() / 3600, 2)
 
 def summarise(items, logs, tasks):
     def has(kind, ref): return any(l["kind"] == kind and l["ref"] == ref for l in logs)
@@ -194,12 +200,12 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, day_state(d))
         if u.path == "/api/history":
             c = db()
-            dates = sorted({list(dict(r).values())[0] for r in c.execute("SELECT date FROM logs UNION SELECT date FROM task_done UNION SELECT date FROM days UNION SELECT date FROM audit")}, reverse=True)[:60]
+            dates = sorted({list(dict(r).values())[0] for r in c.execute("SELECT date FROM logs UNION SELECT date FROM task_done UNION SELECT date FROM days UNION SELECT date FROM audit UNION SELECT date FROM shifts")}, reverse=True)[:60]
             out = []
             for d in dates:
                 s = day_state(d)
                 names = sorted({r["staff"] for r in c.execute("SELECT staff FROM logs WHERE date=? UNION SELECT staff FROM task_done WHERE date=? UNION SELECT staff FROM audit WHERE date=?", (d, d, d)) if r["staff"]})
-                out.append({"date": d, "locked": s["locked"], "summary": s["summary"], "logs": len(s["logs"]), "staff": names})
+                out.append({"date": d, "locked": s["locked"], "summary": s["summary"], "logs": len(s["logs"]), "staff": names, "shifts": s["shifts"]})
             c.close(); return self.send(200, out)
         self.send(404, {"error": "not found"})
     def authed(self):
@@ -264,8 +270,33 @@ class H(BaseHTTPRequestHandler):
                     c.execute("INSERT INTO items(kind,name,type,sort) VALUES(?,?,?,999)", (kind, b["name"].strip()[:60], typ))
             elif p == "/api/submit":
                 if not staff: return self.send(400, {"error": "staff name required"})
-                s = day_state(d)["summary"]
+                ds = day_state(d); s = ds["summary"]; s["shifts"] = ds["shifts"]
                 c.execute("INSERT INTO days VALUES(?,?,?,?)", (d, staff, ts, json.dumps(s)))
+            elif p == "/api/shift":  # staff start/end shift (server time, Brisbane)
+                td = today()
+                cur = c.execute("SELECT * FROM shifts WHERE date=? AND staff=? AND end_at IS NULL", (td, staff)).fetchone()
+                if b.get("action") == "start":
+                    if not cur:  # one open shift per name per day; an open one is resumed
+                        area = b.get("area") if b.get("area") in ("kitchen", "shop") else ""
+                        c.execute("INSERT INTO shifts(date,staff,area,start_at) VALUES(?,?,?,?)", (td, staff, area, ts))
+                elif b.get("action") == "end":
+                    if not cur: return self.send(409, {"error": "no open shift"})
+                    c.execute("UPDATE shifts SET end_at=?, hours=? WHERE id=?", (ts, shift_hours(cur["start_at"], ts), cur["id"]))
+                else: return self.send(400, {"error": "action start or end"})
+            elif p in ("/api/shift/fix", "/api/shift/delete"):  # manager only
+                if str(b.get("pin")) != MANAGER_PIN: return self.send(403, {"error": "wrong PIN"})
+                sh = c.execute("SELECT * FROM shifts WHERE id=?", (b.get("id"),)).fetchone()
+                if not sh: return self.send(404, {"error": "no such shift"})
+                if p.endswith("delete"): c.execute("DELETE FROM shifts WHERE id=?", (sh["id"],))
+                else:
+                    def at(hm, old):
+                        if not hm: return old
+                        if not re.fullmatch(r"\d{2}:\d{2}", hm): raise ValueError("time must be HH:MM")
+                        return f'{sh["date"]} {hm}:00'
+                    try: st, en = at(b.get("start"), sh["start_at"]), at(b.get("end"), sh["end_at"])
+                    except ValueError as e: return self.send(400, {"error": str(e)})
+                    if en and en < st: return self.send(400, {"error": "end is before start"})
+                    c.execute("UPDATE shifts SET start_at=?, end_at=?, hours=? WHERE id=?", (st, en, shift_hours(st, en) if en else None, sh["id"]))
             elif p == "/api/unlock":  # manager reopen
                 if str(b.get("pin")) != MANAGER_PIN: return self.send(403, {"error": "wrong PIN"})
                 c.execute("DELETE FROM days WHERE date=?", (d,))
