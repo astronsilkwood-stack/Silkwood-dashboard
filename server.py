@@ -245,19 +245,25 @@ def send_email(sub_id, subject, html_body):
         c = db(); c.execute("UPDATE submissions SET email_status=?, email_error=? WHERE id=?", (st, err[:300], sub_id)); c.commit(); c.close()
     if not host:
         set_status("not_configured"); return "not_configured", ""
+    step = "build"
     try:
         m = EmailMessage(); m["Subject"] = subject; m["From"] = os.environ.get("MAIL_FROM") or user or "silkwood@localhost"; m["To"] = to
         m.set_content("This email is HTML. Open it in a mail app that shows HTML."); m.add_alternative(html_body, subtype="html")
+        step = "connect"
         if port == 465: srv = smtplib.SMTP_SSL(host, port, timeout=30, context=ssl.create_default_context())
         else:
-            srv = smtplib.SMTP(host, port, timeout=30); srv.ehlo()
-            if srv.has_extn("starttls"): srv.starttls(context=ssl.create_default_context()); srv.ehlo()
+            srv = smtplib.SMTP(host, port, timeout=30); step = "ehlo"; srv.ehlo()
+            if srv.has_extn("starttls"): step = "starttls"; srv.starttls(context=ssl.create_default_context()); srv.ehlo()
         with srv:
-            if user: srv.login(user, pw)
-            srv.send_message(m)
+            step = "login"
+            if user: srv.login(user, pw.replace(" ", "").strip().strip('"').strip("'"))  # app passwords are often pasted as 'abcd efgh ijkl mnop'
+            step = "send"; srv.send_message(m)
         set_status("sent"); return "sent", to
     except Exception as ex:
-        set_status("failed", f"{type(ex).__name__}: {ex}"); return "failed", f"{type(ex).__name__}: {ex}"[:300]
+        msg = f"{type(ex).__name__} at {locals().get('step', '?')}: {ex}"
+        if isinstance(ex, smtplib.SMTPAuthenticationError) or locals().get("step") == "login":
+            msg += " (Gmail rejected the login: SMTP_PASS must be a 16-letter Google App Password for SMTP_USER)"
+        set_status("failed", msg[:300]); return "failed", msg[:300]
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
