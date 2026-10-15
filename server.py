@@ -291,23 +291,6 @@ class H(BaseHTTPRequestHandler):
             st, info = send_email(None, f"TEST – Silkwood dashboard email check – {now():%Y-%m-%d %H:%M}",
                 f'<div style="font-family:system-ui;padding:16px"><h2 style="color:#C62828">TEST email</h2><p>Sent from the Silkwood dashboard by {H_.escape(who)} at {now():%Y-%m-%d %H:%M} (Brisbane). Daily submissions will arrive like this.</p></div>')
             return self.send(200, {"status": st, "info": info})
-        if u.path == "/api/smtp-diag":  # TEMPORARY diagnostic, manager only, never returns secrets
-            if q.get("pin") != MANAGER_PIN: return self.send(403, {"error": "wrong PIN"})
-            import socket
-            out = {}
-            for port in (587, 465, 25, 2525):
-                try:
-                    sk = socket.create_connection(("smtp.gmail.com", port), timeout=8)
-                    if port == 465:
-                        sk = ssl.create_default_context().wrap_socket(sk, server_hostname="smtp.gmail.com")
-                    sk.settimeout(8); out[port] = "OK banner: " + sk.recv(200).decode(errors="replace").strip()[:80]; sk.close()
-                except Exception as ex: out[port] = f"{type(ex).__name__}: {ex}"[:120]
-            pw = os.environ.get("SMTP_PASS", "")
-            out["pass"] = {"len": len(pw), "len_no_spaces": len(pw.replace(" ", "")), "has_space": " " in pw, "quote": any(ch in pw for ch in "\"'"),
-                           "edge_ws": pw != pw.strip(), "all_lower_alpha": pw.replace(" ", "").isalpha() and pw.replace(" ", "").islower()}
-            u_ = os.environ.get("SMTP_USER", ""); out["user_domain"] = u_.split("@")[-1] if "@" in u_ else ("set" if u_ else "")
-            out["host"] = os.environ.get("SMTP_HOST", ""); out["port"] = os.environ.get("SMTP_PORT", "")
-            return self.send(200, out)
         if u.path == "/api/pincheck":  # manager PIN check (read-only)
             return self.send(200 if q.get("pin") == MANAGER_PIN else 403, {"ok": q.get("pin") == MANAGER_PIN})
         if u.path == "/api/day":
