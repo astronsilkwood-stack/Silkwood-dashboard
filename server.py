@@ -114,6 +114,7 @@ def init():
     CREATE TABLE IF NOT EXISTS task_done(task_id INT, date TEXT, staff TEXT, at TEXT, PRIMARY KEY(task_id,date));
     CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, ref TEXT, data TEXT, staff TEXT, at TEXT, bad INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS days(date TEXT PRIMARY KEY, staff TEXT, at TEXT, summary TEXT);
+    CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, date TEXT, at TEXT, staff TEXT, action TEXT, detail TEXT);
     """)
     if not c.execute("SELECT 1 FROM items LIMIT 1").fetchone():
         for i, (k, n, t, ex) in enumerate(STARTERS):
@@ -191,10 +192,12 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, day_state(d))
         if u.path == "/api/history":
             c = db()
-            dates = sorted({list(dict(r).values())[0] for r in c.execute("SELECT date FROM logs UNION SELECT date FROM task_done UNION SELECT date FROM days")}, reverse=True)[:60]
+            dates = sorted({list(dict(r).values())[0] for r in c.execute("SELECT date FROM logs UNION SELECT date FROM task_done UNION SELECT date FROM days UNION SELECT date FROM audit")}, reverse=True)[:60]
             out = []
             for d in dates:
-                s = day_state(d); out.append({"date": d, "locked": s["locked"], "summary": s["summary"], "logs": len(s["logs"])})
+                s = day_state(d)
+                names = sorted({r["staff"] for r in c.execute("SELECT staff FROM logs WHERE date=? UNION SELECT staff FROM task_done WHERE date=? UNION SELECT staff FROM audit WHERE date=?", (d, d, d)) if r["staff"]})
+                out.append({"date": d, "locked": s["locked"], "summary": s["summary"], "logs": len(s["logs"]), "staff": names})
             c.close(); return self.send(200, out)
         self.send(404, {"error": "not found"})
     def authed(self):
@@ -211,6 +214,8 @@ class H(BaseHTTPRequestHandler):
         def locked(): return c.execute("SELECT 1 FROM days WHERE date=?", (d,)).fetchone()
         staff = (b.get("staff") or "").strip()[:40]
         try:
+            if not staff:  # every write must carry the staff member's name
+                return self.send(400, {"error": "staff name required", "name": True})
             if p in ("/api/tick", "/api/log", "/api/submit", "/api/log/delete") and locked():
                 return self.send(409, {"error": f"{d} is submitted and locked"})
             if p == "/api/task":
@@ -263,6 +268,8 @@ class H(BaseHTTPRequestHandler):
                 if str(b.get("pin")) != MANAGER_PIN: return self.send(403, {"error": "wrong PIN"})
                 c.execute("DELETE FROM days WHERE date=?", (d,))
             else: return self.send(404, {"error": "not found"})
+            detail = {k: v for k, v in b.items() if k not in ("pin", "staff", "date")}
+            c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)", (d, ts, staff, p.removeprefix("/api/"), json.dumps(detail)[:500]))
             c.commit()
         finally: c.close()
         self.send(200, day_state(d))

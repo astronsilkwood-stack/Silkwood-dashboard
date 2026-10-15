@@ -55,7 +55,7 @@ dialog{border:0;border-radius:18px;padding:0;width:min(560px,94vw);max-height:90
 </style></head><body>
 <header id="hdr"><div class="top">
  <div class="brand">SILKWOOD UNITED <small>Daily operations · servo + kitchen</small></div>
- <input type="date" id="date" aria-label="Date"><input id="staff" placeholder="Your name" style="width:140px" aria-label="Staff name">
+ <input type="date" id="date" aria-label="Date"><input id="staff" type="hidden"><button class="hbtn" id="who" title="Change name">👤 <span id="whoName"></span> · Change name</button>
  <button class="hbtn" id="histBtn">History</button></div>
  <div class="sum" id="sum"></div></header>
 <div class="lockbar" id="lockbar" hidden></div>
@@ -66,19 +66,30 @@ dialog{border:0;border-radius:18px;padding:0;width:min(560px,94vw);max-height:90
 <button class="fab" id="fab">＋ Add task</button>
 <div class="foot"><button class="btn" id="submitBtn">Submit day ✓</button></div>
 <dialog id="dlg"><div class="dh"><span id="dt"></span><button onclick="dlg.close()" aria-label="Close">✕</button></div><div class="db" id="dbody"></div></dialog>
+<dialog id="nameDlg" style="max-width:360px"><form method="dialog" id="nameForm" class="db" style="padding:20px">
+ <h2 style="margin:0 0 6px">Your name</h2><p class="mini" style="margin:0 0 12px">Every tick, log and submission is recorded under this name. It's remembered on this phone.</p>
+ <input id="nameIn" placeholder="e.g. Sam" autocomplete="name" maxlength="40" style="width:100%;font-size:18px;padding:12px;box-sizing:border-box" required>
+ <button class="btn" style="width:100%;margin-top:12px" type="submit">Save name</button></form></dialog>
 <div class="toast" id="toast"></div>
 <script>
 const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let S=null, tab=location.hash.includes('shop')?'shop':'kitchen';
-const staffEl=$('#staff'), dateEl=$('#date'); staffEl.value=localStorage.sw_staff||''; staffEl.onchange=()=>localStorage.sw_staff=staffEl.value.trim();
+const staffEl=$('#staff'), dateEl=$('#date'); staffEl.value=localStorage.sw_staff||'';
+const nameDlg=$('#nameDlg'); let nameWait=null;
+function showWho(){$('#whoName').textContent=staffEl.value||'No name'}
+function askName(){$('#nameIn').value=staffEl.value;if(!nameDlg.open)nameDlg.showModal();setTimeout(()=>$('#nameIn').focus(),50);return new Promise(r=>nameWait=r)}
+nameDlg.addEventListener('cancel',e=>{if(!staffEl.value)e.preventDefault()});
+$('#nameForm').onsubmit=e=>{const n=$('#nameIn').value.trim().slice(0,40);if(!n){e.preventDefault();return}staffEl.value=n;localStorage.sw_staff=n;showWho();toast('Hi '+n+' 👋');nameWait&&nameWait(n);nameWait=null};
+$('#who').onclick=askName; showWho(); if(!staffEl.value)askName();
 const nowHM=()=>new Date().toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'Australia/Brisbane'});
 const DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'], TYPES={fridge:'Fridge ≤5°C',freezer:'Freezer ≤-15°C',hot:'Hot hold ≥60°C',core:'Cooked core ≥75°C'};
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),2200)}
-async function api(p,b){const hd={'X-Staff-Pin':localStorage.sw_pin||''};const o=b?{method:'POST',headers:{...hd,'Content-Type':'application/json'},body:JSON.stringify({date:S?.date,staff:staffEl.value.trim(),...b})}:{headers:hd};
+async function api(p,b){if(b&&!staffEl.value.trim())await askName();const hd={'X-Staff-Pin':localStorage.sw_pin||''};const o=b?{method:'POST',headers:{...hd,'Content-Type':'application/json'},body:JSON.stringify({date:S?.date,staff:staffEl.value.trim(),...b})}:{headers:hd};
  const r=await fetch(p,o), j=await r.json();
+ if(r.status==400&&j.name){await askName();return api(p,b)}
  if(r.status==401&&j.pin){const pin=prompt((localStorage.sw_pin?'Wrong PIN. ':'')+'Enter the Silkwood staff PIN');if(pin!==null){localStorage.sw_pin=pin.trim();return api(p,b)}throw j}
  if(!r.ok){toast(j.error||'Error');throw j} return j}
-function needStaff(){if(!staffEl.value.trim()){toast('Enter your name first (top right)');staffEl.focus();return false}localStorage.sw_staff=staffEl.value.trim();return true}
+function needStaff(){if(!staffEl.value.trim()){askName();return false}return true}
 async function load(d){S=await api('/api/day?date='+(d||dateEl.value||''));dateEl.value=S.date;render()}
 async function post(p,b){S=await api(p,b);render();return S}
 dateEl.onchange=()=>load(dateEl.value);
@@ -152,7 +163,7 @@ function taskDlg(id){const x=id?S.tasks.find(t=>t.id==id):{tab,repeat:'once',tit
  const val=s=>document.querySelector(s+' button.on').dataset.v;
  $('#fSave').onclick=async()=>{if(!$('#fT').value.trim())return toast('Type the task');await post('/api/task',{id,title:$('#fT').value,tab:val('#fTab'),repeat:val('#fR'),weekday:$('#fW').value,due_time:$('#fD').value});dlg.close();toast('Saved ✓')};
  if(id)$('#fDel').onclick=async()=>{if(confirm('Delete this task?')){await post('/api/task',{id,delete:1});dlg.close()}}}
-$('#fab').onclick=()=>taskDlg();
+$('#fab').onclick=()=>{if(needStaff())taskDlg()};
 const KN={fridge:'Fridges',freezer:'Freezers',kcheck:'Kitchen temp check points',prep:'Prep items',hotbox:'Hot box items'};
 function manage(kind){const its=items(kind),typ=kind=='kcheck';
  openDlg('Edit '+KN[kind],`${its.map(i=>`<div class="row"><input id="m${i.id}" value="${esc(i.name)}">${typ?`<select id="y${i.id}">${Object.entries(TYPES).map(([k,v])=>`<option value="${k}" ${i.type==k?'selected':''}>${v}</option>`).join('')}</select>`:''}
@@ -172,7 +183,7 @@ $('#histBtn').onclick=showHist;
 async function showHist(){const H=await api('/api/history');
  openDlg('History',`<div class="hist">${H.map(d=>`<div class="hd"><div class="ring" style="--p:${Math.round((d.summary.tabs.kitchen.progress+d.summary.tabs.shop.progress)/2)}"><span>${Math.round((d.summary.tabs.kitchen.progress+d.summary.tabs.shop.progress)/2)}%</span></div>
  <div style="flex:1"><b>${d.date}</b> ${d.locked?'🔒 '+esc(d.locked.staff)+' '+d.locked.at.slice(11,16):'<span class="missing">not submitted</span>'}<br>
- <span class="mini">${d.summary.tasks_done}/${d.summary.tasks_total} tasks · ${d.logs} entries · ${d.summary.missing} missing</span>${d.summary.alerts.length?`<br><span class="missing">⚠ ${d.summary.alerts.map(esc).join(' · ')}</span>`:''}</div>
+ <span class="mini">${d.staff?.length?'👤 '+d.staff.map(esc).join(', ')+'<br>':''}${d.summary.tasks_done}/${d.summary.tasks_total} tasks · ${d.logs} entries · ${d.summary.missing} missing</span>${d.summary.alerts.length?`<br><span class="missing">⚠ ${d.summary.alerts.map(esc).join(' · ')}</span>`:''}</div>
  <button class="btn ghost" onclick="dlg.close();load('${d.date}')">Open</button></div>`).join('')||'<p>No days yet.</p>'}</div>`)}
 load().then(()=>{if(location.hash=='#add')taskDlg();if(location.hash=='#history')showHist()});
 setInterval(()=>{if(!dlg.open&&document.activeElement.tagName!='INPUT'&&document.activeElement.tagName!='SELECT')load(dateEl.value)},60000);
