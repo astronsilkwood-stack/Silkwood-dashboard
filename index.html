@@ -1,328 +1,334 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#C62828"><meta name="apple-mobile-web-app-capable" content="yes">
-<title>Silkwood Daily Ops</title>
+<meta name="theme-color" content="#0f172a"><meta name="apple-mobile-web-app-capable" content="yes">
+<title>Silkwood · Daily Ops</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{--red:#C62828;--red2:#8E0000;--lt:#FFEBEE;--ok:#2E7D32;--g:#666;--bd:#e6e6e6}
-*{box-sizing:border-box}body{margin:0;font:16px/1.35 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#fff;color:#222}
-header{background:var(--red);color:#fff;padding:12px 16px calc(12px) ;position:sticky;top:0;z-index:5}
-.top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.brand{font-weight:800;font-size:20px;letter-spacing:.5px;flex:1}
-.brand small{display:block;font-weight:500;font-size:12px;opacity:.9}
-header input{border:0;border-radius:10px;padding:10px;font-size:16px;min-height:44px}
-.hbtn{background:#fff;color:var(--red);border:0;border-radius:10px;padding:10px 14px;font-weight:700;min-height:44px;font-size:15px}
-.sum{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}.chip{background:rgba(255,255,255,.16);border-radius:12px;padding:8px 12px;font-size:14px}
-.chip b{font-size:18px;display:block}.chip.alert{background:#fff;color:var(--red)}
-.tabs{display:flex;border-bottom:1px solid var(--bd);position:sticky;top:var(--hh,150px);background:#fff;z-index:4}
-.tab{flex:1;display:flex;align-items:center;justify-content:center;gap:10px;padding:12px;font-weight:700;font-size:17px;border:0;background:#fff;color:var(--g);border-bottom:4px solid transparent;min-height:64px}
-.tab.on{color:var(--red);border-color:var(--red)}
-.ring{--p:0;width:44px;height:44px;border-radius:50%;background:conic-gradient(var(--red) calc(var(--p)*1%),#eee 0);display:grid;place-items:center;font-size:12px}
-.ring span{background:#fff;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;color:#222}
-main{max-width:1100px;margin:0 auto;padding:12px 12px 120px;display:grid;gap:14px;grid-template-columns:1fr}
-@media(min-width:760px){main{grid-template-columns:1fr 1fr}.wide{grid-column:1/-1}}
-.card{border:1px solid var(--bd);border-radius:16px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
-.card h2{margin:0 0 10px;font-size:18px;display:flex;align-items:center;gap:8px}.card h2 .sp{flex:1}
-.bar{height:8px;background:#eee;border-radius:9px;overflow:hidden;margin:-4px 0 10px}.bar i{display:block;height:100%;background:var(--red)}
-.mini{font-size:13px;color:var(--g)}
-.edit{background:#fff;border:1px solid var(--bd);border-radius:10px;padding:8px 12px;color:var(--red);font-weight:600;min-height:40px}
-.task{display:flex;align-items:center;gap:12px;padding:10px 4px;border-top:1px solid #f1f1f1;min-height:60px}
-.chk{width:44px;height:44px;border-radius:12px;border:3px solid var(--red);background:#fff;flex:none;font-size:24px;color:#fff;display:grid;place-items:center}
-.done .chk{background:var(--red)}.done .tt{text-decoration:line-through;color:var(--g)}
-.tt{flex:1}.tag{font-size:12px;background:var(--lt);color:var(--red2);border-radius:8px;padding:2px 7px;margin-left:4px;white-space:nowrap}
-.dots{border:0;background:none;font-size:22px;min-width:44px;min-height:44px;color:var(--g)}
-.unit{display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid #f1f1f1;flex-wrap:wrap}
-.unit .nm{flex:1;min-width:130px;font-weight:600}.unit .nm .mini{font-weight:400}
-input,select{font-size:17px;padding:10px;border:1px solid #ccc;border-radius:10px;min-height:48px;background:#fff}
-.num{width:80px}.sign{min-width:44px;min-height:48px;border-radius:12px;border:2px solid var(--bd);background:#fff;font-size:22px;font-weight:800;color:#555}.sign.on{background:#1565C0;border-color:#1565C0;color:#fff}.btn{background:var(--red);color:#fff;border:0;border-radius:12px;padding:12px 18px;font-size:16px;font-weight:700;min-height:48px}
-.btn.ghost{background:#fff;color:var(--red);border:2px solid var(--red)}.btn:disabled{opacity:.4}
-.read{font-weight:700;border-radius:8px;padding:4px 8px;background:#E8F5E9;color:var(--ok)}.read.bad{background:var(--red);color:#fff}
-.missing{color:var(--red);font-size:13px;font-weight:600}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}.row>*{flex:1;min-width:110px}
-table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:7px 4px;border-top:1px solid #f1f1f1;text-align:left}
-tr.bad td{color:var(--red);font-weight:700}
-.fab{position:fixed;right:16px;bottom:88px;background:var(--red);color:#fff;border:0;border-radius:32px;padding:16px 22px;font-size:18px;font-weight:800;box-shadow:0 4px 12px rgba(198,40,40,.4);z-index:6}
-.foot{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--bd);padding:10px 16px calc(10px + env(safe-area-inset-bottom));display:flex;gap:10px;z-index:6}
-.foot .btn{flex:1;font-size:18px}
-.lockbar{background:var(--lt);color:var(--red2);padding:10px 16px;font-weight:700;text-align:center}
-dialog{border:0;border-radius:18px;padding:0;width:min(560px,94vw);max-height:90vh}dialog::backdrop{background:rgba(0,0,0,.45)}
-.dh{background:var(--red);color:#fff;padding:14px 18px;font-weight:800;font-size:19px;display:flex}.dh span{flex:1}.dh button{background:none;border:0;color:#fff;font-size:24px}
-.db{padding:16px 18px;display:grid;gap:12px}.db label{font-weight:600;font-size:14px;display:grid;gap:4px}
-.seg{display:flex;border:2px solid var(--red);border-radius:12px;overflow:hidden}.seg button{flex:1;border:0;background:#fff;color:var(--red);font-weight:700;font-size:16px;min-height:50px}
-.seg button.on{background:var(--red);color:#fff}
-.hist{display:grid;gap:10px}.hd{flex-wrap:wrap;border:1px solid var(--bd);border-radius:14px;padding:12px;display:flex;gap:12px;align-items:center}
-.ex{font-size:11px;background:#FFF3E0;color:#E65100;border-radius:6px;padding:1px 6px;margin-left:6px;font-weight:600}
-.toast{position:fixed;left:50%;bottom:150px;transform:translateX(-50%);background:#222;color:#fff;padding:12px 18px;border-radius:12px;opacity:0;transition:.3s;z-index:9}.toast.on{opacity:1}
+:root{--ink:#0f172a;--sl:#64748b;--sl2:#475569;--bd:#e5e7eb;--bg:#f8fafc;--ok:#0f9d6e;--okl:#e7f6ef;--bad:#dc2626;--badl:#fef2f2;--amb:#d97706;--ambl:#fff7ed;--or:#f97316;--blue:#2563eb;--bluel:#eff6ff;--pur:#7c3aed;--purl:#f5f3ff;--yel:#ca8a04;--yell:#fefce8;--mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace}
+*{box-sizing:border-box}html,body{overflow-x:hidden}
+body{margin:0;font:16px/1.45 Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+.mono,.num,.stat b,.clock,.lbl,th{font-family:var(--mono)}
+.lbl{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--sl);font-weight:600}
+button,input,select,textarea{font:inherit;color:inherit}
 [hidden]{display:none!important}
-/* ---- usability overhaul: big targets, high contrast ---- */
-body{font-size:18px;color:#111}.mini{font-size:15px;color:#444}
-.chk{width:60px;height:60px;border-radius:16px;font-size:32px}
-.task{min-height:76px;padding:10px 10px;border:2px solid #eee;border-radius:14px;margin-top:10px}
-.task .tt{font-size:19px;font-weight:600}.task.late{border-color:var(--red);background:var(--lt)}
-.late-tag{background:var(--red);color:#fff;border-radius:8px;padding:2px 8px;font-size:14px;font-weight:800;margin-left:6px}
-.dots{min-width:52px;min-height:52px}
-.btn{min-height:56px;font-size:19px;border-radius:14px}.edit{min-height:48px;font-size:15px}
-input,select{min-height:56px;font-size:19px}
-.left{border-radius:16px;padding:14px 16px;margin-bottom:2px;background:#fff;border:3px solid var(--red)}
-.left.alldone{border-color:var(--ok)}.left h3{margin:0 0 8px;font-size:22px}.left .bar{height:16px;margin:0}
-.left .bar i{transition:width .4s}.left.alldone .bar i{background:var(--ok)}
-.unit{display:block;border:2px solid #eee;border-radius:14px;padding:12px;margin-top:10px}
-.unit.todo{border-color:var(--red);border-style:dashed}.unit.ok{border-color:var(--ok)}.unit.badu{border-color:var(--red);background:var(--lt)}
-.unit .nm{font-size:19px;font-weight:700;margin-bottom:6px}
-.status{font-size:18px;font-weight:800;margin:4px 0 10px}.status.ok{color:var(--ok)}.status.bad{color:#fff;background:var(--red);border-radius:10px;padding:8px 10px}.status.todo{color:var(--red)}
-.entry{display:flex;gap:8px;align-items:stretch}.entry .num{flex:1;width:auto;min-width:0;font-size:26px;font-weight:700;text-align:center;min-height:60px}
-.entry .btn{min-width:96px;font-size:20px;min-height:60px}.sign{min-width:60px;min-height:60px;font-size:30px;border-radius:14px}
-.flash{animation:fl 1.2s}@keyframes fl{0%{transform:scale(1.03);box-shadow:0 0 0 6px rgba(46,125,50,.35)}100%{transform:none;box-shadow:none}}
-details.donelist summary{font-size:17px;font-weight:700;color:#444;padding:14px 4px;min-height:52px;cursor:pointer}
-.toast{bottom:110px;font-size:18px;display:flex;gap:14px;align-items:center;pointer-events:none}.toast.on{pointer-events:auto}
-.toast button{background:#fff;color:#111;border:0;border-radius:10px;font-weight:800;font-size:17px;min-height:48px;padding:0 16px}
-.foot .btn{min-height:60px}.foot .add{flex:0 0 auto;background:#fff;color:var(--red);border:3px solid var(--red)}
-.fab{display:none}
-/* guided temp check (ideas from Jolt / SafetyCulture / FoodDocs) */
-#walk{width:100vw;max-width:520px;height:100dvh;max-height:100dvh;margin:auto;border-radius:0;padding:0}
-.wk{display:flex;flex-direction:column;height:100%;padding:12px 16px calc(12px + env(safe-area-inset-bottom));gap:10px}
-.wtop{display:flex;align-items:center;font-weight:800;font-size:18px;color:#444}.wtop span{flex:1}.wx{font-size:26px;border:0;background:none;min-width:52px;min-height:52px}
-.wbar{height:10px;background:#eee;border-radius:9px;overflow:hidden}.wbar i{display:block;height:100%;background:var(--red);transition:width .3s}
-.wname{font-size:26px;font-weight:800;margin:6px 0 0}.wtarget{font-size:17px;color:#444}
-.wval{display:flex;align-items:center;gap:10px;margin:6px 0}.wval .sign{min-width:72px;min-height:72px;font-size:36px}
-.wdisp{flex:1;font-size:48px;font-weight:800;text-align:center;border:3px solid #ccc;border-radius:16px;min-height:72px;display:grid;place-items:center}
-.wdisp.empty{color:#aaa}.wdisp.bad{border-color:var(--red);color:var(--red)}.wdisp.ok{border-color:var(--ok);color:var(--ok)}
-.chips{display:flex;gap:8px;flex-wrap:wrap}.chip2{flex:1;min-width:64px;min-height:52px;border-radius:14px;border:2px solid var(--bd);background:#fff;font-size:20px;font-weight:700}
-.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;flex:1;min-height:0}.pad button{font-size:30px;font-weight:700;border:0;border-radius:14px;background:#f2f2f2;min-height:56px}
-.wact{display:flex;gap:8px}.wact .btn{flex:1;min-height:64px;font-size:21px}
-.fix{display:grid;gap:8px}.fix button{min-height:60px;font-size:19px;font-weight:700;border-radius:14px;border:2px solid var(--red);background:#fff;color:var(--red);text-align:left;padding:0 16px}
-.startchk{width:100%;min-height:72px;font-size:22px;border-radius:18px}
-.qty{display:flex;gap:6px;align-items:center}.qty input{flex:1;min-width:0;text-align:center;font-size:22px;font-weight:700}.qty button{min-width:56px;min-height:56px;border-radius:14px;border:2px solid var(--bd);background:#fff;font-size:20px;font-weight:800}.hbtn{min-height:48px}
-main{grid-template-columns:minmax(0,1fr)}@media(min-width:760px){main{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
-.card{min-width:0;overflow-x:auto}.tt{min-width:0;overflow-wrap:anywhere}html,body{overflow-x:hidden}
-.areabig{font-size:28px;min-height:110px;border-radius:20px}.areabig+.areabig{background:#fff;color:var(--red);border:4px solid var(--red)}
-body.one .tabs{display:none}
-.shiftchip{background:#fff;color:var(--ok);border-radius:10px;padding:0 12px;font-weight:800;min-height:48px;display:inline-flex;align-items:center;font-size:16px}
-.shiftbtn{width:100%;font-size:26px;min-height:80px;border-radius:18px}.shiftbtn.start{background:var(--ok)}.shiftbtn.end{background:#fff;color:var(--red);border:4px solid var(--red)}
-</style></head><body>
-<header id="hdr"><div class="top">
- <div class="brand">SILKWOOD UNITED <small>Daily operations · servo + kitchen</small></div>
- <input type="date" id="date" aria-label="Date"><input id="staff" type="hidden"><button class="hbtn" id="who" title="Change name">👤 <span id="whoName"></span> · Change name</button>
- <span class="shiftchip" id="shiftTxt" hidden></span><button class="hbtn" id="areaBtn"></button><button class="hbtn" id="histBtn">History</button></div>
- <div class="sum" id="sum"></div></header>
-<div class="lockbar" id="lockbar" hidden></div>
-<nav class="tabs" id="tabs">
- <button class="tab on" data-t="kitchen"><div class="ring" id="r-kitchen"><span>0%</span></div>Kitchen</button>
- <button class="tab" data-t="shop"><div class="ring" id="r-shop"><span>0%</span></div>Shop / Site</button></nav>
-<main id="main"></main>
-<button class="fab" id="fab">＋ Add task</button>
-<div class="foot"><button class="btn add" id="addBtn">＋ Task</button><button class="btn" id="submitBtn">Submit day ✓</button></div>
-<dialog id="walk"><div class="wk">
- <div class="wtop"><span id="wProg"></span><button class="wx" onclick="walkClose()" aria-label="Close">✕</button></div>
- <div class="wbar"><i id="wBar"></i></div>
- <div id="wBody"></div></div></dialog>
+.app{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:100vh}.app>div{min-width:0}.top input,.top select{width:auto}
+aside{background:#fff;border-right:1px solid var(--bd);position:sticky;top:0;height:100vh;display:flex;flex-direction:column;padding:18px 12px}
+.logo{font-weight:800;font-size:20px;letter-spacing:.06em;padding:4px 10px 18px;display:flex;align-items:center;gap:8px}.logo i{width:10px;height:10px;border-radius:3px;background:var(--or);display:inline-block}
+.logo span{color:var(--or)}.logo small{display:block;font:500 10px var(--mono);letter-spacing:.1em;color:var(--sl);text-transform:uppercase}
+nav a{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;color:var(--sl2);text-decoration:none;font-weight:500;font-size:15px;min-height:44px}
+nav a:hover{background:#f1f5f9}nav a.on{background:var(--ink);color:#fff}nav a .ic{width:20px;text-align:center}
+nav a .badge{margin-left:auto;font:600 11px var(--mono);background:var(--ambl);color:var(--amb);border-radius:99px;padding:1px 7px}nav a.on .badge{background:rgba(255,255,255,.15);color:#fff}
+.side-foot{margin-top:auto;font-size:12px;color:var(--sl);padding:8px 10px}
+.top{position:sticky;top:0;z-index:20;background:rgba(248,250,252,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:12px;padding:10px 24px;flex-wrap:wrap}
+.top .mlogo{display:none}.clock{font-size:14px;color:var(--sl2);flex:1;white-space:nowrap}
+.who{display:flex;align-items:center;gap:8px}.who select,.top input[type=date]{min-height:44px;border:1px solid var(--bd);border-radius:10px;background:#fff;padding:0 10px;font-size:15px}
+.who select{font-weight:600;max-width:200px}
+.shiftbtn{min-height:44px;border-radius:10px;border:1px solid var(--bd);background:#fff;padding:0 12px;font-weight:600;font-size:14px;cursor:pointer}.shiftbtn.on{border-color:var(--ok);color:var(--ok);background:var(--okl)}
+main{padding:24px;max-width:1180px;width:100%}
+.ph{margin:0 0 18px}.ph h1{margin:2px 0 4px;font-size:26px;font-weight:700;letter-spacing:-.02em}.ph p{margin:0;color:var(--sl)}
+.grid{display:grid;gap:16px}.g4{grid-template-columns:repeat(4,minmax(0,1fr))}.g3{grid-template-columns:repeat(3,minmax(0,1fr))}.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.card{background:#fff;border:1px solid var(--bd);border-radius:14px;padding:18px;min-width:0}
+.card h2{margin:0 0 4px;font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px}.card h2 .sp{flex:1}
+.card .help{color:var(--sl);font-size:14px;margin:0 0 12px}
+.stat{display:block;text-decoration:none;color:inherit}.stat b{display:block;font-size:30px;font-weight:600;margin:6px 0 2px;letter-spacing:-.02em}.stat .sub{font-size:13px;color:var(--sl)}.stat .sub.bad{color:var(--bad);font-weight:600}
+.stat:hover{border-color:#cbd5e1}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:48px;padding:0 18px;border-radius:10px;border:1px solid var(--ink);background:var(--ink);color:#fff;font-weight:600;font-size:16px;cursor:pointer;text-decoration:none}
+.btn.ghost{background:#fff;color:var(--ink);border-color:var(--bd)}.btn.full{width:100%}.btn.ok{background:var(--ok);border-color:var(--ok)}.btn.danger{background:#fff;color:var(--bad);border-color:#fecaca}
+.btn:disabled{opacity:.4;cursor:not-allowed}.btn.sm{min-height:44px;padding:0 12px;font-size:14px}
+.link{color:var(--ink);font-weight:600;font-size:14px;text-decoration:underline;text-underline-offset:3px;background:none;border:0;cursor:pointer;min-height:44px;padding:0 4px}
+input,select,textarea{border:1px solid var(--bd);border-radius:10px;background:#fff;min-height:48px;padding:0 12px;font-size:17px;width:100%}textarea{padding:10px 12px;min-height:64px}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--ink);outline-offset:-1px}
+label.f{display:grid;gap:6px;font-size:14px;font-weight:600;color:var(--sl2)}label.f .lbl{font-weight:600}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}.row>*{flex:1;min-width:120px}.row>.nogrow{flex:0 0 auto;min-width:0}
+.seg{display:flex;background:#f1f5f9;border-radius:12px;padding:4px;gap:4px}.seg button{flex:1;min-height:44px;border:0;border-radius:9px;background:none;font-weight:600;font-size:15px;color:var(--sl2);cursor:pointer}
+.seg button.on{background:#fff;color:var(--ink);box-shadow:0 1px 2px rgba(15,23,42,.12)}.seg.water button.on[data-v=no]{background:var(--ok);color:#fff}.seg.water button.on[data-v=yes]{background:var(--bad);color:#fff}
+.pill{display:inline-flex;align-items:center;font:600 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;border-radius:99px;padding:3px 9px;white-space:nowrap}
+.pill.pend{background:var(--ambl);color:var(--amb)}.pill.ok{background:var(--okl);color:var(--ok)}.pill.bad{background:var(--badl);color:var(--bad)}.pill.grey{background:#f1f5f9;color:var(--sl2)}
+.tank{font:700 12px var(--mono);letter-spacing:.06em;border-radius:8px;padding:4px 10px;display:inline-block}
+.t-ulp{background:var(--bluel);color:var(--blue)}.t-dsl{background:var(--yell);color:var(--yel)}.t-p95{background:var(--purl);color:var(--pur)}
+.card.t-ulp,.card.t-dsl,.card.t-p95{background:#fff;color:inherit;border-top:4px solid}.card.t-ulp{border-top-color:var(--blue)}.card.t-dsl{border-top-color:#eab308}.card.t-p95{border-top-color:var(--pur)}
+table{width:100%;border-collapse:collapse;font-size:14px}th{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--sl);font-weight:600;text-align:left;padding:8px;border-bottom:1px solid var(--bd)}
+td{padding:10px 8px;border-bottom:1px solid #f1f5f9;vertical-align:middle}td.mono{font-family:var(--mono)}tr.bad td{color:var(--bad);font-weight:600}
+.tw{overflow-x:auto}
+.list{display:grid;gap:0}.li{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid #f1f5f9;min-height:56px}.li:first-child{border-top:0}.li .t{flex:1;min-width:0}.li .t b{font-weight:600}.li .t small{display:block;color:var(--sl);font-size:13px}
+.empty{color:var(--sl);text-align:center;padding:22px 10px;font-size:15px}
+.chk{width:44px;height:44px;flex:none;border-radius:12px;border:2px solid #cbd5e1;background:#fff;display:grid;place-items:center;font-size:22px;color:#fff;cursor:pointer}
+.task.done .chk{background:var(--ok);border-color:var(--ok)}.task.done .t b{color:var(--sl);text-decoration:line-through}.task.late{background:var(--ambl);border-radius:10px;padding-left:8px;padding-right:8px}
+.task{cursor:pointer}.qty{font:700 14px var(--mono);background:#f1f5f9;border-radius:8px;padding:6px 10px;white-space:nowrap}.task.done .qty{opacity:.5}
+.edit{border:0;background:none;color:var(--sl);font-size:18px;min-width:44px;min-height:44px;cursor:pointer;border-radius:10px}.edit:hover{background:#f1f5f9}
+.bar{height:8px;background:#f1f5f9;border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;background:var(--ok);transition:width .3s}
+.alert{background:var(--badl);border:1px solid #fecaca;color:#991b1b;border-radius:12px;padding:12px 14px;font-weight:600;margin-bottom:16px}
+.lockbar{background:var(--ambl);border:1px solid #fed7aa;color:#9a3412;border-radius:12px;padding:10px 14px;font-weight:600;margin-bottom:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.chips{display:flex;gap:8px;flex-wrap:wrap}.chip{min-height:44px;padding:0 14px;border-radius:99px;border:1px solid var(--bd);background:#fff;font-weight:600;font-size:15px;cursor:pointer}.chip.on{background:var(--ink);border-color:var(--ink);color:#fff}
+.tempin{display:flex;gap:8px;align-items:stretch}.tempin input{font:600 22px var(--mono);text-align:center}.sign{flex:none;width:52px;min-height:48px;border-radius:10px;border:1px solid var(--bd);background:#fff;font:700 22px var(--mono);cursor:pointer}.sign.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.tempin input.ok{border-color:var(--ok);background:var(--okl);color:var(--ok)}.tempin input.bad{border-color:var(--bad);background:var(--badl);color:var(--bad)}
+.fb{font-size:14px;font-weight:600;min-height:20px;margin-top:6px}.fb.ok{color:var(--ok)}.fb.bad{color:var(--bad)}
+.unit{border:1px solid var(--bd);border-radius:12px;padding:14px;display:grid;gap:8px}.unit.ok{border-color:#a7f3d0}.unit.bad{border-color:#fecaca;background:#fffafa}
+.unit .nm{font-weight:600;display:flex;gap:8px;align-items:center}.unit .nm .sp{flex:1}
+.hb.over{background:var(--badl);border-radius:10px;padding-left:8px;padding-right:8px}.timer{font:600 15px var(--mono)}.hb.over .timer{color:var(--bad)}
+.group-h{display:flex;align-items:center;gap:10px;margin:18px 0 6px}.group-h:first-child{margin-top:0}.group-h .sp{flex:1}
+dialog{border:0;border-radius:16px;padding:0;width:min(560px,94vw);max-height:90vh;color:var(--ink)}dialog::backdrop{background:rgba(15,23,42,.45)}
+.dh{padding:16px 18px;border-bottom:1px solid var(--bd);font-weight:700;font-size:17px;display:flex;align-items:center}.dh span{flex:1}.dh button{border:0;background:none;font-size:22px;min-width:44px;min-height:44px;cursor:pointer}
+.db{padding:16px 18px;display:grid;gap:12px}
+.toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);background:var(--ink);color:#fff;padding:12px 18px;border-radius:12px;opacity:0;transition:.25s;z-index:99;display:flex;gap:12px;align-items:center;font-weight:600;pointer-events:none;max-width:92vw}
+.toast.on{opacity:1;transform:translate(-50%,0);pointer-events:auto}.toast.good{background:var(--ok)}.toast.warn{background:var(--bad)}.toast button{background:#fff;color:var(--ink);border:0;border-radius:8px;min-height:40px;padding:0 12px;font-weight:700}
+#walk{width:100vw;max-width:480px;height:100dvh;max-height:100dvh;border-radius:0}.wk{display:flex;flex-direction:column;height:100%;padding:14px 16px calc(14px + env(safe-area-inset-bottom));gap:12px}
+.wname{font-size:24px;font-weight:700}.wdisp{flex:1;font:600 44px var(--mono);text-align:center;border:2px solid var(--bd);border-radius:14px;min-height:72px;display:grid;place-items:center}.wdisp.ok{border-color:var(--ok);color:var(--ok);background:var(--okl)}.wdisp.bad{border-color:var(--bad);color:var(--bad);background:var(--badl)}.wdisp.empty{color:#cbd5e1}
+.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;flex:1;min-height:0}.pad button{font:600 26px var(--mono);border:0;border-radius:12px;background:#f1f5f9;min-height:52px;cursor:pointer}
+@media(max-width:900px){
+ .app{grid-template-columns:1fr}aside{position:sticky;top:0;z-index:30;height:auto;flex-direction:row;padding:0;border-right:0;border-bottom:1px solid var(--bd);overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+ aside .logo,.side-foot{display:none}nav{display:flex;gap:4px;padding:8px;white-space:nowrap}nav a{padding:8px 12px;font-size:14px}nav a .badge{margin-left:4px}
+ .top{position:static;padding:10px 14px}.top .mlogo{display:block;font-weight:800;letter-spacing:.06em;width:100%}.top .mlogo span{color:var(--or)}.clock{font-size:12px}
+ main{padding:16px 14px 40px}.g4{grid-template-columns:repeat(2,minmax(0,1fr))}.g3,.g2{grid-template-columns:1fr}.ph h1{font-size:22px}.stat b{font-size:26px}.card{padding:14px}
+ .who{width:100%}.who select{flex:1;max-width:none}
+}
+</style>
+</head><body><div class="app">
+<aside><div class="logo"><i></i><div>SILK<span>WOOD</span><small>Daily ops · servo + kitchen</small></div></div><nav id="nav"></nav><div class="side-foot">Food safety &amp; daily ops</div></aside>
+<div><div class="top"><div class="mlogo">SILK<span>WOOD</span></div><div class="clock" id="clock"></div><input type="date" id="date" aria-label="Day to view">
+<div class="who"><select id="whoSel" aria-label="Who's on shift?"></select><button class="shiftbtn" id="shiftBtn" hidden></button></div></div>
+<main id="main"><div class="empty">Loading…</div></main></div></div>
+<dialog id="walk"><div class="wk"><div style="display:flex;align-items:center;font-weight:700"><span id="wProg" style="flex:1" class="mono"></span><button class="edit" onclick="walkClose()" aria-label="Close">✕</button></div><div class="bar"><i id="wBar"></i></div><div id="wBody" style="display:flex;flex-direction:column;gap:12px;flex:1;min-height:0"></div></div></dialog>
 <dialog id="dlg"><div class="dh"><span id="dt"></span><button onclick="dlg.close()" aria-label="Close">✕</button></div><div class="db" id="dbody"></div></dialog>
-<dialog id="nameDlg" style="max-width:360px"><form method="dialog" id="nameForm" class="db" style="padding:20px">
- <h2 style="margin:0 0 6px">Your name</h2><p class="mini" style="margin:0 0 12px">Every tick, log and submission is recorded under this name. It's remembered on this phone.</p>
- <input id="nameIn" placeholder="e.g. Sam" autocomplete="name" maxlength="40" style="width:100%;font-size:18px;padding:12px;box-sizing:border-box" required>
- <button class="btn" style="width:100%;margin-top:12px" type="submit">Save name</button></form></dialog>
-<dialog id="areaDlg" style="max-width:380px"><div class="db" style="padding:20px">
- <h2 style="margin:0;font-size:26px">Where are you working?</h2>
- <button class="btn areabig" data-a="kitchen">🍳 Kitchen</button><button class="btn areabig" data-a="shop">🏪 Shop / Site</button>
- <button class="edit" id="mgrBtn" style="margin-top:6px">🔑 Manager — see both (PIN)</button></div></dialog>
+<dialog id="nameDlg" style="max-width:380px"><form method="dialog" id="nameForm" class="db" style="padding:20px"><div class="lbl">Who's on shift?</div><h2 style="margin:0">Your name</h2><p class="help" style="margin:0;color:var(--sl)">Everything you tick or log is saved under this name. This phone remembers it.</p>
+<input id="nameIn" placeholder="e.g. Sam" autocomplete="name" maxlength="40" required><button class="btn full" type="submit">Save name</button></form></dialog>
 <div class="toast" id="toast"></div>
 <script>
-const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let S=null, tab=location.hash.includes('shop')?'shop':'kitchen';
-const staffEl=$('#staff'), dateEl=$('#date'); staffEl.value=localStorage.sw_staff||'';
-const nameDlg=$('#nameDlg'); let nameWait=null;
-function showWho(){$('#whoName').textContent=staffEl.value||'No name'}
-function askName(){$('#nameIn').value=staffEl.value;if(!nameDlg.open)nameDlg.showModal();setTimeout(()=>$('#nameIn').focus(),50);return new Promise(r=>nameWait=r)}
-nameDlg.addEventListener('cancel',e=>{if(!staffEl.value)e.preventDefault()});
-$('#nameForm').onsubmit=e=>{const n=$('#nameIn').value.trim().slice(0,40);if(!n){e.preventDefault();return}staffEl.value=n;localStorage.sw_staff=n;showWho();toast('Hi '+n+' 👋');nameWait&&nameWait(n);nameWait=null};
-$('#who').onclick=askName; showWho();
-const areaDlg=$('#areaDlg'); let mgr=sessionStorage.sw_mgr=='1';
-function applyArea(){const a=localStorage.sw_area;document.body.classList.toggle('one',!!a&&!mgr);if(a&&!mgr)tab=a;
- $('#areaBtn').textContent=mgr?'🔑 Manager · exit':'⇄ Switch to '+(tab=='kitchen'?'Shop':'Kitchen');if(S)render()}
-function askArea(){if(!areaDlg.open)areaDlg.showModal()}
-areaDlg.addEventListener('cancel',e=>{if(!localStorage.sw_area)e.preventDefault()});
-document.querySelectorAll('.areabig').forEach(b=>b.onclick=()=>{localStorage.sw_area=b.dataset.a;mgr=false;sessionStorage.sw_mgr='';areaDlg.close();applyArea();scrollTo(0,0)});
-$('#mgrBtn').onclick=async()=>{const pin=prompt('Manager PIN');if(!pin)return;const r=await fetch('/api/pincheck?pin='+encodeURIComponent(pin));
- if(!r.ok)return toast('Wrong PIN');mgr=true;sessionStorage.sw_mgr='1';sessionStorage.sw_mpin=pin;if(!localStorage.sw_area)localStorage.sw_area=tab;areaDlg.close();applyArea()};
-$('#areaBtn').onclick=()=>{if(mgr){mgr=false;sessionStorage.sw_mgr='';applyArea();return}localStorage.sw_area=tab=='kitchen'?'shop':'kitchen';applyArea();scrollTo(0,0);toast(tab=='kitchen'?'🍳 Kitchen':'🏪 Shop / Site')};
-(async()=>{if(!staffEl.value)await askName();if(!localStorage.sw_area)askArea()})(); applyArea();
-const nowHM=()=>new Date().toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'Australia/Brisbane'});
-const DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'], TYPES={fridge:'Fridge ≤5°C',freezer:'Freezer ≤-15°C',hot:'Hot hold ≥60°C',core:'Cooked core ≥75°C'};
-let toastT;function toast(m,act,fn){const t=$('#toast');t.textContent=m;if(act){const b=document.createElement('button');b.textContent=act;b.onclick=()=>{t.classList.remove('on');fn()};t.appendChild(b)}
- t.classList.add('on');clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('on'),act?6000:2500)}
-async function api(p,b){if(b&&!staffEl.value.trim())await askName();const hd={'X-Staff-Pin':localStorage.sw_pin||''};const o=b?{method:'POST',headers:{...hd,'Content-Type':'application/json'},body:JSON.stringify({date:S?.date,staff:staffEl.value.trim(),...b})}:{headers:hd};
- const r=await fetch(p,o), j=await r.json();
- if(r.status==400&&j.name){await askName();return api(p,b)}
- if(r.status==401&&j.pin){const pin=prompt((localStorage.sw_pin?'Wrong PIN. ':'')+'Enter the Silkwood staff PIN');if(pin!==null){localStorage.sw_pin=pin.trim();return api(p,b)}throw j}
- if(!r.ok){toast(j.error||'Error');throw j} return j}
-function needStaff(){if(!staffEl.value.trim()){askName();return false}return true}
-async function load(d){S=await api('/api/day?date='+(d||dateEl.value||''));dateEl.value=S.date;render()}
-async function post(p,b){S=await api(p,b);render();return S}
-dateEl.onchange=()=>load(dateEl.value);
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{tab=b.dataset.t;history.replaceState(0,'','#'+tab);render();scrollTo(0,0)});
-const items=k=>S.items.filter(i=>i.kind==k), logs=(k,r)=>S.logs.filter(l=>l.kind==k&&(r==null||l.ref==String(r)));
-function ring(id,p){const e=$(id);e.style.setProperty('--p',p);e.firstChild.textContent=p+'%'}
-function render(){
- // keep the viewport exactly where it was and keep anything typed in other boxes
- const y=scrollY, typed={};document.querySelectorAll('#main input.num[id]').forEach(e=>{if(e.value)typed[e.id]=e.value});
- const signs={};document.querySelectorAll('#main .sign').forEach(e=>signs[e.id]=e.classList.contains('on'));
- const H=document.documentElement.scrollHeight;$('#main').style.minHeight=H+'px';
- _render(); for(const[k,v]of Object.entries(typed)){const e=document.getElementById(k);if(e&&!e.value)e.value=v}
- for(const[k,v]of Object.entries(signs)){const e=document.getElementById(k);if(e&&e.classList.contains('on')!=v){e.classList.toggle('on',v);e.textContent=v?'−':'±'}}
- scrollTo(0,y);requestAnimationFrame(()=>{scrollTo(0,y);$('#main').style.minHeight=''; if(scrollY!=y)scrollTo(0,Math.min(y,document.documentElement.scrollHeight-innerHeight))})}
-const hm12=t=>{if(!t)return'';let[h,m]=t.slice(11,16).split(':').map(Number);return(h%12||12)+':'+String(m).padStart(2,'0')+(h<12?'am':'pm')};
-const myShift=()=>S.date==S.today&&(S.shifts||[]).find(x=>x.staff==staffEl.value.trim()&&!x.end_at);
-function shiftCard(){if(S.date!=S.today||!staffEl.value)return'';const m=myShift();
- return `<section class="wide">${m?`<button class="btn shiftbtn end keep" onclick="endShift()">■ End shift</button>`:`<button class="btn shiftbtn start keep" onclick="startShift()">▶ Start shift</button>`}</section>`}
-async function startShift(){if(!needStaff())return;await post('/api/shift',{action:'start',area:localStorage.sw_area||tab});toast('▶ Shift started '+hm12(myShift()?.start_at))}
-function endShift(){const m=myShift();if(!m)return;const h=((Date.now()-new Date(m.start_at.replace(' ','T')+'+10:00'))/36e5).toFixed(1);
- openDlg('End shift?',`<p style="font-size:20px">Started <b>${hm12(m.start_at)}</b> · about <b>${h} h</b></p><div class="row"><button class="btn ghost" onclick="dlg.close()">Cancel</button><button class="btn" id="cEnd">Yes, end shift ■</button></div>`);
- $('#cEnd').onclick=async()=>{await post('/api/shift',{action:'end'});dlg.close();const x=S.shifts.filter(x=>x.staff==staffEl.value.trim()).pop();toast('■ Shift ended · '+(x?.hours??'')+' h')}}
-const AREA={kitchen:'🍳 Kitchen',shop:'🏪 Shop'};
-function shiftTable(sh,edit){if(!sh?.length)return'<p class="mini">No shifts.</p>';return `<table><tr><th>Name</th><th>Area</th><th>Start</th><th>End</th><th>Hours</th>${edit?'<th></th>':''}</tr>${sh.map(x=>`<tr><td>${esc(x.staff)}</td><td>${AREA[x.area]||''}</td><td>${hm12(x.start_at)}</td><td>${x.end_at?hm12(x.end_at):'<b style="color:var(--ok)">on shift</b>'}</td><td>${x.hours??''}</td>${edit?`<td><button class="edit keep" onclick="fixShift(${x.id})">Fix</button></td>`:''}</tr>`).join('')}</table>`}
-async function testEmail(){toast('✉ Sending…');const r=await (await fetch('/api/test-email?pin='+encodeURIComponent(sessionStorage.sw_mpin||'')+'&staff='+encodeURIComponent(staffEl.value))).json();
- toast(r.status=='sent'?'✅ Test email sent to '+r.info:r.status=='not_configured'?'✉ Email not set up on the server':'⚠ Email failed: '+(r.info||r.error||''))}
-async function fixShift(id){const x=S.shifts.find(s=>s.id==id);
- openDlg('Fix shift — '+x.staff,`<label>Start<input type="time" id="fsS" value="${x.start_at.slice(11,16)}"></label><label>End<input type="time" id="fsE" value="${x.end_at?x.end_at.slice(11,16):''}"></label><button class="btn" id="fsSave">Save</button>`);
- $('#fsSave').onclick=async()=>{await post('/api/shift/fix',{id,start:$('#fsS').value,end:$('#fsE').value,pin:sessionStorage.sw_mpin});dlg.close();toast('Saved ✓')}}
-/* ---------- Guided temperature check ---------- */
-const PRESET={fridge:[2,3,4,5],freezer:[-16,-18,-20,-22],hot:[60,65,70,75],core:[75,80,85,90]};
-const FIXES={max:['Closed door / checked seal','Moved food to another unit','Turned thermostat down','Will re-check in 30 min'],min:['Reheated food','Turned heat up','Threw food out','Will re-check in 30 min']};
-const walkUnits=()=>tab=='kitchen'?items('kcheck').map(i=>[i,'ktemp']):[...items('fridge'),...items('freezer')].map(i=>[i,'stemp']);
-const pendingUnits=()=>walkUnits().filter(([i,lk])=>!logs(lk,i.id).length);
-function walkStartBtn(){if(S.locked||S.date!=S.today)return'';const all=walkUnits(),n=pendingUnits().length;if(!all.length)return'';
- return `<section class="wide"><button class="btn startchk keep" onclick="walkStart(${n?0:1})">${n?`🌡 Check temps — ${n} to do`:'🌡 All temps done · check again'}</button></section>`}
-let W=null;const walk=$('#walk');
-function walkStart(all){if(!needStaff())return;const q=all?walkUnits():pendingUnits();if(!q.length)return toast('All temps done ✅');W={q,i:0,v:'',neg:false,done:0};walkShow();walk.showModal()}
-function walkClose(){walk.close();W=null}
-function rule(i){return S.rules[i.type]||null}
-function judge(i,v){const r=rule(i);if(!r||v==null||isNaN(v))return null;return r[0]=='max'?v<=r[1]:v>=r[1]}
-function wNum(){if(W.v===''||W.v==='.')return null;const n=parseFloat(W.v);return W.neg?-n:n}
-function walkShow(){
- if(W.i>=W.q.length){$('#wProg').textContent='Done';$('#wBar').style.width='100%';
-  $('#wBody').innerHTML=`<div style="flex:1;display:grid;place-items:center;text-align:center"><div><div style="font-size:72px">✅</div><div class="wname">${W.done} temp${W.done==1?'':'s'} logged</div><p class="wtarget">${pendingUnits().length?pendingUnits().length+' still to do (skipped)':'All temps done for '+(tab=='kitchen'?'Kitchen':'Shop')}</p></div></div>
-  <div class="wact"><button class="btn" onclick="walkClose()">Finish</button></div>`;return}
- const [it,lk]=W.q[W.i],r=rule(it),fz=it.type=='freezer';if(W.v==='')W.neg=fz;
- $('#wProg').textContent=`${W.i+1} of ${W.q.length}`;$('#wBar').style.width=(100*W.i/W.q.length)+'%';
- const v=wNum(),ok=judge(it,v),last=logs(lk,it.id).pop();
- $('#wBody').innerHTML=`<div><div class="wname">${ICON[it.type]||'🌡'} ${esc(it.name)}</div>
-  <div class="wtarget">${r?(r[0]=='max'?'Should be '+r[1]+'°C or colder':'Should be '+r[1]+'°C or hotter'):''}${last?' · last '+last.data.temp+'°C '+last.at.slice(11,16):''}</div></div>
-  <div class="wval"><button class="sign ${W.neg?'on':''}" onclick="W.neg=!W.neg;walkShow()" aria-label="Minus">${W.neg?'−':'±'}</button>
-  <div class="wdisp ${v==null?'empty':ok?'ok':'bad'}">${v==null?(fz?'−__':'__'):(W.neg?'−':'')+W.v}°C</div></div>
-  <div class="chips">${(PRESET[it.type]||[]).map(p=>`<button class="chip2" onclick="W.neg=${p<0};W.v='${Math.abs(p)}';walkShow()">${p<0?'−'+Math.abs(p):p}</button>`).join('')}</div>
-  <div class="pad">${['1','2','3','4','5','6','7','8','9','.','0','⌫'].map(k=>`<button onclick="wKey('${k}')">${k}</button>`).join('')}</div>
-  <div class="wact"><button class="btn ghost" style="flex:0 0 30%" onclick="W.i++;W.v='';walkShow()">Skip</button><button class="btn" onclick="walkLog()" ${v==null?'disabled':''}>${v==null?'Enter temp':ok===false?'⚠ Log':'✓ Log & next'}</button></div>`}
-function wKey(k){if(k=='⌫')W.v=W.v.slice(0,-1);else if(k=='.'){if(!W.v.includes('.'))W.v+=(W.v?'':'0')+'.'}else if(W.v.replace('.','').length<4)W.v=(W.v=='0'?'':W.v)+k;walkShow()}
-async function walkLog(fix){const [it,lk]=W.q[W.i],v=wNum();if(v==null)return;const ok=judge(it,v);
- if(ok===false&&!fix){const r=rule(it);$('#wBody').innerHTML=`<div style="background:var(--red);color:#fff;border-radius:16px;padding:16px"><div style="font-size:24px;font-weight:800">⚠ ${r[0]=='max'?'Too warm':'Too cold'}: ${v}°C</div><div style="font-size:18px">${esc(it.name)} — tell the manager. What did you do?</div></div>
-   <div class="fix">${FIXES[r[0]].map(f=>`<button onclick="walkLog(this.textContent)">${f}</button>`).join('')}<button onclick="walkLog('Told manager')">Told manager</button></div>
-   <div class="wact"><button class="btn ghost" onclick="walkShow()">← Change number</button></div>`;return}
- const data={temp:v};if(fix)data.action=fix;
- await post('/api/log',{kind:lk,ref:it.id,data});W.done++;toast(ok===false?'⚠ Logged — tell manager':`✅ ${v}°C OK`);W.i++;W.v='';walkShow()}
-function _render(){
- const s=S.summary, L=S.locked;
- const ms=myShift();$('#shiftTxt').hidden=!ms;if(ms)$('#shiftTxt').textContent='🟢 On shift since '+hm12(ms.start_at);
- $('#sum').innerHTML=`<div class="chip"><b>${s.tasks_done}/${s.tasks_total}</b>tasks done</div><div class="chip"><b>${s.missing}</b>logs missing</div>
- <div class="chip ${s.alerts.length?'alert':''}"><b>${s.alerts.length}</b>${s.alerts.length?'⚠ '+esc(s.alerts.slice(0,3).join(' · ')):'alerts'}</div>
- ${S.date!=S.today?`<div class="chip"><b>${S.date}</b>viewing past/future day</div>`:''}`;
- ring('#r-kitchen',s.tabs.kitchen.progress);ring('#r-shop',s.tabs.shop.progress);
- document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b.dataset.t==tab));
- $('#lockbar').hidden=!L; if(L)$('#lockbar').innerHTML=`🔒 Day submitted by ${esc(L.staff)} at ${esc(L.at)} — read only <button class="edit" onclick="unlock()">Reopen</button>`;
- $('#submitBtn').disabled=!!L; $('#submitBtn').textContent=L?'Day submitted 🔒':'Submit day ✓';
- document.documentElement.style.setProperty('--hh',$('#hdr').offsetHeight+'px');
- const T=s.tabs[tab];
- const jl=T.tasks_total-T.tasks_done, cl=T.missing.length, done=!jl&&!cl;
- let h=`<section class="left wide ${done?'alldone':''}"><h3>${done?'✅ All done here':'Left today: '+[jl?`${jl} job${jl>1?'s':''}`:'',cl?`${cl} check${cl>1?'s':''}`:''].filter(Boolean).join(' + ')}</h3>
- <div class="bar"><i style="width:${T.progress}%"></i></div></section>
- ${walkStartBtn()}${shiftCard()}${mgr?`<section class="card wide"><h2>🕒 Shifts today</h2>${shiftTable(S.shifts,1)}<div class="row" style="margin-top:12px"><button class="btn ghost keep" onclick="testEmail()">✉ Send test email</button></div></section>`:''}<section class="card wide"><h2>✅ Jobs <span class="sp"></span><span class="mini">${T.tasks_done}/${T.tasks_total} done</span></h2>${todo()}</section>`;
- if(tab=='kitchen') h+=temps('kcheck','ktemp','🌡 Kitchen temps')+prep()+hotbox()+tomorrow();
- else h+=temps('fridge','stemp','🥤 Fridges')+temps('freezer','stemp','🧊 Freezers')+fuel();
- if(T.missing.length) h+=`<section class="card wide"><h2>⏳ Not logged yet</h2><div class="missing" style="font-size:16px">${T.missing.map(esc).join(' · ')}</div></section>`;
- $('#main').innerHTML=h; $('#main').querySelectorAll('input,select,button.btn,button.chk,button.dots').forEach(e=>{if(L&&!e.classList.contains('keep'))e.disabled=true});
-}
-function isLate(x){return !x.done&&x.due_time&&S.date==S.today&&x.due_time<nowHM()}
-function todo(){const t=S.tasks.filter(x=>x.tab==tab);if(!t.length)return'<p class="mini">No jobs yet — tap ＋ Task.</p>';
- const open=t.filter(x=>!x.done).sort((a,b)=>isLate(b)-isLate(a)),dn=t.filter(x=>x.done);
- return (open.length?open.map(taskRow).join(''):'<p class="status ok">✅ All jobs done</p>')+(dn.length?`<details class="donelist"><summary>✓ Done (${dn.length}) — tap to show</summary>${dn.map(taskRow).join('')}</details>`:'')}
-function taskRow(x){
- return `<div class="task ${x.done?'done':''} ${isLate(x)?'late':''}"><button class="chk" onclick="tick(${x.id},${!!x.done})" aria-label="Tick">${x.done?'✓':''}</button>
- <div class="tt">${esc(x.title)}${isLate(x)?'<span class="late-tag">LATE</span>':''}${x.example?'<span class="ex">example</span>':''}<br><span class="mini">${x.due_time?'⏰ '+x.due_time+' · ':''}${x.repeat=='weekly'?'Weekly '+DAYS[x.weekday]:x.repeat=='daily'?'Daily':'One-off'}
- ${x.done?` · ✓ ${esc(x.done.staff)} ${x.done.at.slice(11,16)}`:''}</span></div><button class="dots" onclick="taskDlg(${x.id})" aria-label="Edit">✎</button></div>`}
-async function tick(id,done){if(!needStaff())return;if(done&&!confirm('Mark this job as NOT done?'))return;await post('/api/tick',{id,undo:done});if(!done)toast('✓ Done','Undo',()=>post('/api/tick',{id,undo:true}).then(()=>toast('Undone')))}
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let S=null,page='dashboard',mgr=sessionStorage.sw_mgr=='1',area=localStorage.sw_area||'all';
+const PAGES=[['dashboard','▦','Dashboard'],['tasks','☑','Daily Tasks'],['equip','❄','Equipment Temps'],['food','🌡','Food Temps'],['hotbox','♨','Hot Box'],['discards','🗑','Discards'],['fuel','⛽','Fuel Water Paste'],['reports','▤','Reports'],['settings','⚙','Settings']];
+const TZ='Australia/Brisbane',DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const TYPES={fridge:'Fridge — should be 0–5°C',freezer:'Freezer — should be −15°C or colder',hot:'Hot hold — should be 60°C or hotter',core:'Cooked food — core 75°C or hotter'};
 const ICON={freezer:'🧊',fridge:'🥤',hot:'🔥',core:'🍗'};
-function verdict(i,l){if(!l)return`<div class="status todo">⏳ Not logged yet</div>`;const t=`${l.data.temp}°C · ${l.at.slice(11,16)} · ${esc(l.staff)}`;
- if(!l.bad)return`<div class="status ok">✅ OK ${t}</div>`;const r=S.rules[i.type]||[];
- return`<div class="status bad">⚠ ${r[0]=='max'?'Too warm':'Too cold'} — tell manager<br><span style="font-weight:600;font-size:16px">${t}${l.data.action?'<br>Action: '+esc(l.data.action):''}</span></div>`}
-function temps(kind,lk,title){const its=items(kind);
- return `<section class="card"><h2>${title}<span class="sp"></span><button class="edit" onclick="manage('${kind}')">Edit list</button></h2>
- ${its.map(i=>{const ls=logs(lk,i.id),last=ls[ls.length-1];return `<div class="unit ${!last?'todo':last.bad?'badu':'ok'}" id="u${i.id}"><div class="nm">${ICON[i.type]||'🌡'} ${esc(i.name)}${i.example?'<span class="ex">example</span>':''}<br><span class="mini">${TYPES[i.type]||''}${ls.length>1?' · '+ls.length+' readings':''}${i.type=='freezer'?' · type 18 = −18°C':''}</span></div>
- ${verdict(i,last)}<div class="entry">${i.type=='freezer'?`<button class="sign on" id="s${i.id}" onclick="flipSign(${i.id})" aria-label="Toggle minus sign" title="Freezer readings are below zero">−</button>`:`<button class="sign" id="s${i.id}" onclick="flipSign(${i.id})" aria-label="Toggle minus sign">±</button>`}<input class="num" type="text" inputmode="decimal" autocomplete="off" id="t${i.id}" placeholder="${i.type=='freezer'?'e.g. 18':'°C'}"><button class="btn" onclick="logTemp('${lk}',${i.id})">LOG</button></div></div>`}).join('')||'<p class="mini">Nothing set up — tap Edit list.</p>'}</section>`}
-function flipSign(id){const b=$('#s'+id),on=!b.classList.contains('on');b.classList.toggle('on',on);b.textContent=on?'−':'±'}
-function readTemp(id){let r=$('#t'+id).value.trim().replace(/\s|°|c$/gi,'').replace(',','.').replace(/[\u2212\u2013\u2014]/g,'-');
- if(r==='')return null;let neg=r.startsWith('-');r=r.replace(/^[-+]/,'');if(!/^\d+(\.\d+)?$/.test(r))return NaN;
- if(!neg&&$('#s'+id)?.classList.contains('on'))neg=true;return neg?-parseFloat(r):parseFloat(r)}
-async function logTemp(lk,id){if(!needStaff())return;const v=readTemp(id);if(v===null)return toast('Enter a temperature');if(Number.isNaN(v))return toast('Type a number, e.g. 18');$('#t'+id).value='';
- await post('/api/log',{kind:lk,ref:id,data:{temp:v}});const l=logs(lk,id).pop(),u=$('#u'+id);$('#t'+id)?.blur();if(u)u.classList.add('flash');const r=S.rules[l.data.type]||[];
- toast(l.bad?`⚠ ${r[0]=='max'?'Too warm':'Too cold'} — tell manager`:`✅ ${l.data.temp}°C OK`)}
-function opts(k){return items(k).map(i=>`<option value="${esc(i.name)}">${esc(i.name)}</option>`).join('')}
-function logTable(rows,cols,del){if(!rows.length)return'<p class="mini">Nothing logged yet today.</p>';
- return `<table><tr>${cols.map(c=>`<th>${c[0]}</th>`).join('')}<th></th></tr>${rows.map(r=>`<tr class="${r.bad?'bad':''}">${cols.map(c=>`<td>${esc(c[1](r))}</td>`).join('')}<td><button class="dots" onclick="delLog(${r.id})" aria-label="Delete">🗑</button></td></tr>`).join('')}</table>`}
-async function delLog(id){if(confirm('Delete this entry?'))await post('/api/log/delete',{id})}
-function prep(){return `<section class="card"><h2>🍳 Prep<span class="sp"></span><button class="edit" onclick="manage('prep')">Edit items</button></h2>
- <div class="row"><select id="pI">${opts('prep')}</select></div>
- <div class="qty"><button class="keep0" onclick="qAdd(-1)" aria-label="Minus one">−1</button><input id="pQ" placeholder="Qty *" inputmode="decimal" autocomplete="off"><button onclick="qAdd(1)">+1</button><button onclick="qAdd(5)">+5</button><button onclick="qAdd(10)">+10</button></div>
- <div class="row"><label class="mini">Prepped<input type="time" id="pT" value="${nowHM()}"></label><label class="mini">Use by<input type="date" id="pU"></label><button class="btn" onclick="logPrep()">Log</button></div>
- ${logTable(logs('prep'),[['Item',r=>r.data.item],['Qty',r=>r.data.qty],['Prepped',r=>r.data.time],['Use by',r=>r.data.use_by||''],['By',r=>r.staff]])}</section>`}
-function qAdd(n){const e=$('#pQ'),v=Math.max(0,(parseFloat(e.value)||0)+n);e.value=v||''}
-async function logPrep(){if(!needStaff())return;if(!$('#pI').value)return toast('Add a prep item first');if(!$('#pQ').value.trim()){$('#pQ').focus();return toast('How many? Tap +1 / +5')}await post('/api/log',{kind:'prep',data:{item:$('#pI').value,qty:$('#pQ').value,time:$('#pT').value,use_by:$('#pU').value}});toast('Logged ✓')}
-function hotbox(){return `<section class="card"><h2>🔥 Hot box<span class="sp"></span><button class="edit" onclick="manage('hotbox')">Edit items</button></h2>
- <div class="row"><select id="hB">${items('kcheck').filter(i=>i.type=='hot'&&/hot box/i.test(i.name)).map(i=>`<option>${esc(i.name)}</option>`).join('')}</select><select id="hI">${opts('hotbox')}</select><input id="hQ" placeholder="Qty in" inputmode="numeric"></div>
- <div class="row"><label class="mini">Time in<input type="time" id="hT" value="${nowHM()}"></label><label class="mini">Discard by (+4h)<input type="time" id="hD"></label><button class="btn" onclick="logHot()">Log</button></div>
- ${logTable(logs('hotbox'),[['Hot box',r=>r.data.box||''],['Item',r=>r.data.item],['Qty',r=>r.data.qty],['In',r=>r.data.time],['Discard',r=>r.data.discard],['By',r=>r.staff]])}</section>`}
-function plus4(t){if(!t)return'';let[h,m]=t.split(':').map(Number);return String((h+4)%24).padStart(2,'0')+':'+String(m).padStart(2,'0')}
-async function logHot(){if(!needStaff())return;const t=$('#hT').value;await post('/api/log',{kind:'hotbox',data:{box:$('#hB').value,item:$('#hI').value,qty:$('#hQ').value,time:t,discard:$('#hD').value||plus4(t)}});toast('Logged ✓')}
-function tomorrow(){return `<section class="card wide"><h2>📋 For tomorrow</h2>
- <div class="row"><select id="mI">${opts('prep')}${opts('hotbox')}</select><input id="mQ" placeholder="Qty / note"><button class="btn" onclick="logTom()">Add</button></div>
- ${logTable(logs('tomorrow'),[['Item',r=>r.data.item],['Qty / note',r=>r.data.qty],['By',r=>r.staff]])}</section>`}
-async function logTom(){if(!needStaff())return;await post('/api/log',{kind:'tomorrow',data:{item:$('#mI').value,qty:$('#mQ').value}});toast('Added ✓')}
-function fuel(){return `<section class="card wide"><h2>⛽ Fuel tanks — water check</h2><p class="mini">Paste on dip stick. Water? Tell manager.</p>
- ${S.tanks.map(t=>{const l=logs('fuel',t).pop();return `<div class="unit"><div class="nm">Tank ${esc(t)}</div>
- ${l?`<span class="read ${l.data.water=='yes'?'bad':''}">${l.data.water=='yes'?'WATER '+esc(l.data.water_mm)+'mm':'No water'} ${l.at.slice(11,16)} ${esc(l.staff)}</span>`:'<span class="missing">not checked</span>'}
- <button class="btn ghost" onclick="logFuel('${t}','no')">No water</button><input class="num" id="w${t[0]}" placeholder="mm" inputmode="numeric"><button class="btn" onclick="logFuel('${t}','yes')">Water</button></div>`}).join('')}</section>`}
-async function logFuel(t,w){if(!needStaff())return;const mm=$('#w'+t[0]).value;if(w=='yes'&&!mm)return toast('Enter water mm');await post('/api/log',{kind:'fuel',ref:t,data:{water:w,water_mm:w=='yes'?mm:0}});toast(w=='yes'?'⚠ Water logged — tell the manager':'Logged ✓')}
-function openDlg(t,h){$('#dt').textContent=t;$('#dbody').innerHTML=h;dlg.showModal()}
-function taskDlg(id){const x=id?S.tasks.find(t=>t.id==id):{tab,repeat:'once',title:'',due_time:''};
- openDlg(id?'Edit task':'Add task',`<label>Task<input id="fT" value="${esc(x.title)}" placeholder="e.g. Restock cups and lids"></label>
- <label>Tab<div class="seg" id="fTab"><button data-v="kitchen">Kitchen</button><button data-v="shop">Shop / Site</button></div></label>
- <label>Repeat<div class="seg" id="fR"><button data-v="once">One-off</button><button data-v="daily">Daily</button><button data-v="weekly">Weekly</button></div></label>
- <label id="fWl">Day of week<select id="fW">${DAYS.map((d,i)=>`<option value="${i}">${d}</option>`).join('')}</select></label>
- <label>Due time (optional)<input type="time" id="fD" value="${x.due_time||''}"></label>
- <div class="row"><button class="btn" id="fSave">Save task</button>${id?'<button class="btn ghost" id="fDel">Delete</button>':''}</div>`);
- const seg=(sel,v)=>{document.querySelectorAll(sel+' button').forEach(b=>{b.classList.toggle('on',b.dataset.v==v);b.onclick=e=>{e.preventDefault();seg(sel,b.dataset.v)}});if(sel=='#fR')$('#fWl').hidden=v!='weekly'};
- seg('#fTab',x.tab);seg('#fR',x.repeat);$('#fW').value=x.weekday??((new Date(S.date).getDay()+6)%7);
- const val=s=>document.querySelector(s+' button.on').dataset.v;
- $('#fSave').onclick=async()=>{if(!$('#fT').value.trim())return toast('Type the task');await post('/api/task',{id,title:$('#fT').value,tab:val('#fTab'),repeat:val('#fR'),weekday:$('#fW').value,due_time:$('#fD').value});dlg.close();toast('Saved ✓')};
- if(id)$('#fDel').onclick=async()=>{if(confirm('Delete this task?')){await post('/api/task',{id,delete:1});dlg.close()}}}
-$('#fab').onclick=$('#addBtn').onclick=()=>{if(needStaff())taskDlg()};
-const KN={fridge:'Fridges',freezer:'Freezers',kcheck:'Kitchen temp check points',prep:'Prep items',hotbox:'Hot box items'};
-function manage(kind){const its=items(kind),typ=kind=='kcheck';
- openDlg('Edit '+KN[kind],`${its.map(i=>`<div class="row"><input id="m${i.id}" value="${esc(i.name)}">${typ?`<select id="y${i.id}">${Object.entries(TYPES).map(([k,v])=>`<option value="${k}" ${i.type==k?'selected':''}>${v}</option>`).join('')}</select>`:''}
- <button class="btn ghost" style="flex:none" onclick="ren(${i.id},'${kind}')">Save</button><button class="btn ghost" style="flex:none" onclick="rem(${i.id},'${kind}')">🗑</button></div>`).join('')}
- <hr><div class="row"><input id="mNew" placeholder="New ${KN[kind].toLowerCase().replace(/s$/,'')}">${typ?`<select id="yNew">${Object.entries(TYPES).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select>`:''}<button class="btn" style="flex:none" onclick="addItem('${kind}')">Add</button></div>
- <p class="mini">Items marked “example” are starter entries — rename or remove them. Past logs are kept.</p>`)}
-async function ren(id,k){await post('/api/item',{id,name:$('#m'+id).value,type:$('#y'+id)?.value});manage(k);toast('Saved ✓')}
-async function rem(id,k){if(confirm('Remove from the list? (past logs kept)')){await post('/api/item',{id,delete:1});manage(k)}}
-async function addItem(k){if(!$('#mNew').value.trim())return;await post('/api/item',{kind:k,name:$('#mNew').value,type:$('#yNew')?.value});manage(k);toast('Added ✓')}
-$('#submitBtn').onclick=()=>{if(!needStaff())return;const s=S.summary;
- openDlg('Submit '+S.date,`<p><b>${s.tasks_done}/${s.tasks_total}</b> tasks done · <b>${s.missing}</b> logs missing · <b>${s.alerts.length}</b> alerts</p>
- ${s.alerts.length?`<p class="missing">⚠ ${s.alerts.map(esc).join('<br>⚠ ')}</p>`:''}${s.missing?`<p class="mini">Missing: ${[...s.tabs.kitchen.missing,...s.tabs.shop.missing].map(esc).join(', ')}</p>`:''}
- ${S.shifts?.length?'<p><b>Shifts</b></p>'+shiftTable(S.shifts):''}<p>This locks today under <b>${esc(staffEl.value)}</b>. Only the manager can reopen it.</p><div class="row"><button class="btn ghost" onclick="dlg.close()">Cancel</button><button class="btn" id="cSub">Yes, submit 🔒</button></div>`);
- $('#cSub').onclick=async()=>{await post('/api/submit',{area:mgr?'both':(localStorage.sw_area||'both')});dlg.close();toast('Day submitted 🔒')}};
-async function unlock(){const pin=prompt('Manager PIN to reopen this day');if(pin)await post('/api/unlock',{pin})}
-$('#histBtn').onclick=showHist;
-async function showHist(){const H=await api('/api/history');
- openDlg('History',`<div class="hist">${H.map(d=>`<div class="hd"><div class="ring" style="--p:${Math.round((d.summary.tabs.kitchen.progress+d.summary.tabs.shop.progress)/2)}"><span>${Math.round((d.summary.tabs.kitchen.progress+d.summary.tabs.shop.progress)/2)}%</span></div>
- <div style="flex:1"><b>${d.date}</b> ${d.locked?'🔒 '+esc(d.locked.staff)+' '+d.locked.at.slice(11,16):'<span class="missing">not submitted</span>'}<br>
- <span class="mini">${d.staff?.length?'👤 '+d.staff.map(esc).join(', ')+'<br>':''}${d.summary.tasks_done}/${d.summary.tasks_total} tasks · ${d.logs} entries · ${d.summary.missing} missing</span>${d.summary.alerts.length?`<br><span class="missing">⚠ ${d.summary.alerts.map(esc).join(' · ')}</span>`:''}</div>
- ${(d.submissions||[]).map(x=>`<div style="width:100%;display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px solid #eee;padding-top:8px"><span style="flex:1">📝 <b>${{kitchen:'Kitchen',shop:'Shop',both:'Kitchen + Shop'}[x.area]||esc(x.area)}</b> · ${esc(x.staff)} · ${x.at.slice(11,16)}<br><span class="mini" style="color:${x.email_status=='sent'?'var(--ok)':x.email_status=='failed'?'var(--red)':'#444'}">${{sent:'✅ Email sent',failed:'⚠ Email failed',not_configured:'✉ Email not set up',sending:'✉ Sending…'}[x.email_status]||esc(x.email_status)}</span><br><span class="mini" style="color:${(x.webhook_status||'').startsWith('sent')?'var(--ok)':(x.webhook_status||'').startsWith('failed')?'var(--red)':'#444'}">${(x.webhook_status||'').startsWith('sent')?'✅ Message sent':(x.webhook_status||'').startsWith('failed')?'⚠ Message failed ('+esc(x.webhook_status.slice(7))+')':x.webhook_status=='not_configured'?'💬 Message not set up':'💬 Sending…'}</span></span><a class="btn keep" style="text-decoration:none;display:inline-flex;align-items:center" href="/submission/${x.id}" target="_blank">View</a></div>`).join('')}${d.shifts?.length?`<div class="mini" style="width:100%">🕒 ${d.shifts.map(x=>esc(x.staff)+' '+hm12(x.start_at)+'–'+(x.end_at?hm12(x.end_at):'…')+(x.hours!=null?' ('+x.hours+'h)':'')).join(' · ')}</div>`:''}<button class="btn ghost" onclick="dlg.close();load('${d.date}')">Open</button></div>`).join('')||'<p>No days yet.</p>'}</div>`)}
-load().then(()=>{if(location.hash=='#add')taskDlg();if(location.hash=='#history')showHist()});
-setInterval(()=>{if(!dlg.open&&document.activeElement.tagName!='INPUT'&&document.activeElement.tagName!='SELECT')load(dateEl.value)},60000);
+const me=()=>localStorage.sw_staff||'';
+/* ---------- helpers ---------- */
+let toastT;function toast(m,kind,act,fn){const t=$('#toast');t.className='toast on '+(kind||'');t.textContent=m;if(act){const b=document.createElement('button');b.textContent=act;b.onclick=()=>{t.classList.remove('on');fn()};t.appendChild(b)}clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('on'),act?6000:2600)}
+const nowHM=()=>new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:TZ});
+const hm12=t=>{if(!t)return'';const x=t.length>5?t.slice(11,16):t;let[h,m]=x.split(':').map(Number);return(h%12||12)+':'+String(m).padStart(2,'0')+(h<12?' am':' pm')};
+const ts=t=>new Date(t.replace(' ','T')+'+10:00').getTime();
+function tick1(){$('#clock').textContent=new Date().toLocaleString('en-US',{timeZone:TZ,weekday:'short',month:'short',day:'numeric'})+' · '+new Date().toLocaleTimeString('en-US',{timeZone:TZ,hour:'numeric',minute:'2-digit',second:'2-digit'});
+ $$('.timer[data-in]').forEach(e=>{const ms=Date.now()-ts(e.dataset.in),m=Math.max(0,Math.floor(ms/6e4));e.textContent=Math.floor(m/60)+'h '+String(m%60).padStart(2,'0')+'m';e.closest('.hb')?.classList.toggle('over',ms>S.hotbox_max_h*36e5)})}
+setInterval(tick1,1000);
+async function api(p,b){if(b&&!me()){await pickName();if(!me())throw 0}
+ const hd={'X-Staff-Pin':localStorage.sw_pin||''},o=b?{method:'POST',headers:{...hd,'Content-Type':'application/json'},body:JSON.stringify({date:S?.date,staff:me(),...b})}:{headers:hd};
+ const r=await fetch(p,o),j=await r.json();
+ if(r.status==400&&j.name){await pickName();return api(p,b)}
+ if(r.status==401&&j.pin){const pin=prompt((localStorage.sw_pin?'Wrong PIN. ':'')+'Enter the Silkwood staff PIN');if(pin!==null){localStorage.sw_pin=pin.trim();return api(p,b)}throw j}
+ if(!r.ok){toast(j.error||'Something went wrong','warn');throw j}return j}
+async function load(d){S=await api('/api/day?date='+(d||$('#date').value||''));$('#date').value=S.date;render()}
+async function post(p,b,msg){S=await api(p,b);render();if(msg)toast(msg,'good');return S}
+const items=k=>S.items.filter(i=>i.kind==k),logs=(k,r)=>S.logs.filter(l=>l.kind==k&&(r==null||l.ref==String(r)));
+const isToday=()=>S.date==S.today;
+/* ---------- who's on shift ---------- */
+function names(){const n=new Set(JSON.parse(localStorage.sw_names||'[]'));(S?.shifts||[]).forEach(x=>n.add(x.staff));if(me())n.add(me());return [...n].filter(Boolean).sort()}
+function whoUI(){const sel=$('#whoSel');sel.innerHTML=`<option value="">Who's on shift?</option>`+names().map(n=>`<option ${n==me()?'selected':''}>${esc(n)}</option>`).join('')+`<option value="__new">＋ Add my name…</option>`;
+ const m=myShift();$('#shiftBtn').hidden=!me()||!S||!isToday();$('#shiftBtn').className='shiftbtn'+(m?' on':'');$('#shiftBtn').textContent=m?'● On shift since '+hm12(m.start_at)+' · End':'▶ Start shift'}
+function setName(n){n=(n||'').trim().slice(0,40);if(!n)return;localStorage.sw_staff=n;const l=new Set(JSON.parse(localStorage.sw_names||'[]'));l.add(n);localStorage.sw_names=JSON.stringify([...l]);whoUI();toast('Hi '+n+' 👋','good')}
+let nameWait=null;function pickName(){$('#nameIn').value='';$('#nameDlg').showModal();setTimeout(()=>$('#nameIn').focus(),50);return new Promise(r=>nameWait=r)}
+$('#nameForm').onsubmit=e=>{const n=$('#nameIn').value.trim();if(!n){e.preventDefault();return}setName(n);nameWait&&nameWait(n);nameWait=null};
+$('#nameDlg').addEventListener('close',()=>{nameWait&&nameWait('');nameWait=null});
+$('#whoSel').onchange=e=>{const v=e.target.value;if(v=='__new'){pickName().then(whoUI)}else if(v){setName(v)}else whoUI()};
+const myShift=()=>S&&isToday()&&(S.shifts||[]).find(x=>x.staff==me()&&!x.end_at);
+$('#shiftBtn').onclick=async()=>{const m=myShift();if(!m){await post('/api/shift',{action:'start',area:area=='all'?'':area});return toast('▶ Shift started '+hm12(myShift()?.start_at),'good')}
+ const h=((Date.now()-ts(m.start_at))/36e5).toFixed(1);openDlg('End your shift?',`<p>Started <b>${hm12(m.start_at)}</b> · about <b class="mono">${h} h</b></p><div class="row"><button class="btn ghost" onclick="dlg.close()">Not yet</button><button class="btn" id="cEnd">Yes, end shift</button></div>`);
+ $('#cEnd').onclick=async()=>{await post('/api/shift',{action:'end'});dlg.close();const x=S.shifts.filter(x=>x.staff==me()).pop();toast('Shift ended · '+(x?.hours??'')+' h','good')}};
+$('#date').onchange=()=>load($('#date').value);
+/* ---------- nav ---------- */
+function go(p){page=PAGES.some(x=>x[0]==p)?p:'dashboard';if(location.hash.slice(1)!=page)history.replaceState(0,'','#'+page);render();scrollTo(0,0)}
+addEventListener('hashchange',()=>go(location.hash.slice(1)));
+function navUI(){const s=S.summary,tl=s.tasks_total-s.tasks_done,hbOver=liveHB().filter(over).length,fp=S.tanks.filter(t=>!logs('fuel',t).length).length;
+ const badge={tasks:tl,equip:pendingUnits().length,hotbox:hbOver?hbOver+'!':0,fuel:fp};
+ $('#nav').innerHTML=PAGES.map(([k,ic,n])=>`<a href="#${k}" class="${k==page?'on':''}"><span class="ic">${ic}</span>${n}${badge[k]?`<span class="badge">${badge[k]}</span>`:''}</a>`).join('')}
+/* ---------- render ---------- */
+function render(){if(!S)return;const typed={};$$('main input[id],main textarea[id],main select[id]').forEach(e=>{if(e.type!='date'&&e.value)typed[e.id]=e.value});
+ navUI();whoUI();const L=S.locked;
+ let h=L?`<div class="lockbar">🔒 This day was submitted by ${esc(L.staff)} at ${hm12(L.at)} — it's read-only now. <button class="btn sm ghost keep" onclick="unlock()">Reopen (manager)</button></div>`:'';
+ if(!isToday())h+=`<div class="lockbar">📅 You're looking at <b class="mono">${S.date}</b>, not today. <button class="btn sm ghost keep" onclick="load('${S.today}')">Back to today</button></div>`;
+ h+=(VIEWS[page]||VIEWS.dashboard)();$('#main').innerHTML=h;
+ for(const[k,v]of Object.entries(typed)){const e=document.getElementById(k);if(e&&e.tagName!='SELECT'&&!e.value){e.value=v;e.dispatchEvent(new Event('input'))}}
+ if(L)$$('#main input,#main select,#main textarea,#main button').forEach(e=>{if(!e.classList.contains('keep'))e.disabled=true});tick1()}
+const ph=(k,t,p)=>`<div class="ph"><div class="lbl">${k}</div><h1>${t}</h1><p>${p}</p></div>`;
+const tbl=(cols,rows,cls)=>rows.length?`<div class="tw"><table><tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr>${rows.map((r,i)=>`<tr class="${cls?cls(i):''}">${r.map(v=>`<td>${v}</td>`).join('')}</tr>`).join('')}</table></div>`:'';
+/* hot box */
+const liveHB=()=>(S.hotbox||[]).filter(x=>!x.out_at);const over=x=>Date.now()-ts(x.time_in)>S.hotbox_max_h*36e5;
+/* tanks */
+const grade=t=>/diesel/i.test(t)?['Diesel','t-dsl']:/p95|premium/i.test(t)?['Premium 95','t-p95']:['ULP','t-ulp'];
+const tankNo=t=>(t.match(/^\d+/)||[''])[0];
+/* temps */
+const walkUnits=()=>[...items('kcheck').map(i=>[i,'ktemp','kitchen']),...items('fridge').map(i=>[i,'stemp','shop']),...items('freezer').map(i=>[i,'stemp','shop'])].filter(u=>area=='all'||u[2]==area);
+const pendingUnits=()=>walkUnits().filter(([i,lk])=>!logs(lk,i.id).length);
+function judgeT(type,v){const r=S.rules[type];if(!r||v==null||isNaN(v))return null;return r[0]=='max'?v<=r[1]:v>=r[1]}
+function parseT(raw,neg){let r=String(raw).trim().replace(/\s|°|c$/gi,'').replace(',','.').replace(/[\u2212\u2013\u2014]/g,'-');if(r==='')return null;let n=r.startsWith('-');r=r.replace(/^[-+]/,'');if(!/^\d+(\.\d+)?$/.test(r))return NaN;if(neg)n=true;return n?-parseFloat(r):parseFloat(r)}
+function liveT(id,type){const e=$('#'+id),s=$('#'+id+'s'),v=parseT(e.value,s?.classList.contains('on')),ok=judgeT(type,v),fb=$('#'+id+'f');
+ e.classList.toggle('ok',ok===true);e.classList.toggle('bad',ok===false);if(fb){fb.className='fb '+(ok===true?'ok':ok===false?'bad':'');fb.textContent=ok===true?'✓ In range':ok===false?'✗ Out of range — tell the manager':Number.isNaN(v)?'Type a number, e.g. 4':''}}
+function flip(id,type){const b=$('#'+id+'s');b.classList.toggle('on');b.textContent=b.classList.contains('on')?'−':'+';liveT(id,type)}
+const tempBox=(id,type,ph)=>`<div class="tempin">${type=='freezer'?`<button class="sign on" id="${id}s" onclick="flip('${id}','${type}')" aria-label="Minus" title="Freezers are below zero">−</button>`:`<button class="sign" id="${id}s" onclick="flip('${id}','${type}')" aria-label="Minus">+</button>`}<input id="${id}" class="num" inputmode="decimal" autocomplete="off" placeholder="${ph||'°C'}" oninput="liveT('${id}','${type}')"></div>`;
+const AREAF=()=>`<div class="chips" style="margin-bottom:14px">${[['all','Everything'],['kitchen','🍳 Kitchen'],['shop','🏪 Shop / Site']].map(([k,n])=>`<button class="chip keep ${area==k?'on':''}" onclick="setArea('${k}')">${n}</button>`).join('')}</div>`;
+function setArea(a){area=a;localStorage.sw_area=a;render()}
+/* tasks */
+function parseTask(t){const m=t.title.match(/^Fill up:\s*(.*?)\s*×\s*(\d+)\s*(?:\((.*)\))?\s*$/i);if(m)return{group:'Fill up',name:m[1],qty:'×'+m[2],pack:m[3]||''};
+ const f=t.title.match(/^Fill up:\s*(.*)$/i);if(f)return{group:'Fill up',name:f[1],qty:''};return{group:t.tab=='kitchen'?'Kitchen jobs':'Shop / site jobs',name:t.title,qty:''}}
+const isLate=x=>!x.done&&x.due_time&&isToday()&&x.due_time<nowHM();
+function taskRow(x){const p=parseTask(x);return `<div class="li task ${x.done?'done':''} ${isLate(x)?'late':''}" onclick="if(!event.target.closest('.edit'))tick(${x.id},${!!x.done})"><button class="chk" aria-label="Tick">${x.done?'✓':''}</button>
+ <div class="t"><b>${esc(p.name)}</b><small>${isLate(x)?'<span class="pill bad">Late</span> ':''}${x.due_time?'⏰ '+hm12(x.due_time)+' · ':''}${p.pack?esc(p.pack)+' · ':''}${x.repeat=='weekly'?'Every '+DAYS[x.weekday]:x.repeat=='daily'?'Every day':'Today only'}${x.done?` · ✓ ${esc(x.done.staff)} ${hm12(x.done.at)}`:''}</small></div>${p.qty?`<span class="qty">${esc(p.qty)}</span>`:''}<button class="edit" onclick="taskDlg(${x.id})" aria-label="Edit">✎</button></div>`}
+async function tick(id,done){if(S.locked)return;if(done&&!confirm('Mark this as NOT done?'))return;await post('/api/tick',{id,undo:done});if(!done)toast('✓ Done','good','Undo',()=>post('/api/tick',{id,undo:true}).then(()=>toast('Undone')))}
+/* ---------- views ---------- */
+const VIEWS={};
+VIEWS.dashboard=()=>{const s=S.summary,tl=s.tasks_total-s.tasks_done,tl2=[...S.logs.filter(l=>l.kind=='ktemp'||l.kind=='stemp'),...(S.food||[])],bad=S.logs.filter(l=>l.bad).length+(S.food||[]).filter(f=>f.bad).length,lv=liveHB(),ov=lv.filter(over).length,dis=S.discards||[];
+ const miss=[...s.tabs.kitchen.missing,...s.tabs.shop.missing].filter(n=>!n.startsWith('Tank '));
+ return ph('Today','Shift overview','Everything that needs checking, logging or binning today.')+
+ (s.alerts.length?`<div class="alert">⚠ Tell the manager: ${s.alerts.map(esc).join(' · ')}</div>`:'')+
+ `<div class="grid g4" style="margin-bottom:16px">
+ <a class="card stat" href="#tasks"><div class="lbl">Tasks done</div><b>${s.tasks_done}/${s.tasks_total}</b><div class="sub">${tl?tl+' left · tap to tick off':'All done ✓'}</div></a>
+ <a class="card stat" href="#equip"><div class="lbl">Temp logs</div><b>${tl2.length}</b><div class="sub ${bad?'bad':''}">${bad} out of range</div></a>
+ <a class="card stat" href="#hotbox"><div class="lbl">In hot box</div><b>${lv.length}</b><div class="sub ${ov?'bad':''}">${ov} overdue</div></a>
+ <a class="card stat" href="#discards"><div class="lbl">Items discarded</div><b>${dis.length}</b><div class="sub">today</div></a></div>
+ <div class="grid g2">
+ <div class="card"><h2>Hot box — live<span class="sp"></span><a class="link" href="#hotbox">Add items</a></h2><p class="help">Items go in the bin ${S.hotbox_max_h} hours after they go in.</p>${lv.length?`<div class="list">${lv.map(hbRow).join('')}</div>`:`<div class="empty">Hot box is empty. <a class="link" href="#hotbox">Add items</a></div>`}</div>
+ <div class="card"><h2>Fuel water paste<span class="sp"></span><a class="link" href="#fuel">Log a check</a></h2><p class="help">Dip each tank once a day.</p><div class="list">${S.tanks.map(t=>{const l=logs('fuel',t).pop(),[g,c]=grade(t);return `<div class="li"><span class="tank ${c}">${g}</span><div class="t"><b>Tank ${esc(t)}</b>${l?`<small>${hm12(l.at)} · ${esc(l.staff)}</small>`:''}</div>${l?(l.data.water=='yes'?`<span class="pill bad">Water ${esc(l.data.water_mm)}mm</span>`:'<span class="pill ok">Done</span>'):'<span class="pill pend">Pending</span>'}</div>`}).join('')}</div></div>
+ <div class="card"><h2>Still to check today<span class="sp"></span><span class="pill ${miss.length?'pend':'ok'}">${miss.length} left</span></h2><p class="help">Equipment temperatures not logged yet.</p>${miss.length?`<div class="chips">${miss.slice(0,8).map(n=>`<a class="chip" style="display:inline-flex;align-items:center;text-decoration:none;color:inherit" href="#equip">${esc(n)}</a>`).join('')}${miss.length>8?`<span class="chip" style="display:inline-flex;align-items:center">+${miss.length-8} more</span>`:''}</div><div style="margin-top:12px"><button class="btn full" onclick="go('equip');walkStart()">🌡 Check temps now</button></div>`:'<div class="empty">✓ All equipment temps logged.</div>'}</div>
+ <div class="card"><h2>Finish the day</h2><p class="help">When everything's done, submit the day. It's emailed to the manager and locked.</p><a class="btn full" href="#reports">Go to submit</a></div></div>`};
+VIEWS.tasks=()=>{const t=S.tasks.filter(x=>area=='all'||x.tab==area),grp={};t.forEach(x=>{const g=parseTask(x).group;(grp[g]=grp[g]||[]).push(x)});
+ const done=t.filter(x=>x.done).length;
+ return ph('To do','Daily tasks','Tap a task to tick it off. Your name and the time are saved.')+AREAF()+
+ `<div class="card" style="margin-bottom:16px"><div class="row" style="align-items:center"><div><div class="lbl">Progress</div><b class="mono" style="font-size:22px">${done}/${t.length}</b> done</div><button class="btn nogrow" onclick="taskDlg()">＋ Add task</button></div><div class="bar" style="margin-top:12px"><i style="width:${t.length?100*done/t.length:0}%"></i></div></div>`+
+ (Object.keys(grp).length?Object.entries(grp).sort((a,b)=>(a[0]=='Fill up')-(b[0]=='Fill up')).map(([g,xs])=>{const open=xs.filter(x=>!x.done).sort((a,b)=>isLate(b)-isLate(a)),dn=xs.filter(x=>x.done);
+  return `<div class="card" style="margin-bottom:16px"><h2>${esc(g)}<span class="sp"></span><span class="pill ${open.length?'pend':'ok'}">${dn.length}/${xs.length} done</span></h2>${g=='Fill up'?'<p class="help">Fill the shelf, then tap. Quantity to fill is on the right.</p>':''}
+  <div class="list">${open.map(taskRow).join('')||'<div class="empty">✓ All done here</div>'}</div>${dn.length?`<details><summary class="link" style="display:flex;align-items:center">Show ${dn.length} done</summary><div class="list">${dn.map(taskRow).join('')}</div></details>`:''}</div>`}).join(''):'<div class="card empty">No tasks for today. Tap ＋ Add task.</div>')+
+ ((area!='shop')?prepCard()+tomorrowCard():'')};
+function prepCard(){return `<div class="card" style="margin-bottom:16px"><h2>🍳 Prep<span class="sp"></span><button class="link" onclick="manage('prep')">Edit list</button></h2><p class="help">Log what you prepped and how many.</p>
+ <div class="row"><label class="f">Item<select id="pI">${opts('prep')}</select></label><label class="f">How many<input id="pQ" inputmode="decimal" placeholder="e.g. 10"></label><label class="f">Use by<input type="date" id="pU"></label><button class="btn nogrow" onclick="logPrep()">Save</button></div>
+ ${tbl(['Item','Qty','Prepped','Use by','By',''],logs('prep').map(r=>[esc(r.data.item),`<span class="mono">${esc(r.data.qty)}</span>`,esc(r.data.time),esc(r.data.use_by||''),esc(r.staff),delBtn('log',r.id)]))}</div>`}
+function tomorrowCard(){return `<div class="card"><h2>📋 For tomorrow</h2><p class="help">Anything the next shift needs to make or order.</p><div class="row"><label class="f">Item<select id="mI">${opts('prep')}${opts('hotbox')}</select></label><label class="f">Qty / note<input id="mQ"></label><button class="btn nogrow" onclick="logTom()">Add</button></div>
+ ${tbl(['Item','Qty / note','By',''],logs('tomorrow').map(r=>[esc(r.data.item),esc(r.data.qty),esc(r.staff),delBtn('log',r.id)]))}</div>`}
+const opts=k=>items(k).map(i=>`<option>${esc(i.name)}</option>`).join('');
+const delBtn=(k,id)=>`<button class="edit" onclick="del('${k}',${id})" aria-label="Delete">🗑</button>`;
+async function del(k,id){if(confirm('Delete this entry?'))await post(k=='log'?'/api/log/delete':'/api/'+k+'/delete',{id},'Deleted')}
+async function logPrep(){if(!$('#pI').value)return toast('Add a prep item first (Edit list)','warn');if(!$('#pQ').value.trim()){$('#pQ').focus();return toast('How many did you prep?','warn')}await post('/api/log',{kind:'prep',data:{item:$('#pI').value,qty:$('#pQ').value,time:nowHM(),use_by:$('#pU').value}},'✓ Prep saved');$('#pQ').value=''}
+async function logTom(){await post('/api/log',{kind:'tomorrow',data:{item:$('#mI').value,qty:$('#mQ').value}},'✓ Added for tomorrow');$('#mQ').value=''}
+VIEWS.equip=()=>{const grp=[['kcheck','ktemp','🍳 Kitchen fridges, freezers & hot holding','kitchen'],['fridge','stemp','🥤 Shop fridges','shop'],['freezer','stemp','🧊 Shop freezers','shop']].filter(g=>area=='all'||g[3]==area);const n=pendingUnits().length;
+ return ph('Equipment','Equipment temps','Check each fridge, freezer and hot box. Green = OK, red = tell the manager.')+AREAF()+
+ (isToday()&&!S.locked?`<button class="btn full" style="min-height:60px;margin-bottom:16px;font-size:18px" onclick="walkStart(${n?0:1})">🌡 ${n?'Check temps one by one — '+n+' to do':'All done ✓ · check again'}</button>`:'')+
+ grp.map(([k,lk,t])=>`<div class="card" style="margin-bottom:16px"><h2>${t}<span class="sp"></span><button class="link" onclick="manage('${k}')">Edit list</button></h2><div class="grid g3" style="margin-top:10px">${items(k).map(i=>{const ls=logs(lk,i.id),l=ls[ls.length-1];
+  return `<div class="unit ${l?(l.bad?'bad':'ok'):''}"><div class="nm">${ICON[i.type]||'🌡'} ${esc(i.name)}<span class="sp"></span>${l?(l.bad?`<span class="pill bad">${l.data.temp}°C</span>`:`<span class="pill ok">${l.data.temp}°C</span>`):'<span class="pill pend">Pending</span>'}</div>
+  <small style="color:var(--sl)">${TYPES[i.type]||''}${l?` · last ${hm12(l.at)} ${esc(l.staff)}`:''}${l?.data.action?' · Action: '+esc(l.data.action):''}</small>${tempBox('t'+i.id,i.type,i.type=='freezer'?'e.g. 18':'°C')}<div class="row"><div class="fb" id="t${i.id}f"></div><button class="btn nogrow" onclick="logTemp('${lk}',${i.id})">Save</button></div></div>`}).join('')||'<div class="empty">Nothing set up — tap Edit list.</div>'}</div></div>`).join('')};
+async function logTemp(lk,id){const it=S.items.find(i=>i.id==id),v=parseT($('#t'+id).value,$('#t'+id+'s')?.classList.contains('on'));if(v===null)return toast('Type the temperature first','warn');if(Number.isNaN(v))return toast('Type a number, e.g. 4','warn');
+ let action;if(judgeT(it.type,v)===false){action=await askFix(it.type,v,it.name);if(action==null)return}
+ await post('/api/log',{kind:lk,ref:id,data:action?{temp:v,action}:{temp:v}});const l=logs(lk,id).pop();toast(l.bad?'⚠ Saved — tell the manager':'✓ '+v+'°C saved — OK',l.bad?'warn':'good')}
+const FIXES={max:['Closed door / checked seal','Moved food to another fridge','Turned thermostat down','Will re-check in 30 min','Told manager'],min:['Reheated food','Turned heat up','Threw food out','Will re-check in 30 min','Told manager']};
+function askFix(type,v,name){const r=S.rules[type];return new Promise(res=>{openDlg('⚠ '+(r[0]=='max'?'Too warm':'Too cold')+': '+v+'°C',`<p>${esc(name)} is out of range. What did you do?</p><div class="grid">${FIXES[r[0]].map(f=>`<button class="btn ghost full fixb">${f}</button>`).join('')}</div>`);
+ $$('.fixb').forEach(b=>b.onclick=()=>{dlg.close();res(b.textContent)});dlg.addEventListener('close',()=>res(null),{once:true})})}
+/* guided walk (kept from before) */
+const PRESET={fridge:[2,3,4,5],freezer:[-16,-18,-20,-22],hot:[60,65,70,75],core:[75,80,85,90]};let W=null;
+function walkStart(all){if(!me())return pickName();const q=all?walkUnits():pendingUnits();if(!q.length)return toast('All temps done ✓','good');W={q,i:0,v:'',neg:false,done:0};walkShow();$('#walk').showModal()}
+function walkClose(){$('#walk').close();W=null}
+function wNum(){if(W.v===''||W.v==='.')return null;const n=parseFloat(W.v);return W.neg?-n:n}
+function walkShow(){const B=$('#wBody');if(W.i>=W.q.length){$('#wProg').textContent='Done';$('#wBar').style.width='100%';B.innerHTML=`<div style="flex:1;display:grid;place-items:center;text-align:center"><div><div style="font-size:64px">✅</div><div class="wname">${W.done} temp${W.done==1?'':'s'} saved</div><p style="color:var(--sl)">${pendingUnits().length?pendingUnits().length+' skipped — still to do':'All equipment temps done'}</p></div></div><button class="btn full" onclick="walkClose()">Finish</button>`;return}
+ const[it,lk]=W.q[W.i],r=S.rules[it.type],fz=it.type=='freezer';if(W.v==='')W.neg=fz;$('#wProg').textContent=`${W.i+1} of ${W.q.length}`;$('#wBar').style.width=(100*W.i/W.q.length)+'%';
+ const v=wNum(),ok=judgeT(it.type,v),last=logs(lk,it.id).pop();
+ B.innerHTML=`<div><div class="wname">${ICON[it.type]||'🌡'} ${esc(it.name)}</div><div style="color:var(--sl)">${TYPES[it.type]||''}${last?' · last '+last.data.temp+'°C at '+hm12(last.at):''}</div></div>
+ <div style="display:flex;gap:10px"><button class="sign ${W.neg?'on':''}" style="width:72px;min-height:72px" onclick="W.neg=!W.neg;walkShow()">${W.neg?'−':'+'}</button><div class="wdisp ${v==null?'empty':ok?'ok':'bad'}">${v==null?'__':(W.neg?'−':'')+W.v}°C</div></div>
+ <div class="fb ${ok===true?'ok':ok===false?'bad':''}">${ok===true?'✓ In range':ok===false?'✗ Out of range':''}</div>
+ <div class="chips">${(PRESET[it.type]||[]).map(p=>`<button class="chip" style="flex:1" onclick="W.neg=${p<0};W.v='${Math.abs(p)}';walkShow()">${p}</button>`).join('')}</div>
+ <div class="pad">${['1','2','3','4','5','6','7','8','9','.','0','⌫'].map(k=>`<button onclick="wKey('${k}')">${k}</button>`).join('')}</div>
+ <div class="row"><button class="btn ghost nogrow" onclick="W.i++;W.v='';walkShow()">Skip</button><button class="btn" onclick="walkLog()" ${v==null?'disabled':''}>${v==null?'Type the temp':ok===false?'⚠ Save':'✓ Save & next'}</button></div>`}
+function wKey(k){if(k=='⌫')W.v=W.v.slice(0,-1);else if(k=='.'){if(!W.v.includes('.'))W.v+=(W.v?'':'0')+'.'}else if(W.v.replace('.','').length<4)W.v=(W.v=='0'?'':W.v)+k;walkShow()}
+async function walkLog(){const[it,lk]=W.q[W.i],v=wNum();if(v==null)return;let action;if(judgeT(it.type,v)===false){const w=W;$('#walk').close();action=await askFix(it.type,v,it.name);W=w;$('#walk').showModal();if(action==null)return walkShow()}
+ await post('/api/log',{kind:lk,ref:it.id,data:action?{temp:v,action}:{temp:v}});W.done++;toast(action?'⚠ Saved — tell the manager':'✓ '+v+'°C OK',action?'warn':'good');W.i++;W.v='';walkShow()}
+let foodStage=localStorage.sw_stage||'cook';
+VIEWS.food=()=>{const st=S.food_stages,ty=st[foodStage][1],F=S.food||[];
+ return ph('Food safety','Food temps','Probe the thickest part of the food. Green = safe, red = not safe yet.')+
+ `<div class="card" style="margin-bottom:16px"><h2>Log a food temp</h2><p class="help">${TYPES[ty]}</p>
+ <div class="lbl" style="margin:6px 0">What are you checking?</div><div class="chips" style="margin-bottom:12px">${Object.entries(st).map(([k,v])=>`<button class="chip ${k==foodStage?'on':''}" onclick="foodStage='${k}';localStorage.sw_stage='${k}';render()">${v[0]}</button>`).join('')}</div>
+ <div class="row"><label class="f">Food<input id="fdF" list="fdL" placeholder="e.g. Chicken tenders" autocomplete="off"></label><datalist id="fdL">${[...items('prep'),...items('hotbox')].map(i=>`<option value="${esc(i.name)}">`).join('')}</datalist>
+ <label class="f">Temperature °C${tempBox('fdT',ty)}</label></div><div class="fb" id="fdTf"></div>
+ <button class="btn full" style="margin-top:8px" onclick="saveFood()">Save temp</button></div>
+ <div class="card"><h2>Today's food temps</h2>${tbl(['Time','Food','Check','Temp','Result','By',''],F.map(f=>[`<span class="mono">${hm12(f.at)}</span>`,esc(f.food),esc(st[f.stage]?.[0]||f.stage),`<span class="mono">${f.temp}°C</span>`,f.bad?`<span class="pill bad">Out of range</span>${f.action?' '+esc(f.action):''}`:'<span class="pill ok">OK</span>',esc(f.staff),delBtn('food',f.id)]),i=>F[i].bad?'bad':'')||'<div class="empty">No food temps yet today.</div>'}</div>`};
+async function saveFood(){const food=$('#fdF').value.trim(),ty=S.food_stages[foodStage][1],v=parseT($('#fdT').value,$('#fdTs')?.classList.contains('on'));if(!food){$('#fdF').focus();return toast('Which food?','warn')}if(v==null||Number.isNaN(v))return toast('Type the temperature','warn');
+ let action;if(judgeT(ty,v)===false){action=await askFix(ty,v,food);if(action==null)return}
+ await post('/api/food',{food,stage:foodStage,temp:v,action});$('#fdT').value='';$('#fdF').value='';toast(action?'⚠ Saved — tell the manager':'✓ '+v+'°C saved — safe',action?'warn':'good')}
+function hbRow(x){return `<div class="li hb ${over(x)?'over':''}"><div class="t"><b>${esc(x.item)}${x.qty?` <span class="mono">× ${esc(x.qty)}</span>`:''}</b><small>${esc(x.box||'Hot box')} · in ${hm12(x.time_in)} · bin by ${hm12(new Date(ts(x.time_in)+S.hotbox_max_h*36e5).toLocaleTimeString('en-GB',{timeZone:TZ,hour:'2-digit',minute:'2-digit'}))}${over(x)?' · <b style="color:var(--bad)">OVERDUE — bin it</b>':''}</small></div><span class="timer" data-in="${x.time_in}"></span>
+ <button class="btn sm ghost" onclick="hbOut(${x.id},'sold')">Sold</button><button class="btn sm danger" onclick="hbOut(${x.id},'discarded')">Bin</button></div>`}
+async function hbOut(id,o){if(o=='discarded'&&!confirm('Bin this item? It will be added to Discards.'))return;await post('/api/hotbox/out',{id,outcome:o,date:S.today},o=='sold'?'✓ Marked sold':'🗑 Binned and added to discards')}
+let hbItem='';
+VIEWS.hotbox=()=>{const boxes=items('kcheck').filter(i=>i.type=='hot'&&/hot box/i.test(i.name)),lv=liveHB(),old=(S.hotbox||[]).filter(x=>x.out_at),leg=logs('hotbox');
+ return ph('Hot holding','Hot box','Add food when it goes in. It turns red after '+S.hotbox_max_h+' hours — then bin it.')+
+ `<div class="grid g2"><div class="card"><h2>Put food in</h2><p class="help">Tap the food, check the time, then Add.</p>
+ <div class="chips" style="margin-bottom:12px">${items('hotbox').map(i=>`<button class="chip ${hbItem==i.name?'on':''}" onclick="hbItem=this.textContent;render()">${esc(i.name)}</button>`).join('')}<button class="chip" onclick="manage('hotbox')">✎ Edit</button></div>
+ <div class="row">${boxes.length>1?`<label class="f">Which hot box<select id="hbB">${boxes.map(b=>`<option>${esc(b.name)}</option>`).join('')}</select></label>`:''}<label class="f">How many<input id="hbQ" inputmode="numeric" placeholder="e.g. 6"></label><label class="f">Time in<input type="time" id="hbT" value="${nowHM()}"></label></div>
+ <button class="btn full" style="margin-top:12px" onclick="hbAdd()">${hbItem?'Add '+esc(hbItem):'Pick a food above'}</button></div>
+ <div class="card"><h2>In the hot box now<span class="sp"></span><span class="pill ${lv.some(over)?'bad':'grey'}">${lv.length} items</span></h2>${lv.length?`<div class="list">${lv.map(hbRow).join('')}</div>`:'<div class="empty">Hot box is empty.</div>'}</div></div>
+ <div class="card" style="margin-top:16px"><h2>Taken out today</h2>${tbl(['Item','Qty','In','Out','Result','By',''],old.filter(x=>x.date==S.date).map(x=>[esc(x.item),`<span class="mono">${esc(x.qty)}</span>`,`<span class="mono">${hm12(x.time_in)}</span>`,`<span class="mono">${hm12(x.out_at)}</span>`,x.outcome=='discarded'?'<span class="pill bad">Binned</span>':'<span class="pill ok">Sold</span>',esc(x.out_by),delBtn('hotbox',x.id)]))||'<div class="empty">Nothing taken out yet.</div>'}
+ ${leg.length?`<h2 style="margin-top:16px">Rotation log (old style)</h2>${tbl(['Hot box','Item','Qty','In','Discard','By',''],leg.map(r=>[esc(r.data.box||''),esc(r.data.item),esc(r.data.qty),esc(r.data.time),esc(r.data.discard),esc(r.staff),delBtn('log',r.id)]))}`:''}</div>`};
+async function hbAdd(){if(!hbItem)return toast('Tap a food first','warn');const t=$('#hbT').value||nowHM();await post('/api/hotbox',{item:hbItem,qty:$('#hbQ').value,time_in:t,box:$('#hbB')?.value||items('kcheck').find(i=>/hot box/i.test(i.name))?.name||'Hot box'},'✓ '+hbItem+' added — bin by '+hm12(new Date(ts(S.date+' '+t+':00')+S.hotbox_max_h*36e5).toLocaleTimeString('en-GB',{timeZone:TZ,hour:'2-digit',minute:'2-digit'})));hbItem='';render()}
+const REASONS=['Out of date','Hot box time up','Dropped / damaged','Temp out of range','Customer return','Other'];let disR=REASONS[0];
+VIEWS.discards=()=>{const D=S.discards||[];return ph('Waste','Discards','Log anything that goes in the bin, so we know what we waste.')+
+ `<div class="card" style="margin-bottom:16px"><h2>Bin something</h2><div class="row"><label class="f">What<input id="dsI" list="dsL" placeholder="e.g. Pies" autocomplete="off"></label><datalist id="dsL">${[...items('hotbox'),...items('prep')].map(i=>`<option value="${esc(i.name)}">`).join('')}</datalist><label class="f">How many<input id="dsQ" inputmode="decimal" placeholder="e.g. 2"></label></div>
+ <div class="lbl" style="margin:12px 0 6px">Why?</div><div class="chips">${REASONS.map(r=>`<button class="chip ${r==disR?'on':''}" onclick="disR='${r}';$$('.rchip').forEach(b=>b.classList.toggle('on',b.textContent==disR))" >${r}</button>`).join('').replace(/class="chip/g,'class="chip rchip')}</div>
+ <button class="btn full" style="margin-top:14px" onclick="saveDis()">Save discard</button></div>
+ <div class="card"><h2>Today's discards<span class="sp"></span><span class="pill grey">${D.length}</span></h2>${tbl(['Time','Item','Qty','Reason','By',''],D.map(x=>[`<span class="mono">${hm12(x.at)}</span>`,esc(x.item),`<span class="mono">${esc(x.qty)}</span>`,esc(x.reason),esc(x.staff),delBtn('discard',x.id)]))||'<div class="empty">Nothing binned today.</div>'}</div>`};
+async function saveDis(){const item=$('#dsI').value.trim();if(!item){$('#dsI').focus();return toast('What are you binning?','warn')}await post('/api/discard',{item,qty:$('#dsQ').value,reason:disR},'🗑 Discard saved');$('#dsI').value='';$('#dsQ').value=''}
+const fuelW={};
+VIEWS.fuel=()=>{const F=logs('fuel');return ph('Underground tanks','Fuel water paste log','Dip each tank with water finding paste and record the result.')+
+ `<div class="grid g3" style="margin-bottom:16px">${S.tanks.map((t,i)=>{const[g,c]=grade(t),l=logs('fuel',t).pop(),w=fuelW[i]||'no';
+ return `<div class="card ${c}"><h2><span class="tank ${c}">${g}</span> Tank ${esc(tankNo(t))}<span class="sp"></span>${l?(l.data.water=='yes'?'<span class="pill bad">Water</span>':'<span class="pill ok">Done '+hm12(l.at)+'</span>'):'<span class="pill pend">Pending</span>'}</h2><p class="help">${esc(t)}</p>
+ <div class="seg water" style="margin-bottom:12px"><button data-v="no" class="${w=='no'?'on':''}" onclick="fuelW[${i}]='no';render()">✓ No water</button><button data-v="yes" class="${w=='yes'?'on':''}" onclick="fuelW[${i}]='yes';render()">⚠ Water found</button></div>
+ <div class="row"><label class="f"><span class="lbl">Water mm</span><input id="fw${i}" class="num" inputmode="decimal" placeholder="0" ${w=='no'?'':''}></label><label class="f"><span class="lbl">Fuel L</span><input id="fl${i}" class="num" inputmode="decimal" placeholder="optional"></label></div>
+ <label class="f" style="margin-top:10px"><span class="lbl">Notes (optional)</span><input id="fn${i}" placeholder=""></label>
+ <button class="btn full" style="margin-top:12px" onclick="saveFuel(${i})">Save check</button></div>`}).join('')}</div>
+ <div class="card"><h2>Today's checks</h2>${tbl(['Time','Tank','Water','Water mm','Fuel L','By','Notes',''],F.map(l=>[`<span class="mono">${hm12(l.at)}</span>`,`<span class="tank ${grade(l.ref)[1]}">${grade(l.ref)[0]}</span> ${esc(l.ref)}`,l.data.water=='yes'?'<span class="pill bad">Yes</span>':'<span class="pill ok">No</span>',`<span class="mono">${esc(l.data.water_mm??0)}</span>`,`<span class="mono">${esc(l.data.fuel_l??'')}</span>`,esc(l.staff),esc(l.data.notes||''),delBtn('log',l.id)]),i=>F[i].data.water=='yes'?'bad':'')||'<div class="empty">No checks yet today.</div>'}</div>`};
+async function saveFuel(i){const t=S.tanks[i],w=fuelW[i]||'no',mm=$('#fw'+i).value.trim();if(w=='yes'&&!(parseFloat(mm)>0)){$('#fw'+i).focus();return toast('How many mm of water?','warn')}
+ await post('/api/log',{kind:'fuel',ref:t,data:{water:w,water_mm:w=='yes'?mm:0,fuel_l:$('#fl'+i).value.trim(),notes:$('#fn'+i).value.trim()}});fuelW[i]='no';render();toast(w=='yes'?'⚠ Water saved — tell the manager now':'✓ Tank '+tankNo(t)+' saved — no water',w=='yes'?'warn':'good')}
+let HIST=null;
+VIEWS.reports=()=>{const s=S.summary,miss=[...s.tabs.kitchen.missing,...s.tabs.shop.missing];if(!HIST)api('/api/history').then(h=>{HIST=h;if(page=='reports')render()});
+ return ph('Records','Reports','Submit the day, and see past days.')+
+ `<div class="card" style="margin-bottom:16px"><h2>Submit ${S.date==S.today?'today':S.date}</h2><p class="help">Sends the day's record to the manager and locks it. Only the manager can reopen it.</p>
+ <div class="grid g3" style="margin-bottom:12px"><div><div class="lbl">Tasks</div><b class="mono" style="font-size:20px">${s.tasks_done}/${s.tasks_total}</b></div><div><div class="lbl">Not logged</div><b class="mono" style="font-size:20px">${miss.length}</b></div><div><div class="lbl">Alerts</div><b class="mono" style="font-size:20px;color:${s.alerts.length?'var(--bad)':'inherit'}">${s.alerts.length}</b></div></div>
+ ${s.alerts.length?`<div class="alert">⚠ ${s.alerts.map(esc).join('<br>⚠ ')}</div>`:''}${miss.length?`<p class="help">Not logged yet: ${miss.map(esc).join(', ')}</p>`:''}
+ ${S.locked?'<span class="pill ok">Submitted 🔒</span>':`<div class="lbl" style="margin-bottom:6px">Which area are you submitting?</div><div class="row"><button class="btn" onclick="submitDay('kitchen')">🍳 Kitchen</button><button class="btn" onclick="submitDay('shop')">🏪 Shop / Site</button><button class="btn ghost" onclick="submitDay('both')">Both</button></div>`}</div>
+ <div class="card"><h2>Past days<span class="sp"></span><button class="link keep" onclick="HIST=null;render()">Refresh</button></h2>${HIST?(HIST.map(d=>{const p=Math.round((d.summary.tabs.kitchen.progress+d.summary.tabs.shop.progress)/2);return `<div class="li" style="flex-wrap:wrap"><div class="t"><b class="mono">${d.date}</b> ${d.locked?`<span class="pill ok">Submitted · ${esc(d.locked.staff)}</span>`:'<span class="pill pend">Not submitted</span>'}
+ <small>${p}% · ${d.summary.tasks_done}/${d.summary.tasks_total} tasks · ${d.logs} entries · ${d.summary.missing} not logged${d.staff?.length?' · 👤 '+d.staff.map(esc).join(', '):''}</small>${d.summary.alerts.length?`<small style="color:var(--bad)">⚠ ${d.summary.alerts.map(esc).join(' · ')}</small>`:''}
+ ${(d.submissions||[]).map(x=>`<small>📝 ${{kitchen:'Kitchen',shop:'Shop',both:'Kitchen + Shop'}[x.area]||esc(x.area)} · ${esc(x.staff)} · ${hm12(x.at)} · ${{sent:'✅ Email sent',failed:'⚠ Email failed',not_configured:'Email not set up',sending:'Sending…'}[x.email_status]||esc(x.email_status)} · ${(x.webhook_status||'').startsWith('sent')?'✅ Message sent':(x.webhook_status||'').startsWith('failed')?'⚠ Message failed':x.webhook_status=='not_configured'?'Message not set up':'Sending…'} · <a class="link keep" href="/submission/${x.id}" target="_blank">View</a></small>`).join('')}
+ ${d.shifts?.length?`<small>🕒 ${d.shifts.map(x=>esc(x.staff)+' '+hm12(x.start_at)+'–'+(x.end_at?hm12(x.end_at):'…')+(x.hours!=null?' ('+x.hours+'h)':'')).join(' · ')}</small>`:''}</div><button class="btn sm ghost keep" onclick="load('${d.date}')">Open</button></div>`}).join('')||'<div class="empty">No days yet.</div>'):'<div class="empty">Loading…</div>'}</div>`};
+async function submitDay(a){if(!confirm('Submit and lock '+S.date+' ('+a+') under '+(me()||'your name')+'?'))return;await post('/api/submit',{area:a},'🔒 Day submitted — sent to the manager');HIST=null;render()}
+async function unlock(){const pin=prompt('Manager PIN to reopen this day');if(pin)await post('/api/unlock',{pin},'Day reopened')}
+VIEWS.settings=()=>ph('Setup','Settings','Names, lists and manager tools.')+
+ `<div class="grid g2"><div class="card"><h2>This phone</h2><p class="help">Your name is remembered on this device.</p><div class="row"><label class="f">Your name<input id="stN" value="${esc(me())}" maxlength="40"></label><button class="btn nogrow keep" onclick="setName($('#stN').value)">Save</button></div>
+ <div class="row" style="margin-top:10px"><button class="btn ghost keep" onclick="localStorage.sw_names='[]';whoUI();toast('Name list cleared','good')">Clear saved names</button><button class="btn ghost keep" onclick="localStorage.removeItem('sw_pin');toast('Staff PIN forgotten on this phone','good')">Forget staff PIN</button></div></div>
+ <div class="card"><h2>Lists</h2><p class="help">Change what shows on each page. Old records are kept.</p><div class="grid">${Object.entries(KN).map(([k,n])=>`<button class="btn ghost full" onclick="manage('${k}')">${n} (${items(k).length})</button>`).join('')}</div></div>
+ <div class="card" style="grid-column:1/-1"><h2>🔑 Manager</h2>${mgr?`<p class="help">Manager mode is on for this browser session.</p><h2 style="font-size:14px;margin-top:10px">Shifts on ${S.date}</h2>${tbl(['Name','Area','Start','End','Hours',''],(S.shifts||[]).map(x=>[esc(x.staff),esc(x.area||''),`<span class="mono">${hm12(x.start_at)}</span>`,x.end_at?`<span class="mono">${hm12(x.end_at)}</span>`:'<span class="pill ok">On shift</span>',`<span class="mono">${x.hours??''}</span>`,`<button class="btn sm ghost keep" onclick="fixShift(${x.id})">Fix</button>`]))||'<div class="empty">No shifts.</div>'}
+ <div class="row" style="margin-top:12px"><button class="btn ghost keep" onclick="testEmail()">✉ Send test email</button><button class="btn ghost keep" onclick="testHook()">💬 Send test message</button>${S.locked?'<button class="btn ghost keep" onclick="unlock()">Reopen this day</button>':''}<button class="btn ghost keep" onclick="mgr=false;sessionStorage.sw_mgr='';sessionStorage.sw_mpin='';render()">Exit manager</button></div>`:
+ `<p class="help">Fix shift times, test email and reopen days.</p><button class="btn keep" onclick="mgrIn()">Enter manager PIN</button>`}</div></div>`;
+async function mgrIn(){const pin=prompt('Manager PIN');if(!pin)return;const r=await fetch('/api/pincheck?pin='+encodeURIComponent(pin),{headers:{'X-Staff-Pin':localStorage.sw_pin||''}});if(!r.ok)return toast('Wrong PIN','warn');mgr=true;sessionStorage.sw_mgr='1';sessionStorage.sw_mpin=pin;render();toast('Manager mode on','good')}
+async function testEmail(){toast('✉ Sending…');const r=await(await fetch('/api/test-email?pin='+encodeURIComponent(sessionStorage.sw_mpin||'')+'&staff='+encodeURIComponent(me()),{headers:{'X-Staff-Pin':localStorage.sw_pin||''}})).json();toast(r.status=='sent'?'✅ Test email sent to '+r.info:r.status=='not_configured'?'Email not set up on the server':'⚠ Email failed: '+(r.info||r.error||''),r.status=='sent'?'good':'warn')}
+async function testHook(){toast('💬 Sending…');const r=await(await fetch('/api/test-webhook?pin='+encodeURIComponent(sessionStorage.sw_mpin||''),{headers:{'X-Staff-Pin':localStorage.sw_pin||''}})).json();toast('Message: '+(r.status||r.error),String(r.status).startsWith('sent')?'good':'warn')}
+function fixShift(id){const x=S.shifts.find(s=>s.id==id);openDlg('Fix shift — '+x.staff,`<label class="f">Start<input type="time" id="fsS" value="${x.start_at.slice(11,16)}"></label><label class="f">End<input type="time" id="fsE" value="${x.end_at?x.end_at.slice(11,16):''}"></label><div class="row"><button class="btn" id="fsSave">Save</button><button class="btn danger nogrow" id="fsDel">Delete</button></div>`);
+ $('#fsSave').onclick=async()=>{await post('/api/shift/fix',{id,start:$('#fsS').value,end:$('#fsE').value,pin:sessionStorage.sw_mpin},'✓ Shift saved');dlg.close()};
+ $('#fsDel').onclick=async()=>{if(confirm('Delete this shift?')){await post('/api/shift/delete',{id,pin:sessionStorage.sw_mpin},'Shift deleted');dlg.close()}}}
+/* dialogs: task + lists */
+const dlg=$('#dlg');function openDlg(t,h){$('#dt').textContent=t;$('#dbody').innerHTML=h;if(!dlg.open)dlg.showModal()}
+function taskDlg(id){if(!me())return pickName();const x=id?S.tasks.find(t=>t.id==id):{tab:area=='shop'?'shop':'kitchen',repeat:'once',title:'',due_time:''};
+ openDlg(id?'Edit task':'Add task',`<label class="f">Task<input id="fT" value="${esc(x.title)}" placeholder="e.g. Restock cups and lids"></label>
+ <label class="f">Where<div class="seg" id="fTab"><button data-v="kitchen">Kitchen</button><button data-v="shop">Shop / Site</button></div></label>
+ <label class="f">How often<div class="seg" id="fR"><button data-v="once">Just today</button><button data-v="daily">Every day</button><button data-v="weekly">Weekly</button></div></label>
+ <label class="f" id="fWl">Day of week<select id="fW">${DAYS.map((d,i)=>`<option value="${i}">${d}</option>`).join('')}</select></label>
+ <label class="f">Due by (optional)<input type="time" id="fD" value="${x.due_time||''}"></label>
+ <div class="row"><button class="btn" id="fSave">Save task</button>${id?'<button class="btn danger nogrow" id="fDel">Delete</button>':''}</div>`);
+ const seg=(sel,v)=>{$$(sel+' button').forEach(b=>{b.classList.toggle('on',b.dataset.v==v);b.onclick=e=>{e.preventDefault();seg(sel,b.dataset.v)}});if(sel=='#fR')$('#fWl').hidden=v!='weekly'};
+ seg('#fTab',x.tab);seg('#fR',x.repeat);$('#fW').value=x.weekday??((new Date(S.date).getDay()+6)%7);const val=s=>$(s+' button.on').dataset.v;
+ $('#fSave').onclick=async()=>{if(!$('#fT').value.trim())return toast('Type the task','warn');await post('/api/task',{id,title:$('#fT').value,tab:val('#fTab'),repeat:val('#fR'),weekday:$('#fW').value,due_time:$('#fD').value},'✓ Task saved');dlg.close()};
+ if(id)$('#fDel').onclick=async()=>{if(confirm('Delete this task?')){await post('/api/task',{id,delete:1},'Task deleted');dlg.close()}}}
+const KN={fridge:'Shop fridges',freezer:'Shop freezers',kcheck:'Kitchen check points',prep:'Prep items',hotbox:'Hot box foods'};
+function manage(kind){const its=items(kind),typ=kind=='kcheck';const TS=Object.entries(TYPES);
+ openDlg('Edit '+KN[kind],`${its.map(i=>`<div class="row"><input id="m${i.id}" value="${esc(i.name)}">${typ?`<select id="y${i.id}">${TS.map(([k,v])=>`<option value="${k}" ${i.type==k?'selected':''}>${v.split(' —')[0]}</option>`).join('')}</select>`:''}<button class="btn sm ghost nogrow" onclick="ren(${i.id},'${kind}')">Save</button><button class="btn sm danger nogrow" onclick="rem(${i.id},'${kind}')">🗑</button></div>`).join('')}
+ <hr style="border:0;border-top:1px solid var(--bd)"><div class="row"><input id="mNew" placeholder="Add new…">${typ?`<select id="yNew">${TS.map(([k,v])=>`<option value="${k}">${v.split(' —')[0]}</option>`).join('')}</select>`:''}<button class="btn nogrow" onclick="addItem('${kind}')">Add</button></div><p class="help">Removing keeps old records.</p>`)}
+async function ren(id,k){await post('/api/item',{id,name:$('#m'+id).value,type:$('#y'+id)?.value},'✓ Saved');manage(k)}
+async function rem(id,k){if(confirm('Remove from the list? (old records kept)')){await post('/api/item',{id,delete:1},'Removed');manage(k)}}
+async function addItem(k){if(!$('#mNew').value.trim())return;await post('/api/item',{kind:k,name:$('#mNew').value,type:$('#yNew')?.value},'✓ Added');manage(k)}
+/* boot */
+page=PAGES.some(x=>x[0]==location.hash.slice(1))?location.hash.slice(1):'dashboard';
+load().then(()=>{if(!me())pickName()});
+setInterval(()=>{const a=document.activeElement;if(!dlg.open&&!$('#walk').open&&!['INPUT','SELECT','TEXTAREA'].includes(a.tagName)&&!$$('main input').some(e=>e.value&&e.type!='time'&&e.type!='date'))load($('#date').value)},60000);
 </script></body></html>

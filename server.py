@@ -124,6 +124,13 @@ def init():
     CREATE INDEX IF NOT EXISTS ix_submissions_date ON submissions(date);
     CREATE INDEX IF NOT EXISTS ix_audit_date ON audit(date);
     CREATE INDEX IF NOT EXISTS ix_tasks_active ON tasks(active, start_date);
+    CREATE TABLE IF NOT EXISTS food_temps(id INTEGER PRIMARY KEY, date TEXT, food TEXT, stage TEXT, temp REAL, bad INTEGER DEFAULT 0, action TEXT, staff TEXT, at TEXT);
+    CREATE TABLE IF NOT EXISTS hotbox_items(id INTEGER PRIMARY KEY, date TEXT, box TEXT, item TEXT, qty TEXT, time_in TEXT, out_at TEXT, out_by TEXT, outcome TEXT, staff TEXT, at TEXT);
+    CREATE TABLE IF NOT EXISTS discards(id INTEGER PRIMARY KEY, date TEXT, item TEXT, qty TEXT, reason TEXT, hotbox_id INTEGER, staff TEXT, at TEXT);
+    CREATE INDEX IF NOT EXISTS ix_food_temps_date ON food_temps(date);
+    CREATE INDEX IF NOT EXISTS ix_hotbox_date ON hotbox_items(date);
+    CREATE INDEX IF NOT EXISTS ix_hotbox_open ON hotbox_items(out_at);
+    CREATE INDEX IF NOT EXISTS ix_discards_date ON discards(date)
     """)
     c.commit()
     try:  # migrate older submissions tables
@@ -161,22 +168,31 @@ def tasks_for(c, d):
         out.append(t)
     return out
 
-def day_state(d):
+FOOD_STAGES = {"cook": ("Cooking (core)", "core"), "reheat": ("Reheating (core)", "core"), "hothold": ("Hot holding", "hot"),
+               "coldhold": ("Cold holding", "fridge"), "chilled": ("Receiving chilled", "fridge"), "frozen": ("Receiving frozen", "freezer")}
+HOTBOX_MAX_H = 2
+
+def day_state(d, extras=True):
     c = db()
     items = [dict(r) for r in c.execute("SELECT * FROM items WHERE active=1 ORDER BY kind, sort, id")]
     logs = [dict(r, data=json.loads(r["data"])) for r in c.execute("SELECT * FROM logs WHERE date=? ORDER BY at", (d,))]
     tasks = tasks_for(c, d)
     lock = c.execute("SELECT * FROM days WHERE date=?", (d,)).fetchone()
     shifts = [dict(r) for r in c.execute("SELECT * FROM shifts WHERE date=? ORDER BY start_at", (d,))]
+    ex = {}
+    if extras:
+        ex["food"] = [dict(r) for r in c.execute("SELECT * FROM food_temps WHERE date=? ORDER BY at", (d,))]
+        ex["hotbox"] = [dict(r) for r in c.execute("SELECT * FROM hotbox_items WHERE date=? OR (out_at IS NULL AND date<=?) ORDER BY time_in", (d, d))]
+        ex["discards"] = [dict(r) for r in c.execute("SELECT * FROM discards WHERE date=? ORDER BY at", (d,))]
     c.close()
-    return {"date": d, "today": today(), "items": items, "logs": logs, "tasks": tasks, "tanks": TANKS,
-            "rules": RULES, "locked": dict(lock) if lock else None, "shifts": shifts, "summary": summarise(items, logs, tasks)}
+    return {**ex, "now": now().strftime("%Y-%m-%d %H:%M:%S"), "food_stages": FOOD_STAGES, "hotbox_max_h": HOTBOX_MAX_H, "pg": PG,"date": d, "today": today(), "items": items, "logs": logs, "tasks": tasks, "tanks": TANKS,
+            "rules": RULES, "locked": dict(lock) if lock else None, "shifts": shifts, "summary": summarise(items, logs, tasks, ex.get("food"))}
 
 def shift_hours(a, b):
     f = "%Y-%m-%d %H:%M:%S"
     return round((datetime.strptime(b, f) - datetime.strptime(a, f)).total_seconds() / 3600, 2)
 
-def summarise(items, logs, tasks):
+def summarise(items, logs, tasks, food=None):
     def has(kind, ref): return any(l["kind"] == kind and l["ref"] == ref for l in logs)
     tabs = {}
     for tab in ("kitchen", "shop"):
@@ -192,6 +208,7 @@ def summarise(items, logs, tasks):
                      "missing": missing, "progress": round(100 * done / max(1, len(tt) + len(req)))}
     alerts = [f'{l["data"].get("name")}: {l["data"].get("temp")}°C' for l in logs if l["bad"]]
     alerts += [f'Tank {l["ref"]}: water {l["data"].get("water_mm")}mm' for l in logs if l["kind"] == "fuel" and l["data"].get("water") == "yes"]
+    alerts += [f'{f["food"]} ({FOOD_STAGES.get(f["stage"], (f["stage"],))[0]}): {f["temp"]}°C' for f in (food or []) if f["bad"]]
     return {"tasks_done": sum(v["tasks_done"] for v in tabs.values()), "tasks_total": sum(v["tasks_total"] for v in tabs.values()),
             "missing": sum(len(v["missing"]) for v in tabs.values()), "alerts": alerts, "tabs": tabs}
 
@@ -214,9 +231,16 @@ def snapshot(ds, area):
     snap = {"date": ds["date"], "area": area, "temps": temps, "jobs": jobs,
             "not_logged": sum((ds["summary"]["tabs"][t]["missing"] for t in tabs), []),
             "shifts": [x for x in ds["shifts"] if area == "both" or x["area"] in (area, "")]}
-    if "kitchen" in tabs: snap.update(prep=pick("prep"), hotbox=pick("hotbox"), tomorrow=pick("tomorrow"))
+    if "kitchen" in tabs:
+        snap.update(prep=pick("prep"), hotbox=pick("hotbox"), tomorrow=pick("tomorrow"))
+        snap["food_temps"] = [{"food": f["food"], "stage": FOOD_STAGES.get(f["stage"], (f["stage"],))[0], "temp": f["temp"], "ok": not f["bad"],
+                               "action": f["action"], "at": (f["at"] or "")[11:16], "staff": f["staff"]} for f in ds.get("food", [])]
+        snap["hotbox_items"] = [{"box": x["box"], "item": x["item"], "qty": x["qty"], "in": (x["time_in"] or "")[11:16], "out": (x["out_at"] or "")[11:16],
+                                 "outcome": x["outcome"] or "in hot box", "staff": x["staff"]} for x in ds.get("hotbox", []) if x["date"] == ds["date"]]
+        snap["discards"] = [{"item": x["item"], "qty": x["qty"], "reason": x["reason"], "at": (x["at"] or "")[11:16], "staff": x["staff"]} for x in ds.get("discards", [])]
     if "shop" in tabs: snap["fuel"] = [dict(l["data"], tank=l["ref"], staff=l["staff"], at=l["at"][11:16]) for l in L if l["kind"] == "fuel"]
     alerts = [f'{t["unit"]}: {t["temp"]}°C' for t in temps if not t["ok"]]
+    alerts += [f'{f["food"]} ({f["stage"]}): {f["temp"]}°C' for f in snap.get("food_temps", []) if not f["ok"]]
     alerts += [f'Tank {f["tank"]}: WATER {f.get("water_mm")}mm' for f in snap.get("fuel", []) if f.get("water") == "yes"]
     snap["alerts"] = alerts
     return snap
@@ -242,8 +266,12 @@ def snapshot_html(sub, snap, standalone=False):
         out.append(h2("🍳 Prep") + table(["Item", "Qty", "Prepped", "Use by", "By"], [[(e(r.get("item")), ""), (e(r.get("qty")), ""), (e(r.get("time")), ""), (e(r.get("use_by")), ""), (e(r["staff"]), "")] for r in snap["prep"]]))
         out.append(h2("🔥 Hot box") + table(["Hot box", "Item", "Qty", "In", "Discard", "By"], [[(e(r.get("box")), ""), (e(r.get("item")), ""), (e(r.get("qty")), ""), (e(r.get("time")), ""), (e(r.get("discard")), ""), (e(r["staff"]), "")] for r in snap["hotbox"]]))
         out.append(h2("📋 For tomorrow") + table(["Item", "Qty / note", "By"], [[(e(r.get("item")), ""), (e(r.get("qty")), ""), (e(r["staff"]), "")] for r in snap["tomorrow"]]))
+    if snap.get("food_temps") is not None:
+        out.append(h2("🍗 Food temps") + table(["Food", "Stage", "Temp", "Result", "Time", "By"], [[(e(f["food"]), ""), (e(f["stage"]), ""), (e(f["temp"]) + "°C", ""), (ok(f["ok"])[0] + (" – " + e(f["action"]) if f.get("action") else ""), ok(f["ok"])[1]), (e(f["at"]), ""), (e(f["staff"]), "")] for f in snap["food_temps"]]))
+        out.append(h2("🔥 Hot box items") + table(["Box", "Item", "Qty", "In", "Out", "Result", "By"], [[(e(x["box"]), ""), (e(x["item"]), ""), (e(x["qty"]), ""), (e(x["in"]), ""), (e(x["out"]), ""), (e(x["outcome"]), ""), (e(x["staff"]), "")] for x in snap.get("hotbox_items", [])]))
+        out.append(h2("🗑 Discards") + table(["Item", "Qty", "Reason", "Time", "By"], [[(e(x["item"]), ""), (e(x["qty"]), ""), (e(x["reason"]), ""), (e(x["at"]), ""), (e(x["staff"]), "")] for x in snap.get("discards", [])]))
     if "fuel" in snap:
-        out.append(h2("⛽ Fuel water check") + table(["Tank", "Result", "Time", "By"], [[(e(f["tank"]), ""), ("⚠ WATER " + e(f.get("water_mm")) + "mm", "color:#C62828;font-weight:700") if f.get("water") == "yes" else ("No water", "color:#2E7D32"), (e(f["at"]), ""), (e(f["staff"]), "")] for f in snap["fuel"]]))
+        out.append(h2("⛽ Fuel water check") + table(["Tank", "Result", "Time", "By"], [[(e(f["tank"]), ""), ("⚠ WATER " + e(f.get("water_mm")) + "mm" + (f' · fuel {e(f.get("fuel_l"))}L' if f.get("fuel_l") else ""), "color:#C62828;font-weight:700") if f.get("water") == "yes" else ("No water" + (f' · fuel {e(f.get("fuel_l"))}L' if f.get("fuel_l") else ""), "color:#2E7D32"), (e(f["at"]), ""), (e(f["staff"]), "")] for f in snap["fuel"]]))
     hm = lambda t: (t or "")[11:16] or "on shift"
     out.append(h2("🕒 Shifts") + table(["Name", "Area", "Start", "End", "Hours"], [[(e(x["staff"]), ""), (e(AREAS.get(x["area"], x["area"])), ""), (e(hm(x["start_at"])), ""), (e(hm(x["end_at"])), ""), (e(x["hours"]), "")] for x in snap["shifts"]]))
     body = f'<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:0 auto;color:#111;padding:16px">{"".join(out)}</div>'
@@ -286,6 +314,7 @@ def webhook_payload(sub, snap):
             "alerts": snap["alerts"], "not_logged": snap["not_logged"], "temperatures": snap["temps"],
             "jobs_done": [j for j in snap["jobs"] if j["done"]], "jobs_not_done": [j for j in snap["jobs"] if not j["done"]],
             "prep": snap.get("prep", []), "hotbox_rotation": snap.get("hotbox", []), "fuel": snap.get("fuel", []),
+            "food_temps": snap.get("food_temps", []), "hotbox_items": snap.get("hotbox_items", []), "discards": snap.get("discards", []),
             "shifts": snap["shifts"]}
 
 def post_webhook(sub_id, payload):
@@ -311,6 +340,9 @@ class H(BaseHTTPRequestHandler):
     def send(self, code, obj, ctype="application/json"):
         b = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
         self.send_response(code); self.send_header("Content-Type", ctype); self.send_header("Cache-Control", "no-store")
+        self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        self.send_header("X-Content-Type-Options", "nosniff"); self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "same-origin")
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def body(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -355,7 +387,7 @@ class H(BaseHTTPRequestHandler):
             dates = sorted({list(dict(r).values())[0] for r in c.execute("SELECT date FROM logs UNION SELECT date FROM task_done UNION SELECT date FROM days UNION SELECT date FROM audit UNION SELECT date FROM shifts")}, reverse=True)[:60]
             out = []
             for d in dates:
-                s = day_state(d)
+                s = day_state(d, extras=False)
                 names = sorted({r["staff"] for r in c.execute("SELECT staff FROM logs WHERE date=? UNION SELECT staff FROM task_done WHERE date=? UNION SELECT staff FROM audit WHERE date=?", (d, d, d)) if r["staff"]})
                 out.append({"date": d, "locked": s["locked"], "summary": s["summary"], "logs": len(s["logs"]), "staff": names, "shifts": s["shifts"],
                             "submissions": [dict(r) for r in c.execute("SELECT id,area,staff,at,email_status,email_error,webhook_status FROM submissions WHERE date=? ORDER BY id", (d,))]})
@@ -366,7 +398,9 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.authed(): return self.send(401, {"error": "staff PIN required", "pin": True})
         self.handle_write("POST")
-    def do_DELETE(self): self.handle_write("DELETE")
+    def do_DELETE(self):
+        if not self.authed(): return self.send(401, {"error": "staff PIN required", "pin": True})
+        self.handle_write("DELETE")
     def handle_write(self, m):
         try: b = self.body()
         except Exception: return self.send(400, {"error": "bad json"})
@@ -377,7 +411,8 @@ class H(BaseHTTPRequestHandler):
         try:
             if not staff:  # every write must carry the staff member's name
                 return self.send(400, {"error": "staff name required", "name": True})
-            if p in ("/api/tick", "/api/log", "/api/submit", "/api/log/delete") and locked():
+            if p in ("/api/tick", "/api/log", "/api/submit", "/api/log/delete", "/api/food", "/api/food/delete",
+                     "/api/hotbox", "/api/hotbox/out", "/api/hotbox/delete", "/api/discard", "/api/discard/delete") and locked():
                 return self.send(409, {"error": f"{d} is submitted and locked"})
             if p == "/api/task":
                 if b.get("delete"): c.execute("UPDATE tasks SET active=0 WHERE id=?", (b["id"],))
@@ -408,12 +443,46 @@ class H(BaseHTTPRequestHandler):
                     try: data["temp"] = float(data.get("temp"))
                     except Exception: return self.send(400, {"error": "temperature required"})
                     data["name"], data["type"] = it["name"], it["type"]; bad = is_bad(it["type"], data["temp"])
+                if kind == "fuel":
+                    data = {"water": "yes" if data.get("water") == "yes" else "no", "water_mm": data.get("water_mm") or 0,
+                            **({"fuel_l": str(data["fuel_l"])[:12]} if data.get("fuel_l") not in (None, "") else {}),
+                            **({"notes": str(data["notes"])[:200]} if (data.get("notes") or "").strip() else {})}
                 if b.get("log_id"):
                     c.execute("UPDATE logs SET data=?,staff=?,at=?,bad=? WHERE id=? AND date=?", (json.dumps(data), staff, ts, bad, b["log_id"], d))
                 else:
                     c.execute("INSERT INTO logs(date,kind,ref,data,staff,at,bad) VALUES(?,?,?,?,?,?,?)", (d, kind, str(b.get("ref") or ""), json.dumps(data), staff, ts, bad))
             elif p == "/api/log/delete":
                 c.execute("DELETE FROM logs WHERE id=? AND date=?", (b["id"], d))
+            elif p == "/api/food":
+                stage = b.get("stage"); food = (b.get("food") or "").strip()[:60]
+                if stage not in FOOD_STAGES or not food: return self.send(400, {"error": "food and stage required"})
+                try: t = float(b.get("temp"))
+                except Exception: return self.send(400, {"error": "temperature required"})
+                c.execute("INSERT INTO food_temps(date,food,stage,temp,bad,action,staff,at) VALUES(?,?,?,?,?,?,?,?)",
+                          (d, food, stage, t, is_bad(FOOD_STAGES[stage][1], t), (b.get("action") or "")[:120] or None, staff, ts))
+            elif p == "/api/hotbox":
+                item = (b.get("item") or "").strip()[:60]
+                if not item: return self.send(400, {"error": "item required"})
+                tin = b.get("time_in") or ts[11:16]
+                if not re.fullmatch(r"\d{2}:\d{2}", tin): return self.send(400, {"error": "time must be HH:MM"})
+                c.execute("INSERT INTO hotbox_items(date,box,item,qty,time_in,staff,at) VALUES(?,?,?,?,?,?,?)",
+                          (d, (b.get("box") or "")[:60], item, str(b.get("qty") or "")[:12], f"{d} {tin}:00", staff, ts))
+            elif p == "/api/hotbox/out":
+                x = c.execute("SELECT * FROM hotbox_items WHERE id=? AND out_at IS NULL", (b.get("id"),)).fetchone()
+                if not x: return self.send(404, {"error": "not in hot box"})
+                oc = "discarded" if b.get("outcome") == "discarded" else "sold"
+                c.execute("UPDATE hotbox_items SET out_at=?, out_by=?, outcome=? WHERE id=?", (ts, staff, oc, x["id"]))
+                if oc == "discarded":
+                    c.execute("INSERT INTO discards(date,item,qty,reason,hotbox_id,staff,at) VALUES(?,?,?,?,?,?,?)",
+                              (today(), x["item"], x["qty"], (b.get("reason") or "Hot box time expired")[:120], x["id"], staff, ts))
+            elif p == "/api/discard":
+                item = (b.get("item") or "").strip()[:60]
+                if not item: return self.send(400, {"error": "item required"})
+                c.execute("INSERT INTO discards(date,item,qty,reason,staff,at) VALUES(?,?,?,?,?,?)",
+                          (d, item, str(b.get("qty") or "")[:12], (b.get("reason") or "")[:120], staff, ts))
+            elif p in ("/api/food/delete", "/api/hotbox/delete", "/api/discard/delete"):
+                tbl = {"food": "food_temps", "hotbox": "hotbox_items", "discard": "discards"}[p.split("/")[2]]
+                c.execute(f"DELETE FROM {tbl} WHERE id=? AND date=?", (b.get("id"), d))
             elif p == "/api/item":
                 if b.get("delete"): c.execute("UPDATE items SET active=0 WHERE id=?", (b["id"],))
                 elif b.get("id"): c.execute("UPDATE items SET name=?,type=COALESCE(?,type),example=0 WHERE id=?", (b["name"].strip()[:60], b.get("type"), b["id"]))
