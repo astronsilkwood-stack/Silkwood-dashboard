@@ -118,6 +118,12 @@ def init():
     CREATE TABLE IF NOT EXISTS shifts(id INTEGER PRIMARY KEY, date TEXT, staff TEXT, area TEXT, start_at TEXT, end_at TEXT, hours REAL);
     CREATE TABLE IF NOT EXISTS submissions(id INTEGER PRIMARY KEY, date TEXT, area TEXT, staff TEXT, at TEXT, snapshot TEXT, email_status TEXT, email_error TEXT, webhook_status TEXT);
     CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, date TEXT, at TEXT, staff TEXT, action TEXT, detail TEXT);
+    CREATE INDEX IF NOT EXISTS ix_task_done_date ON task_done(date);
+    CREATE INDEX IF NOT EXISTS ix_logs_date ON logs(date);
+    CREATE INDEX IF NOT EXISTS ix_shifts_date ON shifts(date);
+    CREATE INDEX IF NOT EXISTS ix_submissions_date ON submissions(date);
+    CREATE INDEX IF NOT EXISTS ix_audit_date ON audit(date);
+    CREATE INDEX IF NOT EXISTS ix_tasks_active ON tasks(active, start_date);
     """)
     c.commit()
     try:  # migrate older submissions tables
@@ -139,14 +145,19 @@ def is_bad(typ, v):
 def tasks_for(c, d):
     wd = date.fromisoformat(d).weekday()
     out = []
-    for t in c.execute("SELECT * FROM tasks WHERE active=1 AND start_date<=? ORDER BY due_time IS NULL, due_time, id", (d,)):
-        t = dict(t)
+    rows = [dict(t) for t in c.execute("SELECT * FROM tasks WHERE active=1 AND start_date<=? ORDER BY due_time IS NULL, due_time, id", (d,))]
+    # one query for all ticks instead of 1-2 per task (DB is cross-region, every round trip costs ~100ms)
+    done_on = {r["task_id"]: dict(staff=r["staff"], at=r["at"]) for r in c.execute("SELECT task_id,staff,at FROM task_done WHERE date=?", (d,))}
+    ever_done = None
+    for t in rows:
         if t["repeat"] == "weekly" and t["weekday"] != wd: continue
         if t["repeat"] == "once" and t["start_date"] != d:
             # carry an undone one-off forward to later days
-            if c.execute("SELECT 1 FROM task_done WHERE task_id=?", (t["id"],)).fetchone() or d != today(): continue
-        dn = c.execute("SELECT staff,at FROM task_done WHERE task_id=? AND date=?", (t["id"], d)).fetchone()
-        t["done"] = dict(dn) if dn else None
+            if d != today(): continue
+            if ever_done is None:
+                ever_done = {r["task_id"] for r in c.execute("SELECT DISTINCT task_id FROM task_done td JOIN tasks t ON t.id=td.task_id WHERE t.repeat='once' AND t.active=1")}
+            if t["id"] in ever_done: continue
+        t["done"] = done_on.get(t["id"])
         out.append(t)
     return out
 
