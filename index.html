@@ -347,7 +347,7 @@ function whoTap(i){const x=window._whoL[i];if(!x.pin)return whoDone({name:x.name
 /* ---------- fleet card pay (replaces the Apps Script form; same fields/payload, sent via server proxy /api/fleet) ----------
    Card number is kept in memory only (never localStorage) and cleared after sending. */
 let FC={fuelProduct:'Diesel',surcharge:'0',odo:'0'},fcBusy=false,fcMsg=['',''],fcDup=false;
-const FC_F=[['salesNumber','Sales number','numeric','',''],['cardNumber','Card number','numeric','digits only',''],['cardExpiry','Card expiry','numeric','MM/YY','06/30']];
+const FC_F=[['salesNumber','Sales number','text','',''],['cardNumber','Card number','numeric','digits only',''],['cardExpiry','Card expiry','numeric','MM/YY','06/30']];
 const fcIn=(k,lb,im,hint,phd,extra='')=>`<label class="f" style="display:block;margin:10px 0">${esc(lb)}${hint?` <span class="muted">(${esc(hint)})</span>`:''}<input class="keep" id="fc_${k}" inputmode="${im}" autocomplete="off" ${phd?`placeholder="${esc(phd)}"`:''} value="${esc(FC[k]??'')}" oninput="FC['${k}']=this.value;fcDup=false" style="width:100%;font-size:20px;min-height:54px" ${extra}></label>`;
 VIEWS.fleet=()=>ph('Sales','Fleet Card Pay','One sale per submit. Goes straight to G Silkwood Operations for lodging. Do not submit the same sale twice.')+
  `<div class="card">${FC_F.map(f=>fcIn(...f)).join('')}
@@ -368,7 +368,7 @@ async function fcSubmit(){if(fcBusy)return;const v=k=>String(FC[k]??($('#fc_'+k)
  payload.dieselLitres=payload.fuelLitres;payload.dieselAmount=payload.fuelAmount;if(fcDup)payload.confirmDuplicate=true;
  fcBusy=true;fcMsg=['',''];render();
  try{const r=await fetch('/api/fleet',{method:'POST',headers:{'X-Staff-Pin':localStorage.sw_pin||'','Content-Type':'application/json'},body:JSON.stringify(payload)});const j=await r.json().catch(()=>({}));
-  if(r.ok&&j.ok){$$('#main input,#main textarea').forEach(e=>e.value='');FC={fuelProduct:'Diesel',surcharge:'0',odo:'0'};fcDup=false;fcMsg=['✅ Thank you, '+who.name+'! Your fleet card submission (card ending '+(j.last4||card.slice(-4))+') has been recorded.','good'];toast('Fleet card sale sent','good')}
+  if(r.ok&&j.ok){$$('#main input,#main textarea').forEach(e=>e.value='');FC={fuelProduct:'Diesel',surcharge:'0',odo:'0'};fcDup=false;fcMsg=['✅ Thank you, '+who.name+'! Your fleet card submission (card ending '+(j.last4||card.slice(-4))+') has been recorded.'+(j.test?' (TEST – not sent to Fleet Card Online)':''),'good'];toast('Fleet card sale sent','good')}
   else{fcDup=!!j.duplicate;fcMsg=[j.error||('Could not send (HTTP '+r.status+'). Try again.'),'warn']}}
  catch(e){fcMsg=['Network error, nothing was sent. Try again.','warn']}
  fcBusy=false;render()}

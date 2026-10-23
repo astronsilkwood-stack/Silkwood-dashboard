@@ -499,6 +499,13 @@ def fleet_submit(b):
     preview = {"salesNumber": sales, "card": "•••• " + last4, "cardExpiry": exp, "fuelProduct": prod, "fuelLitres": litres,
                "fuelAmount": amount, "surcharge": sur, "odo": odo, "staffName": staff, "configured": bool(url and key)}
     if b.get("dryRun") is True: return 200, {"ok": True, "dryRun": True, "preview": preview}
+    if re.fullmatch(r"(?i)test\d*", sales):  # staff test: full validation, never posted to the webhook, not used for duplicate-blocking
+        try:
+            c = db(); c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
+                (today(), now().strftime("%Y-%m-%d %H:%M:%S"), staff, "fleet_card-test", json.dumps({"status": "test - not sent", "sales": sales, "last4": last4, "product": prod, "litres": litres, "amount": amount})))
+            c.commit(); c.close()
+        except Exception: pass
+        return 200, {"ok": True, "test": True, "status": "test - not sent", "last4": last4}
     if not url or not key: return 503, {"error": "Fleet Card Pay is not configured on the server"}
     c = db()
     try:
