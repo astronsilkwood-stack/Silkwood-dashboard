@@ -245,6 +245,7 @@ VIEWS.food=()=>{const st=S.food_stages,ty=st[foodStage][1],F=S.food||[];
  return ph('Food safety','Food temps','Probe the thickest part of the food. Green = safe, red = not safe yet.')+
  `<div class="card" style="margin-bottom:16px"><h2>Log a food temp</h2><p class="help">${TYPES[ty]}</p>
  <div class="lbl" style="margin:6px 0">What are you checking?</div><div class="chips" style="margin-bottom:12px">${Object.entries(st).map(([k,v])=>`<button class="chip ${k==foodStage?'on':''}" onclick="foodStage='${k}';localStorage.sw_stage='${k}';render()">${v[0]}</button>`).join('')}</div>
+ <div class="lbl" style="margin:6px 0">Tap a food (or type below)</div><div class="chips" id="fdC" style="margin-bottom:12px">${[...new Set([...items('prep'),...items('hotbox')].map(i=>i.name))].map(n=>`<button type="button" class="chip" onclick="$('#fdF').value=this.textContent;document.querySelectorAll('#fdC .chip').forEach(c=>c.classList.toggle('on',c===this))">${esc(n)}</button>`).join('')}<button type="button" class="chip" onclick="manage('prep')">✎ Edit list</button></div>
  <div class="row"><label class="f">Food<input id="fdF" list="fdL" placeholder="e.g. Chicken tenders" autocomplete="off"></label><datalist id="fdL">${[...items('prep'),...items('hotbox')].map(i=>`<option value="${esc(i.name)}">`).join('')}</datalist>
  <label class="f">Temperature °C${tempBox('fdT',ty)}</label></div><div class="fb" id="fdTf"></div>
  <button class="btn full" style="margin-top:8px" onclick="saveFood()">Save temp</button></div>
