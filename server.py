@@ -288,6 +288,28 @@ def snapshot_html(sub, snap, standalone=False):
     bar = f'<div class="np" style="background:#C62828;color:#fff;padding:10px 16px;display:flex;gap:10px;align-items:center;font-family:system-ui"><b style="flex:1">{e(em)}</b><button onclick="print()" style="font-size:17px;padding:10px 18px;border:0;border-radius:10px;font-weight:700">🖨 Print</button><button onclick="history.length>1?history.back():close()" style="font-size:17px;padding:10px 18px;border:0;border-radius:10px">Close</button></div>'
     return f'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Silkwood log {e(snap["date"])}</title><style>@media print{{.np{{display:none}}}}</style></head><body style="margin:0">{bar}{body}</body></html>'
 
+def smtp_session(host, port, user, pw, action=None):
+    """Connect + login (+ action). Tries the configured port, then the other Gmail port (465 SSL <-> 587 STARTTLS).
+    Raises RuntimeError('<Type> at <step> on <port>: <msg>; ...') with every attempt if all fail. Never includes the password."""
+    pw = re.sub(r"\s+", "", pw or "").strip('"').strip("'")  # app passwords are often pasted as 'abcd efgh ijkl mnop'
+    errs = []
+    for p in dict.fromkeys([port] + ([587, 465] if "gmail" in host else [])):
+        step = "connect"
+        try:
+            if p == 465: srv = smtplib.SMTP_SSL(host, p, timeout=30, context=ssl.create_default_context())
+            else:
+                srv = smtplib.SMTP(host, p, timeout=30); step = "ehlo"; srv.ehlo()
+                if srv.has_extn("starttls"): step = "starttls"; srv.starttls(context=ssl.create_default_context()); srv.ehlo()
+            with srv:
+                step = "login"
+                if user: srv.login(user, pw)
+                step = "send"
+                if action: action(srv)
+            return p
+        except Exception as ex:
+            errs.append(f"{type(ex).__name__} at {step} on {p}: {str(ex).replace(pw, '***') if pw else ex}"[:200])
+    raise RuntimeError("; ".join(errs))
+
 def send_email(sub_id, subject, html_body):
     host, port = os.environ.get("SMTP_HOST", "").strip(), int(os.environ.get("SMTP_PORT") or 587)
     user, pw = os.environ.get("SMTP_USER", "").strip(), os.environ.get("SMTP_PASS", "")
@@ -302,18 +324,11 @@ def send_email(sub_id, subject, html_body):
         m = EmailMessage(); m["Subject"] = subject; m["From"] = os.environ.get("MAIL_FROM") or user or "silkwood@localhost"; m["To"] = to
         m.set_content("This email is HTML. Open it in a mail app that shows HTML."); m.add_alternative(html_body, subtype="html")
         step = "connect"
-        if port == 465: srv = smtplib.SMTP_SSL(host, port, timeout=30, context=ssl.create_default_context())
-        else:
-            srv = smtplib.SMTP(host, port, timeout=30); step = "ehlo"; srv.ehlo()
-            if srv.has_extn("starttls"): step = "starttls"; srv.starttls(context=ssl.create_default_context()); srv.ehlo()
-        with srv:
-            step = "login"
-            if user: srv.login(user, pw.replace(" ", "").strip().strip('"').strip("'"))  # app passwords are often pasted as 'abcd efgh ijkl mnop'
-            step = "send"; srv.send_message(m)
+        smtp_session(host, port, user, pw, lambda srv: srv.send_message(m))
         set_status("sent"); return "sent", to
     except Exception as ex:
-        msg = f"{type(ex).__name__} at {locals().get('step', '?')}: {ex}"
-        if isinstance(ex, smtplib.SMTPAuthenticationError) or locals().get("step") == "login":
+        msg = str(ex)
+        if isinstance(ex, smtplib.SMTPAuthenticationError) or " at login" in msg:
             msg += " (Gmail rejected the login: SMTP_PASS must be a 16-letter Google App Password for SMTP_USER)"
         set_status("failed", msg[:300]); return "failed", msg[:300]
 
@@ -336,8 +351,10 @@ def day_submit(c, d, staff, area, final):
     if final: c.execute("INSERT INTO days VALUES(?,?,?,?)", (d, staff, ts, json.dumps(s)))
     snap = snapshot(ds, area)
     sid = c.execute("INSERT INTO submissions(date,area,staff,at,snapshot,email_status) VALUES(?,?,?,?,?,?) RETURNING id",
-                    (d, area, staff, ts, json.dumps(snap), "sending")).fetchone()["id"]
+                    (d, area, staff, ts, json.dumps(snap), "sending" if final else "skipped_update")).fetchone()["id"]
     sub = {"area": area, "staff": staff, "at": ts, "final": final}
+    hook = lambda: threading.Thread(target=post_webhook, args=(sid, webhook_payload(sub, snap)), daemon=True).start()
+    if not final: return [hook]  # one email per day: daytime updates only go to the webhook
     subj = f"Silkwood daily log – {d} – {'FULL DAY (closing)' if final else AREAS[area] + ' update'} – submitted by {staff}"
     return [lambda: threading.Thread(target=send_email, args=(sid, subj, snapshot_html(sub, snap)), daemon=True).start(),
             lambda: threading.Thread(target=post_webhook, args=(sid, webhook_payload(sub, snap)), daemon=True).start()]
@@ -820,5 +837,11 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init()
+    def _smtp_check():  # login-only check at boot (no email sent, no secrets logged)
+        h = os.environ.get("SMTP_HOST", "").strip()
+        if not h: return print("SMTP check: not configured", flush=True)
+        try: print(f"SMTP check: login OK on port {smtp_session(h, int(os.environ.get('SMTP_PORT') or 587), os.environ.get('SMTP_USER', '').strip(), os.environ.get('SMTP_PASS', ''))}", flush=True)
+        except Exception as ex: print(f"SMTP check: FAILED {ex}"[:600], flush=True)
+    threading.Thread(target=_smtp_check, daemon=True).start()
     print(f"Silkwood dashboard on :{PORT} ({'postgres' if PG else DB})", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
