@@ -431,6 +431,63 @@ def closing_submit(b):
     except Exception: pass
     return (200, {"ok": True, "status": st}) if ok else (502, {"error": "Webhook " + st + ". Try again."})
 
+FC_PRODUCTS = ("Diesel", "Unleaded", "Premium Unleaded")
+def fleet_submit(b):
+    """Fleet Card Pay: same fields/validation/payload as the Apps Script form, forwarded server-side.
+    URL and bearer key come only from env (FLEET_CARD_WEBHOOK_URL / FLEET_CARD_WEBHOOK_KEY).
+    Only the card's last 4 digits are ever stored or returned. dryRun=true validates without posting."""
+    import urllib.request, urllib.error
+    g = lambda k, d="": str(b.get(k) if b.get(k) is not None else d).strip()
+    prod = g("fuelProduct", "Diesel") or "Diesel"
+    if prod not in FC_PRODUCTS: return 400, {"error": "Invalid fuel product"}
+    sales, card, exp = g("salesNumber"), re.sub(r"[\s-]+", "", g("cardNumber")), g("cardExpiry").replace(" ", "")
+    litres, amount = g("fuelLitres") or g("dieselLitres"), g("fuelAmount") or g("dieselAmount")
+    sur, odo, staff, notes = g("surcharge", "0") or "0", g("odo", "0") or "0", g("staffName")[:60], g("notes")[:500]
+    for k, v in (("salesNumber", sales), ("cardNumber", card), ("cardExpiry", exp), ("fuelLitres", litres), ("fuelAmount", amount), ("staffName", staff)):
+        if not v: return 400, {"error": "Missing " + k}
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,30}", sales): return 400, {"error": "Sales number looks wrong"}
+    if not re.fullmatch(r"\d{8,19}", card): return 400, {"error": "Card number must be digits only"}
+    m = re.fullmatch(r"(\d{2})/?(\d{2})", exp)
+    if not m or not 1 <= int(m.group(1)) <= 12: return 400, {"error": "Card expiry must be MM/YY"}
+    exp = m.group(1) + "/" + m.group(2)
+    num = r"\d{1,6}(\.\d{1,3})?"
+    for n, v in (("Litres", litres), ("Amount", amount), ("Surcharge", sur)):
+        if not re.fullmatch(num, v.lstrip("$")): return 400, {"error": n + " must be a number"}
+    litres, amount, sur = litres.lstrip("$"), amount.lstrip("$"), sur.lstrip("$")
+    if not re.fullmatch(r"\d{1,9}", odo): return 400, {"error": "Odo must be a whole number"}
+    last4 = card[-4:]
+    sub_at = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    body = {"type": "fleet_card_pay", "site": "United Silkwood", "merchantNumber": "174998", "salesNumber": sales,
+            "cardNumber": card, "cardExpiry": exp, "fuelProduct": prod, "fuelLitres": litres, "fuelAmount": amount,
+            "dieselLitres": litres, "dieselAmount": amount, "surcharge": sur, "odo": odo, "staffName": staff,
+            "notes": notes, "submittedAt": sub_at, "source": "silkwood_dashboard", "backupSheet": False}
+    url = os.environ.get("FLEET_CARD_WEBHOOK_URL", "").strip(); key = os.environ.get("FLEET_CARD_WEBHOOK_KEY", "").strip()
+    preview = {"salesNumber": sales, "card": "•••• " + last4, "cardExpiry": exp, "fuelProduct": prod, "fuelLitres": litres,
+               "fuelAmount": amount, "surcharge": sur, "odo": odo, "staffName": staff, "configured": bool(url and key)}
+    if b.get("dryRun") is True: return 200, {"ok": True, "dryRun": True, "preview": preview}
+    if not url or not key: return 503, {"error": "Fleet Card Pay is not configured on the server"}
+    c = db()
+    try:
+        dup = any(json.loads(r["detail"] or "{}").get("sales") == sales and json.loads(r["detail"] or "{}").get("last4") == last4
+                  and str(json.loads(r["detail"] or "{}").get("status", "")).startswith("sent")
+                  for r in c.execute("SELECT detail FROM audit WHERE action='fleet_card' AND at>=?", ((now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S"),)))
+    except Exception: dup = False
+    finally: c.close()
+    if dup and b.get("confirmDuplicate") is not True:
+        return 409, {"error": f"Sale {sales} on card ending {last4} was already sent this week. Do not send it twice.", "duplicate": True}
+    hd = {"Content-Type": "application/json", "User-Agent": "silkwood-dashboard", "Authorization": "Bearer " + key}
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, json.dumps(body).encode(), hd, method="POST"), timeout=30) as r:
+            st = f"sent {r.status}"; ok = 200 <= r.status < 300
+    except urllib.error.HTTPError as e: st, ok = f"failed HTTP {e.code}", False
+    except Exception as e: st, ok = f"failed {type(e).__name__}", False
+    try:
+        c = db(); c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
+            (today(), now().strftime("%Y-%m-%d %H:%M:%S"), staff, "fleet_card", json.dumps({"status": st, "sales": sales, "last4": last4, "product": prod, "litres": litres, "amount": amount})))
+        c.commit(); c.close()
+    except Exception: pass
+    return (200, {"ok": True, "status": st, "last4": last4}) if ok else (502, {"error": "Not sent (" + st + "). Nothing was lodged. Try again."})
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def send(self, code, obj, ctype="application/json"):
@@ -518,6 +575,11 @@ class H(BaseHTTPRequestHandler):
             except Exception: return self.send(400, {"error": "bad json"})
             if not isinstance(b, dict): return self.send(400, {"error": "bad json"})
             return self.send(*photo_upload(b))
+        if urlparse(self.path).path == "/api/fleet":
+            try: b = self.body()
+            except Exception: return self.send(400, {"error": "bad json"})
+            if not isinstance(b, dict): return self.send(400, {"error": "bad json"})
+            return self.send(*fleet_submit(b))
         if urlparse(self.path).path == "/api/closing":
             try: b = self.body()
             except Exception: return self.send(400, {"error": "bad json"})

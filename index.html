@@ -101,7 +101,7 @@ dialog{border:0;border-radius:16px;padding:0;width:min(560px,94vw);max-height:90
 <script>
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let S=null,page='dashboard',mgr=sessionStorage.sw_mgr=='1',area=localStorage.sw_area||'all';
-const PAGES=[['dashboard','▦','Dashboard'],['tasks','☑','Daily Tasks'],['equip','❄','Equipment Temps'],['food','🌡','Food Temps'],['hotbox','♨','Hot Box'],['discards','🗑','Discards'],['fuel','⛽','Fuel Water Paste'],['closing','🔐','Closing Checklist'],['reports','▤','Reports'],['settings','⚙','Settings']];
+const PAGES=[['dashboard','▦','Dashboard'],['tasks','☑','Daily Tasks'],['equip','❄','Equipment Temps'],['food','🌡','Food Temps'],['hotbox','♨','Hot Box'],['discards','🗑','Discards'],['fuel','⛽','Fuel Water Paste'],['closing','🔐','Closing Checklist'],['fleet','💳','Fleet Card'],['reports','▤','Reports'],['settings','⚙','Settings']];
 const TZ='Australia/Brisbane',DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 const TYPES={fridge:'Fridge — should be 0–5°C',freezer:'Freezer — should be −15°C or colder',hot:'Hot hold — should be 60°C or hotter',core:'Cooked food — core 75°C or hotter'};
 const ICON={freezer:'🧊',fridge:'🥤',hot:'🔥',core:'🍗'};
@@ -335,6 +335,34 @@ async function clSubmit(){const date=CL.date||S.today,staff=(CL.staff||me()||'')
   if(r.ok&&j.ok){$$('#main input,#main textarea').forEach(e=>{if(e.type!='date')e.value=''});CL={tasks:{},cm:{},p:{},day:'',ph:{pump:[],dip:[]}};clSave();clMsg=['✅ Submitted. Closing checklist recorded.','good'];toast('Closing checklist submitted','good')}else clMsg=[j.error||('Failed (HTTP '+r.status+')'),'warn']}
  catch(e){clMsg=['Network error, nothing was sent. Try again.','warn']}
  clBusy=false;render()}
+/* ---------- fleet card pay (replaces the Apps Script form; same fields/payload, sent via server proxy /api/fleet) ----------
+   Card number is kept in memory only (never localStorage) and cleared after sending. */
+let FC={fuelProduct:'Diesel',surcharge:'0',odo:'0'},fcBusy=false,fcMsg=['',''],fcDup=false;
+const FC_F=[['salesNumber','Sales number','numeric','',''],['cardNumber','Card number','numeric','digits only',''],['cardExpiry','Card expiry','numeric','MM/YY','06/30']];
+const fcIn=(k,lb,im,hint,phd,extra='')=>`<label class="f" style="display:block;margin:10px 0">${esc(lb)}${hint?` <span class="muted">(${esc(hint)})</span>`:''}<input class="keep" id="fc_${k}" inputmode="${im}" autocomplete="off" ${phd?`placeholder="${esc(phd)}"`:''} value="${esc(FC[k]??'')}" oninput="FC['${k}']=this.value;fcDup=false" style="width:100%;font-size:20px;min-height:54px" ${extra}></label>`;
+VIEWS.fleet=()=>ph('Sales','Fleet Card Pay','One sale per submit. Goes straight to G Silkwood Operations for lodging. Do not submit the same sale twice.')+
+ `<div class="card">${FC_F.map(f=>fcIn(...f)).join('')}
+ <div style="margin:10px 0"><div class="muted" style="margin-bottom:6px">Fuel product</div><div class="seg">${['Diesel','Unleaded','Premium Unleaded'].map(x=>`<button type="button" class="${FC.fuelProduct==x?'on':''}" style="min-height:54px" onclick="FC.fuelProduct='${x}';render()">${x}</button>`).join('')}</div></div>
+ <div class="row">${fcIn('fuelLitres','Litres','decimal','','')}${fcIn('fuelAmount','Amount $','decimal','','')}</div>
+ <div class="row">${fcIn('surcharge','Surcharge $','decimal','','')}${fcIn('odo','Odo reading','numeric','','')}</div>
+ ${fcIn('staffName','Staff name','text','','','autocomplete="name"').replace(`value=""`,`value="${esc(FC.staffName??me())}"`)}
+ <label class="f" style="display:block;margin:10px 0">Notes <span class="muted">(optional)</span><textarea class="keep" id="fc_notes" rows="2" style="width:100%" oninput="FC.notes=this.value">${esc(FC.notes||'')}</textarea></label>
+ <button type="button" class="btn full keep" style="min-height:60px;font-size:18px;margin-top:8px" ${fcBusy?'disabled':''} onclick="fcSubmit()">${fcBusy?'Sending…':(fcDup?'Send anyway (I checked it is not a repeat)':'Submit to ops')}</button>
+ ${fcMsg[0]?`<p style="color:${fcMsg[1]=='good'?'#0a7a3e':'#b00020'};font-weight:600;font-size:16px">${esc(fcMsg[0])}</p>`:''}</div>`;
+async function fcSubmit(){if(fcBusy)return;const v=k=>String(FC[k]??($('#fc_'+k)||{}).value??'').trim();
+ const staff=v('staffName')||me(),card=v('cardNumber').replace(/[\s-]+/g,''),exp=v('cardExpiry').replace(/\s/g,'');
+ const need=[['salesNumber','Sales number'],['fuelLitres','Litres'],['fuelAmount','Amount']].find(([k])=>!v(k));
+ let err=need?'Enter '+need[1]+'.':!/^\d{8,19}$/.test(card)?'Card number: digits only.':!/^(0[1-9]|1[0-2])\/?\d{2}$/.test(exp)?'Card expiry must be MM/YY.':!staff?'Enter staff name.':
+  [['fuelLitres','Litres'],['fuelAmount','Amount'],['surcharge','Surcharge']].map(([k,n])=>/^\$?\d{1,6}(\.\d{1,3})?$/.test(v(k)||'0')?'':n+' must be a number.').find(x=>x)||(/^\d{1,9}$/.test(v('odo')||'0')?'':'Odo must be a whole number.');
+ if(err){fcMsg=[err,'warn'];return render()}
+ const payload={salesNumber:v('salesNumber'),cardNumber:card,cardExpiry:exp,fuelProduct:FC.fuelProduct,fuelLitres:v('fuelLitres'),fuelAmount:v('fuelAmount'),surcharge:v('surcharge')||'0',odo:v('odo')||'0',staffName:staff,notes:v('notes')};
+ payload.dieselLitres=payload.fuelLitres;payload.dieselAmount=payload.fuelAmount;if(fcDup)payload.confirmDuplicate=true;
+ fcBusy=true;fcMsg=['',''];render();
+ try{const r=await fetch('/api/fleet',{method:'POST',headers:{'X-Staff-Pin':localStorage.sw_pin||'','Content-Type':'application/json'},body:JSON.stringify(payload)});const j=await r.json().catch(()=>({}));
+  if(r.ok&&j.ok){$$('#main input,#main textarea').forEach(e=>e.value='');FC={fuelProduct:'Diesel',surcharge:'0',odo:'0',staffName:staff};fcDup=false;fcMsg=['✅ Sent (card ending '+(j.last4||card.slice(-4))+'). Ops will lodge this sale.','good'];toast('Fleet card sale sent','good')}
+  else{fcDup=!!j.duplicate;fcMsg=[j.error||('Could not send (HTTP '+r.status+'). Try again.'),'warn']}}
+ catch(e){fcMsg=['Network error, nothing was sent. Try again.','warn']}
+ fcBusy=false;render()}
 VIEWS.reports=()=>{const s=S.summary,miss=[...s.tabs.kitchen.missing,...s.tabs.shop.missing];if(!HIST)api('/api/history').then(h=>{HIST=h;if(page=='reports')render()});
  return ph('Records','Reports','Submit the day, and see past days.')+
  `<div class="card" style="margin-bottom:16px"><h2>Submit ${S.date==S.today?'today':S.date}</h2><p class="help">Sends the day's record to the manager and locks it. Only the manager can reopen it.</p>
