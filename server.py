@@ -323,7 +323,35 @@ def webhook_payload(sub, snap):
             "jobs_done": [j for j in snap["jobs"] if j["done"]], "jobs_not_done": [j for j in snap["jobs"] if not j["done"]],
             "prep": snap.get("prep", []), "hotbox_rotation": snap.get("hotbox", []), "fuel": snap.get("fuel", []),
             "food_temps": snap.get("food_temps", []), "hotbox_items": snap.get("hotbox_items", []), "discards": snap.get("discards", []),
-            "shifts": snap["shifts"]}
+            "shifts": snap["shifts"], "cold_holding": [f for f in snap.get("food_temps", []) if f["stage"] == "Cold holding"],
+            "final": bool(sub.get("final")), "submissionType": "final" if sub.get("final") else "update"}
+
+def day_submit(c, d, staff, area, final):
+    """Save a day submission + queue email/webhook. Updates (final=False) do NOT lock the day;
+    the final (closing) submit always covers the whole day (both areas) and locks it."""
+    ts = now().strftime("%Y-%m-%d %H:%M:%S")
+    ds = day_state(d); s = ds["summary"]; s["shifts"] = ds["shifts"]
+    if final: area = "both"
+    elif area not in AREAS: area = "both"
+    if final: c.execute("INSERT INTO days VALUES(?,?,?,?)", (d, staff, ts, json.dumps(s)))
+    snap = snapshot(ds, area)
+    sid = c.execute("INSERT INTO submissions(date,area,staff,at,snapshot,email_status) VALUES(?,?,?,?,?,?) RETURNING id",
+                    (d, area, staff, ts, json.dumps(snap), "sending")).fetchone()["id"]
+    sub = {"area": area, "staff": staff, "at": ts, "final": final}
+    subj = f"Silkwood daily log – {d} – {'FULL DAY (closing)' if final else AREAS[area] + ' update'} – submitted by {staff}"
+    return [lambda: threading.Thread(target=send_email, args=(sid, subj, snapshot_html(sub, snap)), daemon=True).start(),
+            lambda: threading.Thread(target=post_webhook, args=(sid, webhook_payload(sub, snap)), daemon=True).start()]
+
+def final_day_log(d, staff):
+    c = db()
+    try:
+        if c.execute("SELECT 1 FROM days WHERE date=?", (d,)).fetchone(): return "already_submitted"
+        after = day_submit(c, d, staff or "Closing", "both", True); c.commit()
+    except Exception as e:
+        return "failed " + type(e).__name__
+    finally: c.close()
+    for f in after: f()
+    return "sent"
 
 def post_webhook(sub_id, payload):
     """POST JSON to WEBHOOK_URL with Authorization: WEBHOOK_AUTH. Returns a short status string (no secrets)."""
@@ -472,7 +500,7 @@ def closing_submit(b):
             (d, now().strftime("%Y-%m-%d %H:%M:%S"), staff, "closing" + ("-test" if test else ""), json.dumps({"status": st, "newspapers": papers, "pumpPhotos": len(photos["pump"]), "dipPhotos": len(photos["dip"])})[:500]))
         c.commit(); c.close()
     except Exception: pass
-    return (200, {"ok": True, "status": st}) if ok else (502, {"error": "Webhook " + st + ". Try again."})
+    return (200, {"ok": True, "status": st, "staff": staff}) if ok else (502, {"error": "Webhook " + st + ". Try again."})
 
 FC_PRODUCTS = ("Diesel", "Unleaded", "Premium Unleaded")
 def fleet_submit(b):
@@ -654,7 +682,10 @@ class H(BaseHTTPRequestHandler):
             try: b = self.body()
             except Exception: return self.send(400, {"error": "bad json"})
             if not isinstance(b, dict): return self.send(400, {"error": "bad json"})
-            return self.send(*closing_submit(b))
+            code, res = closing_submit(b)
+            if code == 200 and b.get("test") is not True:  # closing done -> send the WHOLE day's log as the final submit
+                res["final_log"] = final_day_log(str(b.get("checklistDate")), str(res.get("staff") or b.get("staffName") or "").strip()[:40])
+            return self.send(code, res)
         self.handle_write("POST")
     def do_DELETE(self):
         if not self.authed(): return self.send(401, {"error": "staff PIN required", "pin": True})
@@ -750,16 +781,7 @@ class H(BaseHTTPRequestHandler):
                     c.execute("INSERT INTO items(kind,name,type,sort) VALUES(?,?,?,999)", (kind, b["name"].strip()[:60], typ))
             elif p == "/api/submit":
                 if not staff: return self.send(400, {"error": "staff name required"})
-                ds = day_state(d); s = ds["summary"]; s["shifts"] = ds["shifts"]
-                area = b.get("area") if b.get("area") in AREAS else "both"
-                c.execute("INSERT INTO days VALUES(?,?,?,?)", (d, staff, ts, json.dumps(s)))
-                snap = snapshot(ds, area)
-                sid = c.execute("INSERT INTO submissions(date,area,staff,at,snapshot,email_status) VALUES(?,?,?,?,?,?) RETURNING id",
-                                (d, area, staff, ts, json.dumps(snap), "sending")).fetchone()["id"]
-                sub = {"area": area, "staff": staff, "at": ts}
-                subj = f"Silkwood daily log – {d} – {AREAS[area]} – submitted by {staff}"
-                after.append(lambda: threading.Thread(target=send_email, args=(sid, subj, snapshot_html(sub, snap)), daemon=True).start())
-                after.append(lambda: threading.Thread(target=post_webhook, args=(sid, webhook_payload(sub, snap)), daemon=True).start())
+                after += day_submit(c, d, staff, b.get("area"), b.get("final") is True)
             elif p == "/api/shift":  # staff start/end shift (server time, Brisbane)
                 td = today()
                 cur = c.execute("SELECT * FROM shifts WHERE date=? AND staff=? AND end_at IS NULL", (td, staff)).fetchone()
