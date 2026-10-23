@@ -388,7 +388,7 @@ def known_staff():
                 if n and not n.upper().startswith("TEST"): names.add(n)
     finally: c.close()
     pins = staff_pins()
-    return [{"name": n, "pin": n in pins} for n in sorted(names, key=str.lower)]
+    return [{"name": n, "pin": n in pins} for n in sorted(names, key=str.lower) if n.strip().lower() != "manager"]
 
 def check_staff(b):
     """Submissions must name a listed staff member (and their PIN if one is set). Returns (name, error)."""
