@@ -352,6 +352,14 @@ class H(BaseHTTPRequestHandler):
         if u.path in ("/", "/index.html"):
             return self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
         if u.path == "/healthz": return self.send(200, {"ok": True})
+        if u.path == "/sw.js":  # served from root so its scope covers the whole app
+            return self.send(200, (ROOT / "static" / "sw.js").read_bytes(), "text/javascript; charset=utf-8")
+        m = re.fullmatch(r"/static/([a-z0-9-]+\.(png|webmanifest|js))", u.path)
+        if m and (ROOT / "static" / m.group(1)).is_file():
+            ct = {"png": "image/png", "webmanifest": "application/manifest+json", "js": "text/javascript; charset=utf-8"}[m.group(2)]
+            return self.send(200, (ROOT / "static" / m.group(1)).read_bytes(), ct)
+        if u.path in ("/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/favicon.ico"):
+            return self.send(200, (ROOT / "static" / ("icon-192.png" if u.path == "/favicon.ico" else "apple-touch-icon.png")).read_bytes(), "image/png")
         if not self.authed(): return self.send(401, {"error": "staff PIN required", "pin": True})
         m = re.fullmatch(r"/submission/(\d+)", u.path)
         if m:

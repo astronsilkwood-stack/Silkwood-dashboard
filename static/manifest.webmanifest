@@ -1,0 +1,3 @@
+{"name":"Silkwood","short_name":"Silkwood","description":"Silkwood daily ops — servo + kitchen","id":"/","start_url":"/","scope":"/","display":"standalone","orientation":"any","background_color":"#ffffff","theme_color":"#0f172a",
+"icons":[{"src":"/static/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"/static/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"},
+{"src":"/static/icon-maskable-192.png","sizes":"192x192","type":"image/png","purpose":"maskable"},{"src":"/static/icon-maskable-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"}]}

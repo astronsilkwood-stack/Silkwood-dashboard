@@ -3,6 +3,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py index.html ./
+COPY static ./static
 ENV PORT=8080 TZ=Australia/Brisbane
 EXPOSE 8080
 CMD ["python", "server.py"]

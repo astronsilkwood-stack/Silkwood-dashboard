@@ -1,8 +1,9 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0f172a"><meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0f172a"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="Silkwood"><meta name="application-name" content="Silkwood">
 <title>Silkwood · Daily Ops</title>
-<link rel="icon" href="data:,">
+<link rel="manifest" href="/static/manifest.webmanifest"><link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png"><link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -95,6 +96,8 @@ dialog{border:0;border-radius:16px;padding:0;width:min(560px,94vw);max-height:90
 <dialog id="nameDlg" style="max-width:380px"><form method="dialog" id="nameForm" class="db" style="padding:20px"><div class="lbl">Who's on shift?</div><h2 style="margin:0">Your name</h2><p class="help" style="margin:0;color:var(--sl)">Everything you tick or log is saved under this name. This phone remembers it.</p>
 <input id="nameIn" placeholder="e.g. Sam" autocomplete="name" maxlength="40" required><button class="btn full" type="submit">Save name</button></form></dialog>
 <div class="toast" id="toast"></div>
+<div id="installBar" hidden style="position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:90;max-width:460px;margin:0 auto;background:#fff;border:1px solid var(--bd);border-radius:14px;box-shadow:0 8px 24px rgba(15,23,42,.15);padding:12px 14px;display:flex;gap:10px;align-items:center">
+<img src="/static/icon-192.png" alt="" width="40" height="40" style="border-radius:10px"><div style="flex:1;font-size:14px" id="installTxt"></div><button class="btn sm" id="installGo" hidden>Install</button><button class="edit" id="installX" aria-label="Dismiss">✕</button></div>
 <script>
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let S=null,page='dashboard',mgr=sessionStorage.sw_mgr=='1',area=localStorage.sw_area||'all';
@@ -331,4 +334,13 @@ async function addItem(k){if(!$('#mNew').value.trim())return;await post('/api/it
 page=PAGES.some(x=>x[0]==location.hash.slice(1))?location.hash.slice(1):'dashboard';
 load().then(()=>{if(!me())pickName()});
 setInterval(()=>{const a=document.activeElement;if(!dlg.open&&!$('#walk').open&&!['INPUT','SELECT','TEXTAREA'].includes(a.tagName)&&!$$('main input').some(e=>e.value&&e.type!='time'&&e.type!='date'))load($('#date').value)},60000);
+/* PWA: service worker + install prompts */
+if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
+(()=>{const bar=$('#installBar'),standalone=matchMedia('(display-mode: standalone)').matches||navigator.standalone;if(standalone)return;let ev=null;
+ const hide=k=>{bar.hidden=true;if(k)localStorage[k]='1'};$('#installX').onclick=()=>hide(ev?'sw_inst_no':'sw_ios_hint');
+ addEventListener('beforeinstallprompt',e=>{e.preventDefault();ev=e;if(localStorage.sw_inst_no)return;$('#installTxt').innerHTML='<b>Install Silkwood</b><br>Add it to your home screen for one-tap access.';$('#installGo').hidden=false;bar.hidden=false});
+ $('#installGo').onclick=async()=>{if(!ev)return;ev.prompt();const r=await ev.userChoice;ev=null;hide(r.outcome=='accepted'?'':'sw_inst_no')};
+ addEventListener('appinstalled',()=>hide());
+ const ios=/iphone|ipad|ipod/i.test(navigator.userAgent)||(navigator.platform=='MacIntel'&&navigator.maxTouchPoints>1);
+ if(ios&&!localStorage.sw_ios_hint)setTimeout(()=>{$('#installTxt').innerHTML='<b>Add Silkwood to your Home Screen</b><br>Tap Share <span aria-hidden="true">⎋</span>, then <b>Add to Home Screen</b>.';bar.hidden=false;localStorage.sw_ios_hint='1'},2500)})();
 </script></body></html>
