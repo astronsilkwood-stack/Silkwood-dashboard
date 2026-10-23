@@ -470,39 +470,56 @@ def fleet_submit(b):
     Only the card's last 4 digits are ever stored or returned. dryRun=true validates without posting."""
     import urllib.request, urllib.error
     g = lambda k, d="": str(b.get(k) if b.get(k) is not None else d).strip()
-    prod = g("fuelProduct", "Diesel") or "Diesel"
-    if prod not in FC_PRODUCTS: return 400, {"error": "Invalid fuel product"}
     sales, card, exp = g("salesNumber"), re.sub(r"[\s-]+", "", g("cardNumber")), g("cardExpiry").replace(" ", "")
-    litres, amount = g("fuelLitres") or g("dieselLitres"), g("fuelAmount") or g("dieselAmount")
     sur, odo, notes = g("surcharge", "0") or "0", g("odo", "0") or "0", g("notes")[:500]
     staff, err = check_staff(b)
     if err: return 400, {"error": err, "staff": True}
-    for k, v in (("salesNumber", sales), ("cardNumber", card), ("cardExpiry", exp), ("fuelLitres", litres), ("fuelAmount", amount), ("staffName", staff)):
+    # fuel lines: new multi-product `lines`, or legacy single fuelProduct/fuelLitres/fuelAmount
+    raw = b.get("lines")
+    if raw is None:
+        raw = [{"product": g("fuelProduct", "Diesel") or "Diesel", "litres": g("fuelLitres") or g("dieselLitres"), "amount": g("fuelAmount") or g("dieselAmount")}]
+    if not isinstance(raw, list) or not 1 <= len(raw) <= len(FC_PRODUCTS): return 400, {"error": "Choose at least one fuel"}
+    num = r"\d{1,6}(\.\d{1,3})?"; lines = []
+    for ln in raw:
+        if not isinstance(ln, dict): return 400, {"error": "bad fuel line"}
+        pr = str(ln.get("product") or "").strip(); li = str(ln.get("litres") or "").strip().lstrip("$"); am = str(ln.get("amount") or "").strip().lstrip("$")
+        if pr not in FC_PRODUCTS: return 400, {"error": "Invalid fuel product"}
+        if any(x["product"] == pr for x in lines): return 400, {"error": pr + " is listed twice"}
+        if not li: return 400, {"error": "Missing litres for " + pr}
+        if not am: return 400, {"error": "Missing amount for " + pr}
+        if not re.fullmatch(num, li) or float(li) <= 0: return 400, {"error": pr + " litres must be a number above 0"}
+        if not re.fullmatch(num, am) or float(am) <= 0: return 400, {"error": pr + " amount must be a number above 0"}
+        lines.append({"product": pr, "litres": li, "amount": am})
+    for k, v in (("salesNumber", sales), ("cardNumber", card), ("cardExpiry", exp)):
         if not v: return 400, {"error": "Missing " + k}
     if not re.fullmatch(r"[A-Za-z0-9-]{1,30}", sales): return 400, {"error": "Sales number looks wrong"}
     if not re.fullmatch(r"\d{8,19}", card): return 400, {"error": "Card number must be digits only"}
     m = re.fullmatch(r"(\d{2})/?(\d{2})", exp)
     if not m or not 1 <= int(m.group(1)) <= 12: return 400, {"error": "Card expiry must be MM/YY"}
     exp = m.group(1) + "/" + m.group(2)
-    num = r"\d{1,6}(\.\d{1,3})?"
-    for n, v in (("Litres", litres), ("Amount", amount), ("Surcharge", sur)):
-        if not re.fullmatch(num, v.lstrip("$")): return 400, {"error": n + " must be a number"}
-    litres, amount, sur = litres.lstrip("$"), amount.lstrip("$"), sur.lstrip("$")
+    sur = sur.lstrip("$")
+    if not re.fullmatch(num, sur): return 400, {"error": "Surcharge must be a number"}
     if not re.fullmatch(r"\d{1,9}", odo): return 400, {"error": "Odo must be a whole number"}
+    first = lines[0]; dsl = next((x for x in lines if x["product"] == "Diesel"), first)
+    prod, litres, amount = first["product"], first["litres"], first["amount"]
+    fuel_total = round(sum(float(x["amount"]) for x in lines), 2)
+    if len(lines) > 1:  # spelled out in notes too, so a routine that ignores `lines` still sees every fuel
+        notes = ("MULTIPLE FUELS - lodge every line: " + "; ".join(f'{x["product"]} {x["litres"]} L ${x["amount"]}' for x in lines) + "." + (" " + notes if notes else ""))[:800]
     last4 = card[-4:]
     sub_at = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     body = {"type": "fleet_card_pay", "site": "United Silkwood", "merchantNumber": "174998", "salesNumber": sales,
             "cardNumber": card, "cardExpiry": exp, "fuelProduct": prod, "fuelLitres": litres, "fuelAmount": amount,
-            "dieselLitres": litres, "dieselAmount": amount, "surcharge": sur, "odo": odo, "staffName": staff,
+            "dieselLitres": dsl["litres"], "dieselAmount": dsl["amount"], "lines": lines, "lineCount": len(lines),
+            "fuelTotal": f"{fuel_total:.2f}", "surcharge": sur, "odo": odo, "staffName": staff,
             "notes": notes, "submittedAt": sub_at, "source": "silkwood_dashboard", "backupSheet": False}
     url = os.environ.get("FLEET_CARD_WEBHOOK_URL", "").strip(); key = os.environ.get("FLEET_CARD_WEBHOOK_KEY", "").strip()
     preview = {"salesNumber": sales, "card": "•••• " + last4, "cardExpiry": exp, "fuelProduct": prod, "fuelLitres": litres,
-               "fuelAmount": amount, "surcharge": sur, "odo": odo, "staffName": staff, "configured": bool(url and key)}
+               "fuelAmount": amount, "lines": lines, "fuelTotal": body["fuelTotal"], "surcharge": sur, "odo": odo, "staffName": staff, "configured": bool(url and key)}
     if b.get("dryRun") is True: return 200, {"ok": True, "dryRun": True, "preview": preview}
     if re.fullmatch(r"(?i)test\d*", sales):  # staff test: full validation, never posted to the webhook, not used for duplicate-blocking
         try:
             c = db(); c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
-                (today(), now().strftime("%Y-%m-%d %H:%M:%S"), staff, "fleet_card-test", json.dumps({"status": "test - not sent", "sales": sales, "last4": last4, "product": prod, "litres": litres, "amount": amount})))
+                (today(), now().strftime("%Y-%m-%d %H:%M:%S"), staff, "fleet_card-test", json.dumps({"status": "test - not sent", "sales": sales, "last4": last4, "lines": lines})))
             c.commit(); c.close()
         except Exception: pass
         return 200, {"ok": True, "test": True, "status": "test - not sent", "last4": last4}
@@ -524,7 +541,7 @@ def fleet_submit(b):
     except Exception as e: st, ok = f"failed {type(e).__name__}", False
     try:
         c = db(); c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
-            (today(), now().strftime("%Y-%m-%d %H:%M:%S"), staff, "fleet_card", json.dumps({"status": st, "sales": sales, "last4": last4, "product": prod, "litres": litres, "amount": amount})))
+            (today(), now().strftime("%Y-%m-%d %H:%M:%S"), staff, "fleet_card", json.dumps({"status": st, "sales": sales, "last4": last4, "lines": lines})))
         c.commit(); c.close()
     except Exception: pass
     return (200, {"ok": True, "status": st, "last4": last4}) if ok else (502, {"error": "Not sent (" + st + "). Nothing was lodged. Try again."})
