@@ -101,7 +101,7 @@ dialog{border:0;border-radius:16px;padding:0;width:min(560px,94vw);max-height:90
 <script>
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let S=null,page='dashboard',mgr=sessionStorage.sw_mgr=='1',area=localStorage.sw_area||'all';
-const PAGES=[['dashboard','▦','Dashboard'],['tasks','☑','Daily Tasks'],['equip','❄','Equipment Temps'],['food','🌡','Food Temps'],['hotbox','♨','Hot Box'],['discards','🗑','Discards'],['fuel','⛽','Fuel Water Paste'],['closing','🔐','Closing Checklist'],['fleet','💳','Fleet Card'],['reports','▤','Reports'],['settings','⚙','Settings']];
+const PAGES=[['dashboard','▦','Dashboard'],['tasks','☑','Daily Tasks'],['equip','❄','Equipment Temps'],['food','🌡','Food Temps'],['hotbox','♨','Hot Box'],['cold','🧊','Cold Holding'],['discards','🗑','Discards'],['fuel','⛽','Fuel Water Paste'],['closing','🔐','Closing Checklist'],['fleet','💳','Fleet Card'],['reports','▤','Reports'],['settings','⚙','Settings']];
 const TZ='Australia/Brisbane',DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 const TYPES={fridge:'Fridge — should be 0–5°C',freezer:'Freezer — should be −15°C or colder',hot:'Hot hold — should be 60°C or hotter',core:'Cooked food — core 75°C or hotter'};
 const ICON={freezer:'🧊',fridge:'🥤',hot:'🔥',core:'🍗'};
@@ -221,7 +221,7 @@ async function logTemp(lk,id){const it=S.items.find(i=>i.id==id),v=parseT($('#t'
  let action;if(judgeT(it.type,v)===false){action=await askFix(it.type,v,it.name);if(action==null)return}
  await post('/api/log',{kind:lk,ref:id,data:action?{temp:v,action}:{temp:v}});const l=logs(lk,id).pop();toast(l.bad?'⚠ Saved — tell the manager':'✓ '+v+'°C saved — OK',l.bad?'warn':'good')}
 const FIXES={max:['Closed door / checked seal','Moved food to another fridge','Turned thermostat down','Will re-check in 30 min','Told manager'],min:['Reheated food','Turned heat up','Threw food out','Will re-check in 30 min','Told manager']};
-function askFix(type,v,name){const r=S.rules[type];return new Promise(res=>{openDlg('⚠ '+(r[0]=='max'?'Too warm':'Too cold')+': '+v+'°C',`<p>${esc(name)} is out of range. What did you do?</p><div class="grid">${FIXES[r[0]].map(f=>`<button class="btn ghost full fixb">${f}</button>`).join('')}</div>`);
+function askFix(type,v,name,fx){const r=S.rules[type];return new Promise(res=>{openDlg('⚠ '+(r[0]=='max'?'Too warm':'Too cold')+': '+v+'°C',`<p>${esc(name)} is out of range. What did you do?</p><div class="grid">${(fx||FIXES[r[0]]).map(f=>`<button class="btn ghost full fixb">${f}</button>`).join('')}</div>`);
  $$('.fixb').forEach(b=>b.onclick=()=>{dlg.close();res(b.textContent)});dlg.addEventListener('close',()=>res(null),{once:true})})}
 /* guided walk (kept from before) */
 const PRESET={fridge:[2,3,4,5],freezer:[-16,-18,-20,-22],hot:[60,65,70,75],core:[75,80,85,90]};let W=null;
@@ -240,8 +240,19 @@ function walkShow(){const B=$('#wBody');if(W.i>=W.q.length){$('#wProg').textCont
 function wKey(k){if(k=='⌫')W.v=W.v.slice(0,-1);else if(k=='.'){if(!W.v.includes('.'))W.v+=(W.v?'':'0')+'.'}else if(W.v.replace('.','').length<4)W.v=(W.v=='0'?'':W.v)+k;walkShow()}
 async function walkLog(){const[it,lk]=W.q[W.i],v=wNum();if(v==null)return;let action;if(judgeT(it.type,v)===false){const w=W;$('#walk').close();action=await askFix(it.type,v,it.name);W=w;$('#walk').showModal();if(action==null)return walkShow()}
  await post('/api/log',{kind:lk,ref:it.id,data:action?{temp:v,action}:{temp:v}});W.done++;toast(action?'⚠ Saved — tell the manager':'✓ '+v+'°C OK',action?'warn':'good');W.i++;W.v='';walkShow()}
-let foodStage=localStorage.sw_stage||'cook';
-VIEWS.food=()=>{const st=S.food_stages,ty=st[foodStage][1],F=S.food||[];
+let foodStage=localStorage.sw_stage||'cook';if(foodStage=='coldhold')foodStage='cook';
+let cdItem='';const COLD_FIX=['Returned to fridge','Threw food out','Moved to another fridge','Will re-check in 30 min','Told manager'];
+VIEWS.cold=()=>{const F=(S.food||[]).filter(f=>f.stage=='coldhold');
+ return ph('Cold holding','Cold holding','Probe cold food in the display fridge. Safe at 5°C or colder — above 5°C, act straight away.')+
+ `<div class="card" style="margin-bottom:16px"><h2>Check a cold food</h2><p class="help">Tap the food, type the temp, then Save.</p>
+ <div class="chips" style="margin-bottom:12px">${items('cold').map(i=>`<button type="button" class="chip ${cdItem==i.name?'on':''}" onclick="cdItem=this.textContent;render()">${esc(i.name)}</button>`).join('')}<button type="button" class="chip" onclick="manage('cold')">✎ Edit</button></div>
+ <div class="row"><label class="f">Temperature °C${tempBox('cdT','fridge')}</label></div>
+ <button class="btn full" style="margin-top:12px" onclick="saveCold()">${cdItem?'Save '+esc(cdItem):'Pick a food above'}</button></div>
+ <div class="card"><h2>Today's cold holding checks</h2>${tbl(['Time','Food','Temp','Result','By',''],F.map(f=>[`<span class="mono">${hm12(f.at)}</span>`,esc(f.food),`<span class="mono">${f.temp}°C</span>`,f.bad?`<span class="pill bad">Too warm</span>${f.action?' '+esc(f.action):''}`:'<span class="pill ok">OK</span>',esc(f.staff),delBtn('food',f.id)]),i=>F[i].bad?'bad':'')||'<div class="empty">No cold holding checks yet today.</div>'}</div>`};
+async function saveCold(){if(!cdItem)return toast('Tap a food first','warn');const v=parseT($('#cdT').value,$('#cdTs')?.classList.contains('on'));if(v==null||Number.isNaN(v))return toast('Type the temperature','warn');
+ let action;if(judgeT('fridge',v)===false){action=await askFix('fridge',v,cdItem,COLD_FIX);if(action==null)return}
+ await post('/api/food',{food:cdItem,stage:'coldhold',temp:v,action});$('#cdT').value='';toast(action?'⚠ Saved — tell the manager':'✓ '+cdItem+' '+v+'°C — safe',action?'warn':'good');cdItem='';render()}
+VIEWS.food=()=>{const st=Object.fromEntries(Object.entries(S.food_stages).filter(([k])=>k!='coldhold'));if(!st[foodStage])foodStage='cook';const ty=st[foodStage][1],F=(S.food||[]).filter(f=>f.stage!='coldhold');
  return ph('Food safety','Food temps','Probe the thickest part of the food. Green = safe, red = not safe yet.')+
  `<div class="card" style="margin-bottom:16px"><h2>Log a food temp</h2><p class="help">${TYPES[ty]}</p>
  <div class="lbl" style="margin:6px 0">What are you checking?</div><div class="chips" style="margin-bottom:12px">${Object.entries(st).map(([k,v])=>`<button class="chip ${k==foodStage?'on':''}" onclick="foodStage='${k}';localStorage.sw_stage='${k}';render()">${v[0]}</button>`).join('')}</div>
@@ -419,7 +430,7 @@ function taskDlg(id){if(!me())return pickName();const x=id?S.tasks.find(t=>t.id=
  seg('#fTab',x.tab);seg('#fR',x.repeat);$('#fW').value=x.weekday??((new Date(S.date).getDay()+6)%7);const val=s=>$(s+' button.on').dataset.v;
  $('#fSave').onclick=async()=>{if(!$('#fT').value.trim())return toast('Type the task','warn');await post('/api/task',{id,title:$('#fT').value,tab:val('#fTab'),repeat:val('#fR'),weekday:$('#fW').value,due_time:$('#fD').value},'✓ Task saved');dlg.close()};
  if(id)$('#fDel').onclick=async()=>{if(confirm('Delete this task?')){await post('/api/task',{id,delete:1},'Task deleted');dlg.close()}}}
-const KN={fridge:'Shop fridges',freezer:'Shop freezers',kcheck:'Kitchen check points',prep:'Prep items',hotbox:'Hot box foods'};
+const KN={fridge:'Shop fridges',freezer:'Shop freezers',kcheck:'Kitchen check points',prep:'Prep items',hotbox:'Hot box foods',cold:'Cold holding foods'};
 function manage(kind){const its=items(kind),typ=kind=='kcheck';const TS=Object.entries(TYPES);
  openDlg('Edit '+KN[kind],`${its.map(i=>`<div class="row"><input id="m${i.id}" value="${esc(i.name)}">${typ?`<select id="y${i.id}">${TS.map(([k,v])=>`<option value="${k}" ${i.type==k?'selected':''}>${v.split(' —')[0]}</option>`).join('')}</select>`:''}<button class="btn sm ghost nogrow" onclick="ren(${i.id},'${kind}')">Save</button><button class="btn sm danger nogrow" onclick="rem(${i.id},'${kind}')">🗑</button></div>`).join('')}
  <hr style="border:0;border-top:1px solid var(--bd)"><div class="row"><input id="mNew" placeholder="Add new…">${typ?`<select id="yNew">${TS.map(([k,v])=>`<option value="${k}">${v.split(' —')[0]}</option>`).join('')}</select>`:''}<button class="btn nogrow" onclick="addItem('${kind}')">Add</button></div><p class="help">Removing keeps old records.</p>`)}

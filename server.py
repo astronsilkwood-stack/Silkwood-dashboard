@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get("SILKWOOD_DB", ROOT / "silkwood.db"))
 TZ = ZoneInfo("Australia/Brisbane")
 PORT = int(os.environ.get("PORT", "8787"))
+COLD_STARTERS = ['Salad Sandwiches', 'Wraps', 'Salad Rolls', 'Meals', 'Cheesecake', 'Tiramisu', 'Truffle']
 RULES = {"fridge": ("max", 5), "freezer": ("max", -15), "hot": ("min", 60), "core": ("min", 75)}
 TANKS = ["1 Unleaded", "2 P95", "3 Diesel", "4 Diesel", "5 Diesel"]
 STARTERS = [  # kind, name, type, example(1=starter to confirm)
@@ -139,7 +140,11 @@ def init():
         c.execute("ALTER TABLE submissions ADD COLUMN webhook_status TEXT"); c.commit()
     except Exception:
         if PG: c.c.rollback()
-    if not c.execute("SELECT 1 FROM items LIMIT 1").fetchone():
+    if not c.execute("SELECT 1 FROM items WHERE kind='cold' LIMIT 1").fetchone():  # seed cold holding foods once
+        for i, n in enumerate(COLD_STARTERS):
+            c.execute("INSERT INTO items(kind,name,type,example,sort) VALUES(?,?,?,?,?)", ("cold", n, "", 0, i))
+        c.commit()
+    if not c.execute("SELECT 1 FROM items WHERE kind<>'cold' LIMIT 1").fetchone():
         for i, (k, n, t, ex) in enumerate(STARTERS):
             c.execute("INSERT INTO items(kind,name,type,example,sort) VALUES(?,?,?,?,?)", (k, n, t, ex, i))
         for tab, title, rep, due in STARTER_TASKS:
@@ -269,7 +274,8 @@ def snapshot_html(sub, snap, standalone=False):
         out.append(h2("🔥 Hot box") + table(["Hot box", "Item", "Qty", "In", "Discard", "By"], [[(e(r.get("box")), ""), (e(r.get("item")), ""), (e(r.get("qty")), ""), (e(r.get("time")), ""), (e(r.get("discard")), ""), (e(r["staff"]), "")] for r in snap["hotbox"]]))
         out.append(h2("📋 For tomorrow") + table(["Item", "Qty / note", "By"], [[(e(r.get("item")), ""), (e(r.get("qty")), ""), (e(r["staff"]), "")] for r in snap["tomorrow"]]))
     if snap.get("food_temps") is not None:
-        out.append(h2("🍗 Food temps") + table(["Food", "Stage", "Temp", "Result", "Time", "By"], [[(e(f["food"]), ""), (e(f["stage"]), ""), (e(f["temp"]) + "°C", ""), (ok(f["ok"])[0] + (" – " + e(f["action"]) if f.get("action") else ""), ok(f["ok"])[1]), (e(f["at"]), ""), (e(f["staff"]), "")] for f in snap["food_temps"]]))
+        out.append(h2("🍗 Food temps") + table(["Food", "Stage", "Temp", "Result", "Time", "By"], [[(e(f["food"]), ""), (e(f["stage"]), ""), (e(f["temp"]) + "°C", ""), (ok(f["ok"])[0] + (" – " + e(f["action"]) if f.get("action") else ""), ok(f["ok"])[1]), (e(f["at"]), ""), (e(f["staff"]), "")] for f in snap["food_temps"] if f["stage"] != "Cold holding"]))
+        out.append(h2("❄ Cold holding") + table(["Food", "Temp", "Result", "Time", "By"], [[(e(f["food"]), ""), (e(f["temp"]) + "°C", ""), (ok(f["ok"])[0] + (" – " + e(f["action"]) if f.get("action") else ""), ok(f["ok"])[1]), (e(f["at"]), ""), (e(f["staff"]), "")] for f in snap["food_temps"] if f["stage"] == "Cold holding"]))
         out.append(h2("🔥 Hot box items") + table(["Box", "Item", "Qty", "In", "Out", "Result", "By"], [[(e(x["box"]), ""), (e(x["item"]), ""), (e(x["qty"]), ""), (e(x["in"]), ""), (e(x["out"]), ""), (e(x["outcome"]), ""), (e(x["staff"]), "")] for x in snap.get("hotbox_items", [])]))
         out.append(h2("🗑 Discards") + table(["Item", "Qty", "Reason", "Time", "By"], [[(e(x["item"]), ""), (e(x["qty"]), ""), (e(x["reason"]), ""), (e(x["at"]), ""), (e(x["staff"]), "")] for x in snap.get("discards", [])]))
     if "fuel" in snap:
@@ -740,7 +746,7 @@ class H(BaseHTTPRequestHandler):
                 elif b.get("id"): c.execute("UPDATE items SET name=?,type=COALESCE(?,type),example=0 WHERE id=?", (b["name"].strip()[:60], b.get("type"), b["id"]))
                 else:
                     kind = b.get("kind"); typ = b.get("type") or {"fridge": "fridge", "freezer": "freezer"}.get(kind, "")
-                    if kind not in ("fridge", "freezer", "kcheck", "prep", "hotbox") or not (b.get("name") or "").strip(): return self.send(400, {"error": "kind and name required"})
+                    if kind not in ("fridge", "freezer", "kcheck", "prep", "hotbox", "cold") or not (b.get("name") or "").strip(): return self.send(400, {"error": "kind and name required"})
                     c.execute("INSERT INTO items(kind,name,type,sort) VALUES(?,?,?,999)", (kind, b["name"].strip()[:60], typ))
             elif p == "/api/submit":
                 if not staff: return self.send(400, {"error": "staff name required"})
