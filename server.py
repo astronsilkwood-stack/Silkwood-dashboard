@@ -377,6 +377,8 @@ def staff_pins():
         if n.strip() and pin.strip(): out[n.strip()] = pin.strip()
     return out
 
+FIXED_STAFF = ["Manasa", "Ramandeep", "Gayana", "Ash", "Vadana"]  # always listed (plus env STAFF_NAMES="A,B")
+
 def known_staff():
     """Staff list = everyone with activity in the last 120 days (shifts, ticks, logs, activity) + STAFF_PINS names. TEST names excluded."""
     since = (now() - timedelta(days=120)).date().isoformat(); names = set(staff_pins())
@@ -387,8 +389,11 @@ def known_staff():
                 n = (r["staff"] or "").strip()
                 if n and not n.upper().startswith("TEST"): names.add(n)
     finally: c.close()
-    pins = staff_pins()
-    return [{"name": n, "pin": n in pins} for n in sorted(names, key=str.lower) if n.strip().lower() != "manager"]
+    pins = staff_pins(); fixed = FIXED_STAFF + [x.strip() for x in os.environ.get("STAFF_NAMES", "").split(",") if x.strip()]
+    seen = {}
+    for n in fixed + sorted(names):  # fixed spelling wins; dedupe case-insensitively
+        if n.strip().lower() != "manager": seen.setdefault(n.strip().lower(), n.strip())
+    return [{"name": n, "pin": n in pins} for n in sorted(seen.values(), key=str.lower)]
 
 def check_staff(b):
     """Submissions must name a listed staff member (and their PIN if one is set). Returns (name, error)."""
