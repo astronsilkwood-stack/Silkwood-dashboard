@@ -130,7 +130,9 @@ def init():
     CREATE INDEX IF NOT EXISTS ix_food_temps_date ON food_temps(date);
     CREATE INDEX IF NOT EXISTS ix_hotbox_date ON hotbox_items(date);
     CREATE INDEX IF NOT EXISTS ix_hotbox_open ON hotbox_items(out_at);
-    CREATE INDEX IF NOT EXISTS ix_discards_date ON discards(date)
+    CREATE INDEX IF NOT EXISTS ix_discards_date ON discards(date);
+    CREATE TABLE IF NOT EXISTS closing_photos(id TEXT PRIMARY KEY, kind TEXT, mime TEXT, size INTEGER, data BYTEA, staff TEXT, at TEXT, submitted INTEGER DEFAULT 0);
+    CREATE INDEX IF NOT EXISTS ix_closing_photos_at ON closing_photos(at)
     """)
     c.commit()
     try:  # migrate older submissions tables
@@ -343,6 +345,30 @@ CLOSING_TASKS = ['coffee_cleaned','coffee_milk','coffee_cups','coffee_sugar','co
     'lock_pumps','lock_cigs','lock_float','lock_ice']
 CLOSING_PAPERS = ['cairnsPost','courierMail','saturdayMail','sundayMail','australian','weekendPost','weekendAustralian']
 
+PHOTO_MAX = 1_500_000      # bytes after browser resize (~1600px JPEG q0.7 is usually 150-500 KB)
+PHOTO_PER_KIND = 10
+def public_base():
+    return (os.environ.get("PUBLIC_BASE_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "https://silkwood-dashboard.onrender.com").rstrip("/")
+
+def photo_upload(b):
+    import base64, secrets
+    kind = b.get("kind")
+    if kind not in ("pump", "dip"): return 400, {"error": "kind must be pump or dip"}
+    try: raw = base64.b64decode(str(b.get("data") or ""), validate=True)
+    except Exception: return 400, {"error": "bad image data"}
+    if not raw: return 400, {"error": "empty image"}
+    if len(raw) > PHOTO_MAX: return 413, {"error": "photo too large after resize (max 1.5 MB)"}
+    if not (raw[:3] == b"\xff\xd8\xff" and raw[-2:] == b"\xff\xd9"): return 415, {"error": "only JPEG photos are accepted"}
+    pid = secrets.token_urlsafe(24)
+    c = db(); ts = now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        c.execute("DELETE FROM closing_photos WHERE submitted=0 AND at<?", ((now() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S"),))
+        c.execute("INSERT INTO closing_photos(id,kind,mime,size,data,staff,at,submitted) VALUES(?,?,?,?,?,?,?,0)",
+                  (pid, kind, "image/jpeg", len(raw), raw, str(b.get("staff") or "")[:40], ts))
+        c.commit()
+    finally: c.close()
+    return 200, {"ok": True, "id": pid, "url": f"{public_base()}/p/{pid}.jpg", "size": len(raw)}
+
 def closing_submit(b):
     """Validate the Closing Checklist and forward it server-side (same payload as the Apps Script form).
     The webhook URL and bearer key live only in env (CLOSING_WEBHOOK_URL / CLOSING_WEBHOOK_KEY)."""
@@ -364,11 +390,25 @@ def closing_submit(b):
         if not v: papers[k] = 0; continue
         if not re.fullmatch(r"\d{1,4}", v): return 400, {"error": "Invalid newspaper quantity"}
         papers[k] = int(v)
+    ph_in = b.get("photos") if isinstance(b.get("photos"), dict) else {}
+    photos = {"pump": [], "dip": []}; ids = []
+    c = db()
+    try:
+        for kind in ("pump", "dip"):
+            lst = ph_in.get(kind) or []
+            if not isinstance(lst, list) or len(lst) > PHOTO_PER_KIND: return 400, {"error": f"up to {PHOTO_PER_KIND} {kind} photos"}
+            for pid in lst:
+                pid = str(pid)
+                if not re.fullmatch(r"[A-Za-z0-9_-]{32}", pid) or not c.execute("SELECT 1 FROM closing_photos WHERE id=? AND kind=?", (pid, kind)).fetchone():
+                    return 400, {"error": f"a {kind} photo is missing, please re-add it"}
+                photos[kind].append(f"{public_base()}/p/{pid}.jpg"); ids.append(pid)
+    finally: c.close()
     test = b.get("test") is True
     body = {"type": "closing_checklist", "site": "United Silkwood", "checklistDate": d, "staffName": staff,
             "tasks": tasks, "taskComments": comments, "newspapers": papers,
             "dayComments": str(b.get("dayComments") or "").strip()[:1000],
-            "submittedAt": datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S.000Z"), "source": "silkwood_dashboard"}
+            "submittedAt": datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S.000Z"), "source": "silkwood_dashboard",
+            "photos": photos, "pumpPhotoCount": len(photos["pump"]), "dipPhotoCount": len(photos["dip"])}
     if test: body.update({"test": True, "dayComments": "TEST ONLY - do not lodge iDeliver returns. " + body["dayComments"]})
     url = os.environ.get("CLOSING_WEBHOOK_URL", "").strip(); key = os.environ.get("CLOSING_WEBHOOK_KEY", "").strip()
     if not url or not key: return 503, {"error": "Closing checklist is not configured on the server"}
@@ -378,9 +418,15 @@ def closing_submit(b):
             st = f"sent {r.status}"; ok = 200 <= r.status < 300
     except urllib.error.HTTPError as e: st, ok = f"failed HTTP {e.code}", False
     except Exception as e: st, ok = f"failed {type(e).__name__}", False
+    if ok and ids:
+        try:
+            c = db()
+            for pid in ids: c.execute("UPDATE closing_photos SET submitted=1 WHERE id=?", (pid,))
+            c.commit(); c.close()
+        except Exception: pass
     try:
         c = db(); c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
-            (d, now().strftime("%Y-%m-%d %H:%M:%S"), staff, "closing" + ("-test" if test else ""), json.dumps({"status": st, "newspapers": papers})[:500]))
+            (d, now().strftime("%Y-%m-%d %H:%M:%S"), staff, "closing" + ("-test" if test else ""), json.dumps({"status": st, "newspapers": papers, "pumpPhotos": len(photos["pump"]), "dipPhotos": len(photos["dip"])})[:500]))
         c.commit(); c.close()
     except Exception: pass
     return (200, {"ok": True, "status": st}) if ok else (502, {"error": "Webhook " + st + ". Try again."})
@@ -402,6 +448,16 @@ class H(BaseHTTPRequestHandler):
         if u.path in ("/", "/index.html"):
             return self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
         if u.path == "/healthz": return self.send(200, {"ok": True})
+        m = re.fullmatch(r"/p/([A-Za-z0-9_-]{32})\.jpg", u.path)
+        if m:  # unguessable capability link (192-bit random id) so the webhook / routines can fetch it
+            c = db()
+            try: r = c.execute("SELECT data FROM closing_photos WHERE id=?", (m.group(1),)).fetchone()
+            finally: c.close()
+            if not r: return self.send(404, {"error": "not found"})
+            self.send_response(200); self.send_header("Content-Type", "image/jpeg"); self.send_header("Content-Length", str(len(bytes(r["data"]))))
+            self.send_header("Cache-Control", "private, max-age=86400"); self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "default-src 'none'"); self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Robots-Tag", "noindex"); self.end_headers(); self.wfile.write(bytes(r["data"])); return
         if u.path == "/sw.js":  # served from root so its scope covers the whole app
             return self.send(200, (ROOT / "static" / "sw.js").read_bytes(), "text/javascript; charset=utf-8")
         m = re.fullmatch(r"/static/([a-z0-9-]+\.(png|webmanifest|js))", u.path)
@@ -455,6 +511,13 @@ class H(BaseHTTPRequestHandler):
         return not STAFF_PIN or self.headers.get("X-Staff-Pin", "") == STAFF_PIN
     def do_POST(self):
         if not self.authed(): return self.send(401, {"error": "staff PIN required", "pin": True})
+        if urlparse(self.path).path == "/api/closing/photo":
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > 2_200_000: return self.send(413, {"error": "photo too large (max 1.5 MB)"})
+            try: b = self.body()
+            except Exception: return self.send(400, {"error": "bad json"})
+            if not isinstance(b, dict): return self.send(400, {"error": "bad json"})
+            return self.send(*photo_upload(b))
         if urlparse(self.path).path == "/api/closing":
             try: b = self.body()
             except Exception: return self.send(400, {"error": "bad json"})

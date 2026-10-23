@@ -295,29 +295,44 @@ const CL_SECT=[['1. Coffee machine',[['coffee_cleaned','Coffee machine cleaned']
 ['8. Final lock-up',[['lock_pumps','Pumps switch turned off'],['lock_cigs','Cigarettes cabinet locked'],['lock_float','Float in the safe'],['lock_ice','Ice freezer locked']]]];
 const CL_PAPERS=[['cairnsPost','Cairns Post'],['courierMail','Courier Mail'],['saturdayMail','Saturday Mail'],['sundayMail','Sunday Mail'],['australian','The Australian'],['weekendPost','Weekend Post'],['weekendAustralian','Weekend Australian']];
 const CL_IDS=CL_SECT.flatMap(s=>s[1].map(t=>t[0]));
-let CL=(()=>{try{return JSON.parse(localStorage.sw_closing||'')}catch(e){return null}})()||{tasks:{},cm:{},p:{},day:''};let clBusy=false,clMsg=['',''];
+let CL=(()=>{try{return JSON.parse(localStorage.sw_closing||'')}catch(e){return null}})()||{tasks:{},cm:{},p:{},day:''};CL.ph=CL.ph||{pump:[],dip:[]};let clUp={pump:0,dip:0},clBusy=false,clMsg=['',''];
 const clSave=()=>localStorage.sw_closing=JSON.stringify(CL);
 function clSet(id,v){CL.tasks[id]=v;clSave();render()}
 function clTask([id,lb]){const v=CL.tasks[id]||'';return `<div class="card" style="padding:10px 12px;margin:6px 0"><div style="display:flex;gap:8px;align-items:center;justify-content:space-between"><span>${esc(lb)}</span><span style="display:flex;gap:4px;flex:none">${[['done','Done'],['na','N/A']].map(([k,n])=>`<button type="button" class="btn sm keep ${v==k?'':'ghost'}" onclick="clSet('${id}','${v==k?'':k}')">${n}</button>`).join('')}</span></div><input class="keep" id="clc_${id}" placeholder="Comment (optional)" value="${esc(CL.cm[id]||'')}" oninput="CL.cm['${id}']=this.value;clSave()" style="margin-top:6px;width:100%"></div>`}
 VIEWS.closing=()=>{const done=CL_IDS.filter(i=>CL.tasks[i]).length,sec=s=>`<h3 style="margin:16px 0 6px">${esc(s[0])}</h3>`+s[1].map(clTask).join('');
  return ph('End of day','Closing Checklist',`Mark every task Done or N/A, enter newspaper returns, then submit. ${done}/${CL_IDS.length} marked.`)+
  `<div class="card"><div class="row"><label>Date <input class="keep" type="date" id="clDate" value="${esc(CL.date||S.today)}" onchange="CL.date=this.value;clSave()"></label><label>Staff name <input class="keep" id="clStaff" value="${esc(CL.staff||me())}" oninput="CL.staff=this.value;clSave()"></label></div></div>`+
- CL_SECT.slice(0,6).map(sec).join('')+
+ CL_SECT.slice(0,6).map(sec).join('')+clPhotos('pump','📷 Pump reading photos')+clPhotos('dip','📷 Fuel dip photos')+
  `<h3 style="margin:16px 0 6px">7. Newspaper returns</h3><div class="card"><p class="muted" style="margin:0 0 8px">Counts returned today (leave blank for 0). These lodge the iDeliver returns.</p><div class="row" style="flex-wrap:wrap">${CL_PAPERS.map(([k,n])=>`<label style="min-width:140px">${n} <input class="keep" type="number" min="0" step="1" inputmode="numeric" id="clp_${k}" value="${esc(CL.p[k]??'')}" oninput="CL.p['${k}']=this.value;clSave()"></label>`).join('')}</div></div>`+
  sec(CL_SECT[6])+
  `<h3 style="margin:16px 0 6px">Comments</h3><div class="card"><textarea class="keep" id="clDay" rows="3" style="width:100%" placeholder="Anything for the day?" oninput="CL.day=this.value;clSave()">${esc(CL.day||'')}</textarea></div>`+
  `<div class="row" style="margin:14px 0"><button type="button" class="btn ghost keep" onclick="clAllNa()">Mark all remaining tasks N/A</button><button type="button" class="btn keep" id="clBtn" ${clBusy?'disabled':''} onclick="clSubmit()">${clBusy?'Submitting…':'Submit closing checklist'}</button></div>`+
  (clMsg[0]?`<p style="color:${clMsg[1]=='good'?'#0a7a3e':'#b00020'};font-weight:600">${esc(clMsg[0])}</p>`:'')};
+/* closing photos: shrink on the phone (max 1600px, JPEG 0.7) then upload one by one */
+function clPhotos(kind,title){const L=CL.ph[kind]||[];return `<div class="card" style="margin:8px 0"><b>${title}</b> <span class="muted">(optional, up to 10)</span><div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0">${L.map((p,i)=>`<div style="position:relative"><img src="${esc(p.url)}" alt="" style="width:92px;height:92px;object-fit:cover;border-radius:8px;border:1px solid #ddd"><button type="button" class="btn sm ghost keep" style="position:absolute;top:2px;right:2px;padding:0 6px;min-height:0" onclick="clDelPh('${kind}',${i})">✕</button></div>`).join('')}${clUp[kind]?`<div class="muted" style="align-self:center">Uploading ${clUp[kind]}…</div>`:''}</div>${L.length<10?`<label class="btn ghost keep" style="display:inline-flex;cursor:pointer">＋ Add photos<input class="keep" type="file" accept="image/*" multiple hidden onchange="clAddPh('${kind}',this)"></label>`:''}</div>`}
+function clDelPh(k,i){CL.ph[k].splice(i,1);clSave();render()}
+function clShrink(f){return new Promise((res,rej)=>{const u=URL.createObjectURL(f),im=new Image();im.onload=()=>{const M=1600,r=Math.min(1,M/Math.max(im.naturalWidth,im.naturalHeight)),w=Math.round(im.naturalWidth*r),h=Math.round(im.naturalHeight*r),c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(im,0,0,w,h);URL.revokeObjectURL(u);c.toBlob(b=>b?res(b):rej(new Error('compress failed')),'image/jpeg',0.7)};im.onerror=()=>{URL.revokeObjectURL(u);rej(new Error('not an image this phone can read'))};im.src=u})}
+const b64=b=>new Promise(r=>{const fr=new FileReader();fr.onload=()=>r(String(fr.result).split(',')[1]);fr.readAsDataURL(b)});
+async function clAddPh(kind,inp){const fs=[...inp.files].slice(0,10-(CL.ph[kind]||[]).length);inp.value='';
+ for(const f of fs){if(!/^image\//.test(f.type)&&!/\.(jpe?g|png|heic|heif|webp)$/i.test(f.name)){toast('Skipped '+f.name+': not a photo','warn');continue}
+  clUp[kind]++;render();
+  try{const blob=await clShrink(f);if(blob.size>1.5e6)throw new Error('still too large');
+   const r=await fetch('/api/closing/photo',{method:'POST',headers:{'X-Staff-Pin':localStorage.sw_pin||'','Content-Type':'application/json'},body:JSON.stringify({kind,staff:CL.staff||me(),data:await b64(blob)})});
+   const j=await r.json().catch(()=>({}));if(!r.ok||!j.ok)throw new Error(j.error||('HTTP '+r.status));
+   (CL.ph[kind]=CL.ph[kind]||[]).push({id:j.id,url:'/p/'+j.id+'.jpg'});clSave()}
+  catch(e){toast('Photo upload failed: '+(e.message||e),'warn')}
+  clUp[kind]--;render()}}
 function clAllNa(){CL_IDS.forEach(i=>{if(!CL.tasks[i])CL.tasks[i]='na'});clSave();clMsg=['Empty tasks marked N/A. Review, then submit.','good'];render()}
 async function clSubmit(){const date=CL.date||S.today,staff=(CL.staff||me()||'').trim();
  if(!staff){clMsg=['Enter staff name.','warn'];return render()}
  const miss=CL_SECT.flatMap(s=>s[1]).find(t=>!CL.tasks[t[0]]);if(miss){clMsg=['Mark Done or N/A for: '+miss[1]+' (or tap Mark all remaining tasks N/A).','warn'];return render()}
+ if(clUp.pump||clUp.dip){clMsg=['Wait for photos to finish uploading.','warn'];return render()}
  const bad=CL_PAPERS.find(([k])=>CL.p[k]!=null&&String(CL.p[k]).trim()!==''&&!/^\d{1,4}$/.test(String(CL.p[k]).trim()));if(bad){clMsg=['Invalid newspaper quantity: '+bad[1],'warn'];return render()}
- const payload={checklistDate:date,staffName:staff,tasks:Object.fromEntries(CL_IDS.map(i=>[i,CL.tasks[i]])),taskComments:Object.fromEntries(CL_IDS.filter(i=>(CL.cm[i]||'').trim()).map(i=>[i,CL.cm[i].trim()])),dayComments:CL.day||''};
+ const payload={checklistDate:date,staffName:staff,tasks:Object.fromEntries(CL_IDS.map(i=>[i,CL.tasks[i]])),taskComments:Object.fromEntries(CL_IDS.filter(i=>(CL.cm[i]||'').trim()).map(i=>[i,CL.cm[i].trim()])),dayComments:CL.day||'',photos:{pump:(CL.ph.pump||[]).map(p=>p.id),dip:(CL.ph.dip||[]).map(p=>p.id)}};
  CL_PAPERS.forEach(([k])=>payload[k]=String(CL.p[k]??'').trim());
  clBusy=true;clMsg=['',''];render();
  try{const r=await fetch('/api/closing',{method:'POST',headers:{'X-Staff-Pin':localStorage.sw_pin||'','Content-Type':'application/json'},body:JSON.stringify(payload)});const j=await r.json().catch(()=>({}));
-  if(r.ok&&j.ok){$$('#main input,#main textarea').forEach(e=>{if(e.type!='date')e.value=''});CL={tasks:{},cm:{},p:{},day:''};clSave();clMsg=['✅ Submitted. Closing checklist recorded.','good'];toast('Closing checklist submitted','good')}else clMsg=[j.error||('Failed (HTTP '+r.status+')'),'warn']}
+  if(r.ok&&j.ok){$$('#main input,#main textarea').forEach(e=>{if(e.type!='date')e.value=''});CL={tasks:{},cm:{},p:{},day:'',ph:{pump:[],dip:[]}};clSave();clMsg=['✅ Submitted. Closing checklist recorded.','good'];toast('Closing checklist submitted','good')}else clMsg=[j.error||('Failed (HTTP '+r.status+')'),'warn']}
  catch(e){clMsg=['Network error, nothing was sent. Try again.','warn']}
  clBusy=false;render()}
 VIEWS.reports=()=>{const s=S.summary,miss=[...s.tabs.kitchen.missing,...s.tabs.shop.missing];if(!HIST)api('/api/history').then(h=>{HIST=h;if(page=='reports')render()});
