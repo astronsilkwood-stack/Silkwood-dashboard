@@ -335,6 +335,56 @@ def post_webhook(sub_id, payload):
         c = db(); c.execute("UPDATE submissions SET webhook_status=? WHERE id=?", (st, sub_id)); c.commit(); c.close()
     return st
 
+CLOSING_TASKS = ['coffee_cleaned','coffee_milk','coffee_cups','coffee_sugar','coffee_water','coffee_tray',
+    'hotbox_pans','hotbox_interior','hotbox_glass','hotbox_exterior','hotbox_papers',
+    'toilet_cleaned','toilet_towels','toilet_rolls','toilet_bins','toilet_floors','outside_bins','outside_buckets',
+    'kitchen_floor','kitchen_fryers_off','kitchen_oil_filter','kitchen_benches','kitchen_crumbs','kitchen_hotplate',
+    'kitchen_switches','kitchen_coolroom','kitchen_bin','kitchen_expired','eod_shift','eod_pos','eod_pump_photos','eod_dip_photos',
+    'lock_pumps','lock_cigs','lock_float','lock_ice']
+CLOSING_PAPERS = ['cairnsPost','courierMail','saturdayMail','sundayMail','australian','weekendPost','weekendAustralian']
+
+def closing_submit(b):
+    """Validate the Closing Checklist and forward it server-side (same payload as the Apps Script form).
+    The webhook URL and bearer key live only in env (CLOSING_WEBHOOK_URL / CLOSING_WEBHOOK_KEY)."""
+    import urllib.request, urllib.error
+    d = str(b.get("checklistDate") or "").strip(); staff = str(b.get("staffName") or "").strip()[:60]
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d): return 400, {"error": "Choose the checklist date."}
+    if not staff: return 400, {"error": "Enter staff name."}
+    tasks_in = b.get("tasks") if isinstance(b.get("tasks"), dict) else {}
+    tasks = {}
+    for k in CLOSING_TASKS:
+        v = str(tasks_in.get(k) or "").strip().lower(); v = "na" if v == "n/a" else v
+        if v not in ("done", "na"): return 400, {"error": f"Mark Done or N/A for every task (missing: {k})"}
+        tasks[k] = v
+    cm_in = b.get("taskComments") if isinstance(b.get("taskComments"), dict) else {}
+    comments = {k: str(cm_in[k]).strip()[:300] for k in CLOSING_TASKS if str(cm_in.get(k) or "").strip()}
+    papers = {}
+    for k in CLOSING_PAPERS:
+        v = str(b.get(k) if b.get(k) is not None else "").strip()
+        if not v: papers[k] = 0; continue
+        if not re.fullmatch(r"\d{1,4}", v): return 400, {"error": "Invalid newspaper quantity"}
+        papers[k] = int(v)
+    test = b.get("test") is True
+    body = {"type": "closing_checklist", "site": "United Silkwood", "checklistDate": d, "staffName": staff,
+            "tasks": tasks, "taskComments": comments, "newspapers": papers,
+            "dayComments": str(b.get("dayComments") or "").strip()[:1000],
+            "submittedAt": datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S.000Z"), "source": "silkwood_dashboard"}
+    if test: body.update({"test": True, "dayComments": "TEST ONLY - do not lodge iDeliver returns. " + body["dayComments"]})
+    url = os.environ.get("CLOSING_WEBHOOK_URL", "").strip(); key = os.environ.get("CLOSING_WEBHOOK_KEY", "").strip()
+    if not url or not key: return 503, {"error": "Closing checklist is not configured on the server"}
+    hd = {"Content-Type": "application/json", "User-Agent": "silkwood-dashboard", "Authorization": "Bearer " + key}
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, json.dumps(body).encode(), hd, method="POST"), timeout=25) as r:
+            st = f"sent {r.status}"; ok = 200 <= r.status < 300
+    except urllib.error.HTTPError as e: st, ok = f"failed HTTP {e.code}", False
+    except Exception as e: st, ok = f"failed {type(e).__name__}", False
+    try:
+        c = db(); c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
+            (d, now().strftime("%Y-%m-%d %H:%M:%S"), staff, "closing" + ("-test" if test else ""), json.dumps({"status": st, "newspapers": papers})[:500]))
+        c.commit(); c.close()
+    except Exception: pass
+    return (200, {"ok": True, "status": st}) if ok else (502, {"error": "Webhook " + st + ". Try again."})
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def send(self, code, obj, ctype="application/json"):
@@ -405,6 +455,11 @@ class H(BaseHTTPRequestHandler):
         return not STAFF_PIN or self.headers.get("X-Staff-Pin", "") == STAFF_PIN
     def do_POST(self):
         if not self.authed(): return self.send(401, {"error": "staff PIN required", "pin": True})
+        if urlparse(self.path).path == "/api/closing":
+            try: b = self.body()
+            except Exception: return self.send(400, {"error": "bad json"})
+            if not isinstance(b, dict): return self.send(400, {"error": "bad json"})
+            return self.send(*closing_submit(b))
         self.handle_write("POST")
     def do_DELETE(self):
         if not self.authed(): return self.send(401, {"error": "staff PIN required", "pin": True})

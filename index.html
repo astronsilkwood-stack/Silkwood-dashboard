@@ -101,7 +101,7 @@ dialog{border:0;border-radius:16px;padding:0;width:min(560px,94vw);max-height:90
 <script>
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let S=null,page='dashboard',mgr=sessionStorage.sw_mgr=='1',area=localStorage.sw_area||'all';
-const PAGES=[['dashboard','▦','Dashboard'],['tasks','☑','Daily Tasks'],['equip','❄','Equipment Temps'],['food','🌡','Food Temps'],['hotbox','♨','Hot Box'],['discards','🗑','Discards'],['fuel','⛽','Fuel Water Paste'],['reports','▤','Reports'],['settings','⚙','Settings']];
+const PAGES=[['dashboard','▦','Dashboard'],['tasks','☑','Daily Tasks'],['equip','❄','Equipment Temps'],['food','🌡','Food Temps'],['hotbox','♨','Hot Box'],['discards','🗑','Discards'],['fuel','⛽','Fuel Water Paste'],['closing','🔐','Closing Checklist'],['reports','▤','Reports'],['settings','⚙','Settings']];
 const TZ='Australia/Brisbane',DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 const TYPES={fridge:'Fridge — should be 0–5°C',freezer:'Freezer — should be −15°C or colder',hot:'Hot hold — should be 60°C or hotter',core:'Cooked food — core 75°C or hotter'};
 const ICON={freezer:'🧊',fridge:'🥤',hot:'🔥',core:'🍗'};
@@ -285,6 +285,41 @@ VIEWS.fuel=()=>{const F=logs('fuel');return ph('Underground tanks','Fuel water p
 async function saveFuel(i){const t=S.tanks[i],w=fuelW[i]||'no',mm=$('#fw'+i).value.trim();if(w=='yes'&&!(parseFloat(mm)>0)){$('#fw'+i).focus();return toast('How many mm of water?','warn')}
  await post('/api/log',{kind:'fuel',ref:t,data:{water:w,water_mm:w=='yes'?mm:0,fuel_l:$('#fl'+i).value.trim(),notes:$('#fn'+i).value.trim()}});fuelW[i]='no';render();toast(w=='yes'?'⚠ Water saved — tell the manager now':'✓ Tank '+tankNo(t)+' saved — no water',w=='yes'?'warn':'good')}
 let HIST=null;
+/* ---------- closing checklist (same items/payload as the Apps Script form; sent via server proxy) ---------- */
+const CL_SECT=[['1. Coffee machine',[['coffee_cleaned','Coffee machine cleaned'],['coffee_milk','Milk replaced / restocked'],['coffee_cups','Check coffee cups and lids'],['coffee_sugar','Check sugar restocked'],['coffee_water','Empty waste water can and refill fresh water can'],['coffee_tray','Empty wastage tray near coffee']]],
+['2. Hot box cleaning',[['hotbox_pans','Remove all pans / trays and clean crumbs'],['hotbox_interior','Wipe interior cabinets'],['hotbox_glass','Clean glass panels (glass cleaner)'],['hotbox_exterior','Wipe exterior surfaces'],['hotbox_papers','Change papers; change foil on trays if needed']]],
+['3. Toilets',[['toilet_cleaned','Toilets cleaned'],['toilet_towels','Hand towels checked (both toilets)'],['toilet_rolls','Toilet rolls checked (both restrooms)'],['toilet_bins','Bins emptied in toilets'],['toilet_floors','Toilet floors swept and mopped']]],
+['4. Outside bins',[['outside_bins','Outside bins emptied (both)'],['outside_buckets','Changed water in buckets']]],
+['5. Kitchen',[['kitchen_floor','Kitchen floor swept and mopped'],['kitchen_fryers_off','Both fryers turned off'],['kitchen_oil_filter','Oil filter cleaned'],['kitchen_benches','Stainless benches wiped'],['kitchen_crumbs','Crumbs wiped near fryers'],['kitchen_hotplate','Hot plate cleaned and turned off'],['kitchen_switches','Kitchen switches turned off'],['kitchen_coolroom','Cool room locked and light turned off'],['kitchen_bin','Kitchen bin emptied'],['kitchen_expired','Expired sandwiches, rolls, wraps & meals discarded']]],
+['6. End of day — POS & fuel',[['eod_shift','End of shift complete'],['eod_pos','End of day on POS (daysheet)'],['eod_pump_photos','Pump readings done'],['eod_dip_photos','Fuel dips done']]],
+['8. Final lock-up',[['lock_pumps','Pumps switch turned off'],['lock_cigs','Cigarettes cabinet locked'],['lock_float','Float in the safe'],['lock_ice','Ice freezer locked']]]];
+const CL_PAPERS=[['cairnsPost','Cairns Post'],['courierMail','Courier Mail'],['saturdayMail','Saturday Mail'],['sundayMail','Sunday Mail'],['australian','The Australian'],['weekendPost','Weekend Post'],['weekendAustralian','Weekend Australian']];
+const CL_IDS=CL_SECT.flatMap(s=>s[1].map(t=>t[0]));
+let CL=(()=>{try{return JSON.parse(localStorage.sw_closing||'')}catch(e){return null}})()||{tasks:{},cm:{},p:{},day:''};let clBusy=false,clMsg=['',''];
+const clSave=()=>localStorage.sw_closing=JSON.stringify(CL);
+function clSet(id,v){CL.tasks[id]=v;clSave();render()}
+function clTask([id,lb]){const v=CL.tasks[id]||'';return `<div class="card" style="padding:10px 12px;margin:6px 0"><div style="display:flex;gap:8px;align-items:center;justify-content:space-between"><span>${esc(lb)}</span><span style="display:flex;gap:4px;flex:none">${[['done','Done'],['na','N/A']].map(([k,n])=>`<button type="button" class="btn sm keep ${v==k?'':'ghost'}" onclick="clSet('${id}','${v==k?'':k}')">${n}</button>`).join('')}</span></div><input class="keep" id="clc_${id}" placeholder="Comment (optional)" value="${esc(CL.cm[id]||'')}" oninput="CL.cm['${id}']=this.value;clSave()" style="margin-top:6px;width:100%"></div>`}
+VIEWS.closing=()=>{const done=CL_IDS.filter(i=>CL.tasks[i]).length,sec=s=>`<h3 style="margin:16px 0 6px">${esc(s[0])}</h3>`+s[1].map(clTask).join('');
+ return ph('End of day','Closing Checklist',`Mark every task Done or N/A, enter newspaper returns, then submit. ${done}/${CL_IDS.length} marked.`)+
+ `<div class="card"><div class="row"><label>Date <input class="keep" type="date" id="clDate" value="${esc(CL.date||S.today)}" onchange="CL.date=this.value;clSave()"></label><label>Staff name <input class="keep" id="clStaff" value="${esc(CL.staff||me())}" oninput="CL.staff=this.value;clSave()"></label></div></div>`+
+ CL_SECT.slice(0,6).map(sec).join('')+
+ `<h3 style="margin:16px 0 6px">7. Newspaper returns</h3><div class="card"><p class="muted" style="margin:0 0 8px">Counts returned today (leave blank for 0). These lodge the iDeliver returns.</p><div class="row" style="flex-wrap:wrap">${CL_PAPERS.map(([k,n])=>`<label style="min-width:140px">${n} <input class="keep" type="number" min="0" step="1" inputmode="numeric" id="clp_${k}" value="${esc(CL.p[k]??'')}" oninput="CL.p['${k}']=this.value;clSave()"></label>`).join('')}</div></div>`+
+ sec(CL_SECT[6])+
+ `<h3 style="margin:16px 0 6px">Comments</h3><div class="card"><textarea class="keep" id="clDay" rows="3" style="width:100%" placeholder="Anything for the day?" oninput="CL.day=this.value;clSave()">${esc(CL.day||'')}</textarea></div>`+
+ `<div class="row" style="margin:14px 0"><button type="button" class="btn ghost keep" onclick="clAllNa()">Mark all remaining tasks N/A</button><button type="button" class="btn keep" id="clBtn" ${clBusy?'disabled':''} onclick="clSubmit()">${clBusy?'Submitting…':'Submit closing checklist'}</button></div>`+
+ (clMsg[0]?`<p style="color:${clMsg[1]=='good'?'#0a7a3e':'#b00020'};font-weight:600">${esc(clMsg[0])}</p>`:'')};
+function clAllNa(){CL_IDS.forEach(i=>{if(!CL.tasks[i])CL.tasks[i]='na'});clSave();clMsg=['Empty tasks marked N/A. Review, then submit.','good'];render()}
+async function clSubmit(){const date=CL.date||S.today,staff=(CL.staff||me()||'').trim();
+ if(!staff){clMsg=['Enter staff name.','warn'];return render()}
+ const miss=CL_SECT.flatMap(s=>s[1]).find(t=>!CL.tasks[t[0]]);if(miss){clMsg=['Mark Done or N/A for: '+miss[1]+' (or tap Mark all remaining tasks N/A).','warn'];return render()}
+ const bad=CL_PAPERS.find(([k])=>CL.p[k]!=null&&String(CL.p[k]).trim()!==''&&!/^\d{1,4}$/.test(String(CL.p[k]).trim()));if(bad){clMsg=['Invalid newspaper quantity: '+bad[1],'warn'];return render()}
+ const payload={checklistDate:date,staffName:staff,tasks:Object.fromEntries(CL_IDS.map(i=>[i,CL.tasks[i]])),taskComments:Object.fromEntries(CL_IDS.filter(i=>(CL.cm[i]||'').trim()).map(i=>[i,CL.cm[i].trim()])),dayComments:CL.day||''};
+ CL_PAPERS.forEach(([k])=>payload[k]=String(CL.p[k]??'').trim());
+ clBusy=true;clMsg=['',''];render();
+ try{const r=await fetch('/api/closing',{method:'POST',headers:{'X-Staff-Pin':localStorage.sw_pin||'','Content-Type':'application/json'},body:JSON.stringify(payload)});const j=await r.json().catch(()=>({}));
+  if(r.ok&&j.ok){$$('#main input,#main textarea').forEach(e=>{if(e.type!='date')e.value=''});CL={tasks:{},cm:{},p:{},day:''};clSave();clMsg=['✅ Submitted. Closing checklist recorded.','good'];toast('Closing checklist submitted','good')}else clMsg=[j.error||('Failed (HTTP '+r.status+')'),'warn']}
+ catch(e){clMsg=['Network error, nothing was sent. Try again.','warn']}
+ clBusy=false;render()}
 VIEWS.reports=()=>{const s=S.summary,miss=[...s.tabs.kitchen.missing,...s.tabs.shop.missing];if(!HIST)api('/api/history').then(h=>{HIST=h;if(page=='reports')render()});
  return ph('Records','Reports','Submit the day, and see past days.')+
  `<div class="card" style="margin-bottom:16px"><h2>Submit ${S.date==S.today?'today':S.date}</h2><p class="help">Sends the day's record to the manager and locks it. Only the manager can reopen it.</p>
