@@ -369,13 +369,45 @@ def photo_upload(b):
     finally: c.close()
     return 200, {"ok": True, "id": pid, "url": f"{public_base()}/p/{pid}.jpg", "size": len(raw)}
 
+def staff_pins():
+    """Optional per-staff PINs from env STAFF_PINS="Name:1234,Other:5678" (server-side only, never sent to the browser)."""
+    out = {}
+    for part in os.environ.get("STAFF_PINS", "").split(","):
+        n, _, pin = part.partition(":")
+        if n.strip() and pin.strip(): out[n.strip()] = pin.strip()
+    return out
+
+def known_staff():
+    """Staff list = everyone with activity in the last 120 days (shifts, ticks, logs, activity) + STAFF_PINS names. TEST names excluded."""
+    since = (now() - timedelta(days=120)).date().isoformat(); names = set(staff_pins())
+    c = db()
+    try:
+        for t in ("shifts", "task_done", "logs", "audit"):
+            for r in c.execute(f"SELECT DISTINCT staff FROM {t} WHERE date>=?", (since,)):
+                n = (r["staff"] or "").strip()
+                if n and not n.upper().startswith("TEST"): names.add(n)
+    finally: c.close()
+    pins = staff_pins()
+    return [{"name": n, "pin": n in pins} for n in sorted(names, key=str.lower)]
+
+def check_staff(b):
+    """Submissions must name a listed staff member (and their PIN if one is set). Returns (name, error)."""
+    import hmac
+    n = str(b.get("staffName") or "").strip()
+    if not n: return None, "Tap your name to say who is submitting."
+    if n not in {s["name"] for s in known_staff()}: return None, "Pick your name from the staff list."
+    pin = staff_pins().get(n)
+    if pin and not hmac.compare_digest(str(b.get("staffPin") or "").strip(), pin): return None, "Wrong PIN for " + n + "."
+    return n[:60], None
+
 def closing_submit(b):
     """Validate the Closing Checklist and forward it server-side (same payload as the Apps Script form).
     The webhook URL and bearer key live only in env (CLOSING_WEBHOOK_URL / CLOSING_WEBHOOK_KEY)."""
     import urllib.request, urllib.error
     d = str(b.get("checklistDate") or "").strip(); staff = str(b.get("staffName") or "").strip()[:60]
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d): return 400, {"error": "Choose the checklist date."}
-    if not staff: return 400, {"error": "Enter staff name."}
+    staff, err = check_staff(b)
+    if err: return 400, {"error": err, "staff": True}
     tasks_in = b.get("tasks") if isinstance(b.get("tasks"), dict) else {}
     tasks = {}
     for k in CLOSING_TASKS:
@@ -442,7 +474,9 @@ def fleet_submit(b):
     if prod not in FC_PRODUCTS: return 400, {"error": "Invalid fuel product"}
     sales, card, exp = g("salesNumber"), re.sub(r"[\s-]+", "", g("cardNumber")), g("cardExpiry").replace(" ", "")
     litres, amount = g("fuelLitres") or g("dieselLitres"), g("fuelAmount") or g("dieselAmount")
-    sur, odo, staff, notes = g("surcharge", "0") or "0", g("odo", "0") or "0", g("staffName")[:60], g("notes")[:500]
+    sur, odo, notes = g("surcharge", "0") or "0", g("odo", "0") or "0", g("notes")[:500]
+    staff, err = check_staff(b)
+    if err: return 400, {"error": err, "staff": True}
     for k, v in (("salesNumber", sales), ("cardNumber", card), ("cardExpiry", exp), ("fuelLitres", litres), ("fuelAmount", amount), ("staffName", staff)):
         if not v: return 400, {"error": "Missing " + k}
     if not re.fullmatch(r"[A-Za-z0-9-]{1,30}", sales): return 400, {"error": "Sales number looks wrong"}
@@ -505,6 +539,7 @@ class H(BaseHTTPRequestHandler):
         if u.path in ("/", "/index.html"):
             return self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
         if u.path == "/healthz": return self.send(200, {"ok": True})
+        if u.path == "/api/staff": return self.send(200, {"staff": known_staff()})
         m = re.fullmatch(r"/p/([A-Za-z0-9_-]{32})\.jpg", u.path)
         if m:  # unguessable capability link (192-bit random id) so the webhook / routines can fetch it
             c = db()

@@ -301,7 +301,7 @@ function clSet(id,v){CL.tasks[id]=v;clSave();render()}
 function clTask([id,lb]){const v=CL.tasks[id]||'';return `<div class="card" style="padding:10px 12px;margin:6px 0"><div style="display:flex;gap:8px;align-items:center;justify-content:space-between"><span>${esc(lb)}</span><span style="display:flex;gap:4px;flex:none">${[['done','Done'],['na','N/A']].map(([k,n])=>`<button type="button" class="btn sm keep ${v==k?'':'ghost'}" onclick="clSet('${id}','${v==k?'':k}')">${n}</button>`).join('')}</span></div><input class="keep" id="clc_${id}" placeholder="Comment (optional)" value="${esc(CL.cm[id]||'')}" oninput="CL.cm['${id}']=this.value;clSave()" style="margin-top:6px;width:100%"></div>`}
 VIEWS.closing=()=>{const done=CL_IDS.filter(i=>CL.tasks[i]).length,sec=s=>`<h3 style="margin:16px 0 6px">${esc(s[0])}</h3>`+s[1].map(clTask).join('');
  return ph('End of day','Closing Checklist',`Mark every task Done or N/A, enter newspaper returns, then submit. ${done}/${CL_IDS.length} marked.`)+
- `<div class="card"><div class="row"><label>Date <input class="keep" type="date" id="clDate" value="${esc(CL.date||S.today)}" onchange="CL.date=this.value;clSave()"></label><label>Staff name <input class="keep" id="clStaff" value="${esc(CL.staff||me())}" oninput="CL.staff=this.value;clSave()"></label></div></div>`+
+ `<div class="card"><label>Date <input class="keep" type="date" id="clDate" value="${esc(CL.date||S.today)}" onchange="CL.date=this.value;clSave()"></label></div>`+
  CL_SECT.slice(0,6).map(sec).join('')+clPhotos('pump','📷 Pump reading photos')+clPhotos('dip','📷 Fuel dip photos')+
  `<h3 style="margin:16px 0 6px">7. Newspaper returns</h3><div class="card"><p class="muted" style="margin:0 0 8px">Counts returned today (leave blank for 0). These lodge the iDeliver returns.</p><div class="row" style="flex-wrap:wrap">${CL_PAPERS.map(([k,n])=>`<label style="min-width:140px">${n} <input class="keep" type="number" min="0" step="1" inputmode="numeric" id="clp_${k}" value="${esc(CL.p[k]??'')}" oninput="CL.p['${k}']=this.value;clSave()"></label>`).join('')}</div></div>`+
  sec(CL_SECT[6])+
@@ -323,18 +323,27 @@ async function clAddPh(kind,inp){const fs=[...inp.files].slice(0,10-(CL.ph[kind]
   catch(e){toast('Photo upload failed: '+(e.message||e),'warn')}
   clUp[kind]--;render()}}
 function clAllNa(){CL_IDS.forEach(i=>{if(!CL.tasks[i])CL.tasks[i]='na'});clSave();clMsg=['Empty tasks marked N/A. Review, then submit.','good'];render()}
-async function clSubmit(){const date=CL.date||S.today,staff=(CL.staff||me()||'').trim();
- if(!staff){clMsg=['Enter staff name.','warn'];return render()}
+async function clSubmit(){const date=CL.date||S.today;
  const miss=CL_SECT.flatMap(s=>s[1]).find(t=>!CL.tasks[t[0]]);if(miss){clMsg=['Mark Done or N/A for: '+miss[1]+' (or tap Mark all remaining tasks N/A).','warn'];return render()}
  if(clUp.pump||clUp.dip){clMsg=['Wait for photos to finish uploading.','warn'];return render()}
  const bad=CL_PAPERS.find(([k])=>CL.p[k]!=null&&String(CL.p[k]).trim()!==''&&!/^\d{1,4}$/.test(String(CL.p[k]).trim()));if(bad){clMsg=['Invalid newspaper quantity: '+bad[1],'warn'];return render()}
- const payload={checklistDate:date,staffName:staff,tasks:Object.fromEntries(CL_IDS.map(i=>[i,CL.tasks[i]])),taskComments:Object.fromEntries(CL_IDS.filter(i=>(CL.cm[i]||'').trim()).map(i=>[i,CL.cm[i].trim()])),dayComments:CL.day||'',photos:{pump:(CL.ph.pump||[]).map(p=>p.id),dip:(CL.ph.dip||[]).map(p=>p.id)}};
+ const who=await whoPick();if(!who)return;
+ const payload={checklistDate:date,staffName:who.name,staffPin:who.pin,tasks:Object.fromEntries(CL_IDS.map(i=>[i,CL.tasks[i]])),taskComments:Object.fromEntries(CL_IDS.filter(i=>(CL.cm[i]||'').trim()).map(i=>[i,CL.cm[i].trim()])),dayComments:CL.day||'',photos:{pump:(CL.ph.pump||[]).map(p=>p.id),dip:(CL.ph.dip||[]).map(p=>p.id)}};
  CL_PAPERS.forEach(([k])=>payload[k]=String(CL.p[k]??'').trim());
  clBusy=true;clMsg=['',''];render();
  try{const r=await fetch('/api/closing',{method:'POST',headers:{'X-Staff-Pin':localStorage.sw_pin||'','Content-Type':'application/json'},body:JSON.stringify(payload)});const j=await r.json().catch(()=>({}));
-  if(r.ok&&j.ok){$$('#main input,#main textarea').forEach(e=>{if(e.type!='date')e.value=''});CL={tasks:{},cm:{},p:{},day:'',ph:{pump:[],dip:[]}};clSave();clMsg=['✅ Submitted. Closing checklist recorded.','good'];toast('Closing checklist submitted','good')}else clMsg=[j.error||('Failed (HTTP '+r.status+')'),'warn']}
+  if(r.ok&&j.ok){$$('#main input,#main textarea').forEach(e=>{if(e.type!='date')e.value=''});CL={tasks:{},cm:{},p:{},day:'',ph:{pump:[],dip:[]}};clSave();clMsg=['✅ Thank you, '+who.name+'! Your closing checklist has been recorded.','good'];toast('Closing checklist submitted','good')}else clMsg=[j.error||('Failed (HTTP '+r.status+')'),'warn']}
  catch(e){clMsg=['Network error, nothing was sent. Try again.','warn']}
  clBusy=false;render()}
+/* ---------- "Who is submitting?" pop-up (Fleet Card + Closing). Staff list comes from the server; PIN asked only if that person has one set. ---------- */
+let whoWait=null;
+async function whoPick(){let L=[];try{L=(await api('/api/staff')).staff||[]}catch(e){}
+ if(!L.length){toast('No staff list yet — start your shift first so your name is saved','warn');return null}
+ openDlg('Who is submitting?',`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${L.map((x,i)=>`<button type="button" class="btn ${x.name==me()?'':'ghost'}" style="min-height:64px;font-size:18px" onclick="whoTap(${i})">${esc(x.name)}${x.pin?' 🔒':''}</button>`).join('')}</div><p class="help" style="margin-top:12px">Not listed? Tap ▶ Start shift with your name first.</p>`);
+ window._whoL=L;return new Promise(r=>{whoWait=r;dlg.addEventListener('close',()=>{whoWait&&whoWait(null);whoWait=null},{once:true})})}
+function whoDone(v){const w=whoWait;whoWait=null;dlg.close();w&&w(v)}
+function whoTap(i){const x=window._whoL[i];if(!x.pin)return whoDone({name:x.name,pin:''});
+ openDlg('PIN for '+x.name,`<input id="whoPin" type="password" inputmode="numeric" autocomplete="off" style="width:100%;font-size:28px;text-align:center;min-height:60px" placeholder="PIN"><button type="button" class="btn full" style="min-height:60px;font-size:18px;margin-top:10px" onclick="whoDone({name:_whoL[${i}].name,pin:$('#whoPin').value})">Submit</button>`);setTimeout(()=>$('#whoPin').focus(),50)}
 /* ---------- fleet card pay (replaces the Apps Script form; same fields/payload, sent via server proxy /api/fleet) ----------
    Card number is kept in memory only (never localStorage) and cleared after sending. */
 let FC={fuelProduct:'Diesel',surcharge:'0',odo:'0'},fcBusy=false,fcMsg=['',''],fcDup=false;
@@ -345,21 +354,21 @@ VIEWS.fleet=()=>ph('Sales','Fleet Card Pay','One sale per submit. Goes straight 
  <div style="margin:10px 0"><div class="muted" style="margin-bottom:6px">Fuel product</div><div class="seg">${['Diesel','Unleaded','Premium Unleaded'].map(x=>`<button type="button" class="${FC.fuelProduct==x?'on':''}" style="min-height:54px" onclick="FC.fuelProduct='${x}';render()">${x}</button>`).join('')}</div></div>
  <div class="row">${fcIn('fuelLitres','Litres','decimal','','')}${fcIn('fuelAmount','Amount $','decimal','','')}</div>
  <div class="row">${fcIn('surcharge','Surcharge $','decimal','','')}${fcIn('odo','Odo reading','numeric','','')}</div>
- ${fcIn('staffName','Staff name','text','','','autocomplete="name"').replace(`value=""`,`value="${esc(FC.staffName??me())}"`)}
  <label class="f" style="display:block;margin:10px 0">Notes <span class="muted">(optional)</span><textarea class="keep" id="fc_notes" rows="2" style="width:100%" oninput="FC.notes=this.value">${esc(FC.notes||'')}</textarea></label>
  <button type="button" class="btn full keep" style="min-height:60px;font-size:18px;margin-top:8px" ${fcBusy?'disabled':''} onclick="fcSubmit()">${fcBusy?'Sending…':(fcDup?'Send anyway (I checked it is not a repeat)':'Submit to ops')}</button>
  ${fcMsg[0]?`<p style="color:${fcMsg[1]=='good'?'#0a7a3e':'#b00020'};font-weight:600;font-size:16px">${esc(fcMsg[0])}</p>`:''}</div>`;
 async function fcSubmit(){if(fcBusy)return;const v=k=>String(FC[k]??($('#fc_'+k)||{}).value??'').trim();
- const staff=v('staffName')||me(),card=v('cardNumber').replace(/[\s-]+/g,''),exp=v('cardExpiry').replace(/\s/g,'');
+ const card=v('cardNumber').replace(/[\s-]+/g,''),exp=v('cardExpiry').replace(/\s/g,'');
  const need=[['salesNumber','Sales number'],['fuelLitres','Litres'],['fuelAmount','Amount']].find(([k])=>!v(k));
- let err=need?'Enter '+need[1]+'.':!/^\d{8,19}$/.test(card)?'Card number: digits only.':!/^(0[1-9]|1[0-2])\/?\d{2}$/.test(exp)?'Card expiry must be MM/YY.':!staff?'Enter staff name.':
+ let err=need?'Enter '+need[1]+'.':!/^\d{8,19}$/.test(card)?'Card number: digits only.':!/^(0[1-9]|1[0-2])\/?\d{2}$/.test(exp)?'Card expiry must be MM/YY.':
   [['fuelLitres','Litres'],['fuelAmount','Amount'],['surcharge','Surcharge']].map(([k,n])=>/^\$?\d{1,6}(\.\d{1,3})?$/.test(v(k)||'0')?'':n+' must be a number.').find(x=>x)||(/^\d{1,9}$/.test(v('odo')||'0')?'':'Odo must be a whole number.');
  if(err){fcMsg=[err,'warn'];return render()}
- const payload={salesNumber:v('salesNumber'),cardNumber:card,cardExpiry:exp,fuelProduct:FC.fuelProduct,fuelLitres:v('fuelLitres'),fuelAmount:v('fuelAmount'),surcharge:v('surcharge')||'0',odo:v('odo')||'0',staffName:staff,notes:v('notes')};
+ const payload={salesNumber:v('salesNumber'),cardNumber:card,cardExpiry:exp,fuelProduct:FC.fuelProduct,fuelLitres:v('fuelLitres'),fuelAmount:v('fuelAmount'),surcharge:v('surcharge')||'0',odo:v('odo')||'0',notes:v('notes')};
+ const who=await whoPick();if(!who)return;payload.staffName=who.name;payload.staffPin=who.pin;
  payload.dieselLitres=payload.fuelLitres;payload.dieselAmount=payload.fuelAmount;if(fcDup)payload.confirmDuplicate=true;
  fcBusy=true;fcMsg=['',''];render();
  try{const r=await fetch('/api/fleet',{method:'POST',headers:{'X-Staff-Pin':localStorage.sw_pin||'','Content-Type':'application/json'},body:JSON.stringify(payload)});const j=await r.json().catch(()=>({}));
-  if(r.ok&&j.ok){$$('#main input,#main textarea').forEach(e=>e.value='');FC={fuelProduct:'Diesel',surcharge:'0',odo:'0',staffName:staff};fcDup=false;fcMsg=['✅ Sent (card ending '+(j.last4||card.slice(-4))+'). Ops will lodge this sale.','good'];toast('Fleet card sale sent','good')}
+  if(r.ok&&j.ok){$$('#main input,#main textarea').forEach(e=>e.value='');FC={fuelProduct:'Diesel',surcharge:'0',odo:'0'};fcDup=false;fcMsg=['✅ Thank you, '+who.name+'! Your fleet card submission (card ending '+(j.last4||card.slice(-4))+') has been recorded.','good'];toast('Fleet card sale sent','good')}
   else{fcDup=!!j.duplicate;fcMsg=[j.error||('Could not send (HTTP '+r.status+'). Try again.'),'warn']}}
  catch(e){fcMsg=['Network error, nothing was sent. Try again.','warn']}
  fcBusy=false;render()}
