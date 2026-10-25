@@ -12,6 +12,11 @@
    in the repo root and push.
 5. Render > New > Blueprint > pick the repo. render.yaml creates "silkwood-ops" on the free plan. When asked, set:
    DATABASE_URL = the Neon string, STAFF_PIN = staff PIN, MANAGER_PIN = manager PIN.
+   Checklist forwards (optional until that form should go out): CLOSING_WEBHOOK_URL + CLOSING_WEBHOOK_KEY,
+   and KITCHEN_WEBHOOK_URL + KITCHEN_WEBHOOK_KEY. Each pair is a POST URL and a bearer token. The server sends
+   `Authorization: Bearer <key>`. If a pair is missing, that checklist’s Submit returns 503 and nothing is forwarded.
+   After this kitchen checklist ships, set KITCHEN_WEBHOOK_URL and KITCHEN_WEBHOOK_KEY on the Render service
+   (Environment) before staff use Submit. The payload type is `kitchen_daily_checklist` for site `United Silkwood`.
    (Render's API create-service call can need a card on file, so the first create is done in the dashboard.
    Later redeploys happen automatically on git push, or via the API/CLI: `render deploys create <service-id>` with RENDER_API_KEY.)
 6. Open https://silkwood-ops.onrender.com (the exact URL is shown in Render). Enter the staff PIN once on each device.

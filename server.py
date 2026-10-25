@@ -395,6 +395,19 @@ CLOSING_TASKS = ['coffee_cleaned','coffee_milk','coffee_cups','coffee_sugar','co
     'kitchen_switches','kitchen_coolroom','kitchen_bin','kitchen_expired','eod_shift','eod_pos','eod_pump_photos','eod_dip_photos',
     'lock_pumps','lock_cigs','lock_float','lock_ice']
 CLOSING_PAPERS = ['cairnsPost','courierMail','saturdayMail','sundayMail','australian','weekendPost','weekendAustralian']
+# Kitchen Daily Checklist. Ids are the webhook task keys; the second field is the staff-facing label (also in index.html).
+KITCHEN_TASKS = [
+    ("bacon", "Check there’s enough cut bacon ready for tomorrow"),
+    ("crumbed_fish", "Check there’s enough crumbed fish"),
+    ("fried_topup", "Top up empty fried food items and defrost anything that’s missing"),
+    ("kabana", "Cut kabana"),
+    ("trifle", "Check trifle — keep stock under 2"),
+    ("oil_fryer", "Clean the oil fryer if needed"),
+    ("chicken_fryer", "Clean the chicken oil fryer"),
+    ("defrost_fish", "Defrost fish if needed"),
+    ("chicken_buckets", "Top up chicken buckets if needed (wings, drumsticks and thighs)"),
+]
+KITCHEN_IDS = [k for k, _ in KITCHEN_TASKS]
 
 PHOTO_MAX = 1_500_000      # bytes after browser resize (~1600px JPEG q0.7 is usually 150-500 KB)
 PHOTO_PER_KIND = 10
@@ -515,6 +528,41 @@ def closing_submit(b):
     try:
         c = db(); c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
             (d, now().strftime("%Y-%m-%d %H:%M:%S"), staff, "closing" + ("-test" if test else ""), json.dumps({"status": st, "newspapers": papers, "pumpPhotos": len(photos["pump"]), "dipPhotos": len(photos["dip"])})[:500]))
+        c.commit(); c.close()
+    except Exception: pass
+    return (200, {"ok": True, "status": st, "staff": staff}) if ok else (502, {"error": "Webhook " + st + ". Try again."})
+
+def kitchen_submit(b):
+    """Validate the Kitchen Daily Checklist and forward it server-side.
+    The webhook URL and bearer key live only in env (KITCHEN_WEBHOOK_URL / KITCHEN_WEBHOOK_KEY)."""
+    import urllib.request, urllib.error
+    d = str(b.get("checklistDate") or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d): return 400, {"error": "Choose the checklist date."}
+    staff, err = check_staff(b)
+    if err: return 400, {"error": err, "staff": True}
+    tasks_in = b.get("tasks") if isinstance(b.get("tasks"), dict) else {}
+    tasks = {}
+    for k in KITCHEN_IDS:
+        v = str(tasks_in.get(k) or "").strip().lower(); v = "na" if v == "n/a" else v
+        if v not in ("done", "na"): return 400, {"error": f"Mark Done or N/A for every task (missing: {k})"}
+        tasks[k] = v
+    cm_in = b.get("taskComments") if isinstance(b.get("taskComments"), dict) else {}
+    comments = {k: str(cm_in[k]).strip()[:300] for k in KITCHEN_IDS if str(cm_in.get(k) or "").strip()}
+    body = {"type": "kitchen_daily_checklist", "site": "United Silkwood", "checklistDate": d, "staffName": staff,
+            "tasks": tasks, "taskComments": comments, "taskLabels": {k: lab for k, lab in KITCHEN_TASKS},
+            "dayComments": str(b.get("dayComments") or "").strip()[:1000],
+            "submittedAt": datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S.000Z"), "source": "silkwood_dashboard"}
+    url = os.environ.get("KITCHEN_WEBHOOK_URL", "").strip(); key = os.environ.get("KITCHEN_WEBHOOK_KEY", "").strip()
+    if not url or not key: return 503, {"error": "Kitchen checklist is not configured on the server"}
+    hd = {"Content-Type": "application/json", "User-Agent": "silkwood-dashboard", "Authorization": "Bearer " + key}
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, json.dumps(body).encode(), hd, method="POST"), timeout=25) as r:
+            st = f"sent {r.status}"; ok = 200 <= r.status < 300
+    except urllib.error.HTTPError as e: st, ok = f"failed HTTP {e.code}", False
+    except Exception as e: st, ok = f"failed {type(e).__name__}", False
+    try:
+        c = db(); c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
+            (d, now().strftime("%Y-%m-%d %H:%M:%S"), staff, "kitchen_daily", json.dumps({"status": st})[:500]))
         c.commit(); c.close()
     except Exception: pass
     return (200, {"ok": True, "status": st, "staff": staff}) if ok else (502, {"error": "Webhook " + st + ". Try again."})
@@ -695,6 +743,11 @@ class H(BaseHTTPRequestHandler):
             except Exception: return self.send(400, {"error": "bad json"})
             if not isinstance(b, dict): return self.send(400, {"error": "bad json"})
             return self.send(*fleet_submit(b))
+        if urlparse(self.path).path == "/api/kitchen":
+            try: b = self.body()
+            except Exception: return self.send(400, {"error": "bad json"})
+            if not isinstance(b, dict): return self.send(400, {"error": "bad json"})
+            return self.send(*kitchen_submit(b))
         if urlparse(self.path).path == "/api/closing":
             try: b = self.body()
             except Exception: return self.send(400, {"error": "bad json"})

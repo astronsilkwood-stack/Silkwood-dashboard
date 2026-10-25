@@ -17,3 +17,11 @@ services:
         sync: false
       - key: MANAGER_PIN
         sync: false
+      - key: CLOSING_WEBHOOK_URL
+        sync: false
+      - key: CLOSING_WEBHOOK_KEY
+        sync: false
+      - key: KITCHEN_WEBHOOK_URL
+        sync: false
+      - key: KITCHEN_WEBHOOK_KEY
+        sync: false
