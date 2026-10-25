@@ -101,7 +101,7 @@ dialog{border:0;border-radius:16px;padding:0;width:min(560px,94vw);max-height:90
 <script>
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let S=null,page='dashboard',mgr=sessionStorage.sw_mgr=='1',area=localStorage.sw_area||'all';
-const PAGES=[['dashboard','▦','Dashboard'],['tasks','☑','Daily Tasks'],['equip','❄','Equipment Temps'],['food','🌡','Food Temps'],['hotbox','♨','Hot Box'],['cold','🧊','Cold Holding'],['discards','🗑','Discards'],['fuel','⛽','Fuel Water Paste'],['closing','🔐','Closing Checklist'],['fleet','💳','Fleet Card'],['reports','▤','Reports'],['settings','⚙','Settings']];
+const PAGES=[['dashboard','▦','Dashboard'],['tasks','☑','Daily Tasks'],['equip','❄','Equipment Temps'],['food','🌡','Food Temps'],['hotbox','♨','Hot Box'],['cold','🧊','Cold Holding'],['discards','🗑','Discards'],['fuel','⛽','Fuel Water Paste'],['kitchen','🍳','Kitchen Daily Checklist'],['closing','🔐','Closing Checklist'],['fleet','💳','Fleet Card'],['reports','▤','Reports'],['settings','⚙','Settings']];
 const TZ='Australia/Brisbane',DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 const TYPES={fridge:'Fridge — should be 0–5°C',freezer:'Freezer — should be −15°C or colder',hot:'Hot hold — should be 60°C or hotter',core:'Cooked food — core 75°C or hotter'};
 const ICON={freezer:'🧊',fridge:'🥤',hot:'🔥',core:'🍗'};
@@ -347,7 +347,32 @@ async function clSubmit(){const date=CL.date||S.today;
   if(r.ok&&j.ok){$$('#main input,#main textarea').forEach(e=>{if(e.type!='date')e.value=''});CL={tasks:{},cm:{},p:{},day:'',ph:{pump:[],dip:[]}};clSave();clMsg=['✅ Thank you, '+who.name+'! Your closing checklist has been recorded.'+(j.final_log=='sent'?' The full day\'s log has been sent.':j.final_log=='already_submitted'?' (Day log was already submitted.)':j.final_log?' ⚠ Full day log not sent — use Reports → Submit end of day log.':''),'good'];load(S.date);toast('Closing checklist submitted','good')}else clMsg=[j.error||('Failed (HTTP '+r.status+')'),'warn']}
  catch(e){clMsg=['Network error, nothing was sent. Try again.','warn']}
  clBusy=false;render()}
-/* ---------- "Who is submitting?" pop-up (Fleet Card + Closing). Staff list comes from the server; PIN asked only if that person has one set. ---------- */
+/* ---------- kitchen daily checklist (Done/N/A + optional comment; draft in sw_kitchen; sent via /api/kitchen) ---------- */
+const KD_TASKS=[['bacon','Check there’s enough cut bacon ready for tomorrow'],['crumbed_fish','Check there’s enough crumbed fish'],['fried_topup','Top up empty fried food items and defrost anything that’s missing'],['kabana','Cut kabana'],['trifle','Check trifle — keep stock under 2'],['oil_fryer','Clean the oil fryer if needed'],['chicken_fryer','Clean the chicken oil fryer'],['defrost_fish','Defrost fish if needed'],['chicken_buckets','Top up chicken buckets if needed (wings, drumsticks and thighs)']];
+const KD_IDS=KD_TASKS.map(t=>t[0]);
+let KD=(()=>{try{return JSON.parse(localStorage.sw_kitchen||'')}catch(e){return null}})()||{tasks:{},cm:{},day:''};KD.tasks=KD.tasks||{};KD.cm=KD.cm||{};let kdBusy=false,kdMsg=['',''];
+const kdSave=()=>localStorage.sw_kitchen=JSON.stringify(KD);
+function kdSet(id,v){KD.tasks[id]=v;kdSave();render()}
+function kdTask([id,lb]){const v=KD.tasks[id]||'';return `<div class="card" style="padding:10px 12px;margin:6px 0"><div style="display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap"><span>${esc(lb)}</span><span style="display:flex;gap:4px;flex:none">${[['done','Done'],['na','N/A']].map(([k,n])=>`<button type="button" class="btn sm keep ${v==k?'':'ghost'}" onclick="kdSet('${id}','${v==k?'':k}')">${n}</button>`).join('')}</span></div><input class="keep" id="kdc_${id}" placeholder="Comment (optional)" value="${esc(KD.cm[id]||'')}" oninput="KD.cm['${id}']=this.value;kdSave()" style="margin-top:6px;width:100%"></div>`}
+VIEWS.kitchen=()=>{const done=KD_IDS.filter(i=>KD.tasks[i]).length;
+ return ph('Kitchen','Kitchen Daily Checklist',`Mark every task Done or N/A, then submit. ${done}/${KD_IDS.length} marked.`)+
+ `<div class="card"><label>Date <input class="keep" type="date" id="kdDate" value="${esc(KD.date||S.today)}" onchange="KD.date=this.value;kdSave()"></label></div>`+
+ KD_TASKS.map(kdTask).join('')+
+ `<h3 style="margin:16px 0 6px">Comments</h3><div class="card"><textarea class="keep" id="kdDay" rows="3" style="width:100%" placeholder="Anything for the day?" oninput="KD.day=this.value;kdSave()">${esc(KD.day||'')}</textarea></div>`+
+ `<div class="row" style="margin:14px 0"><button type="button" class="btn ghost keep" onclick="kdAllNa()">Mark all remaining tasks N/A</button><button type="button" class="btn keep" id="kdBtn" ${kdBusy?'disabled':''} onclick="kdSubmit()">${kdBusy?'Submitting…':'Submit kitchen checklist'}</button></div>`+
+ (kdMsg[0]?`<p style="color:${kdMsg[1]=='good'?'#0a7a3e':'#b00020'};font-weight:600">${esc(kdMsg[0])}</p>`:'')};
+function kdAllNa(){KD_IDS.forEach(i=>{if(!KD.tasks[i])KD.tasks[i]='na'});kdSave();kdMsg=['Empty tasks marked N/A. Review, then submit.','good'];render()}
+async function kdSubmit(){const date=KD.date||S.today;
+ const miss=KD_TASKS.find(t=>!KD.tasks[t[0]]);if(miss){kdMsg=['Mark Done or N/A for: '+miss[1]+' (or tap Mark all remaining tasks N/A).','warn'];return render()}
+ const who=await whoPick();if(!who)return;
+ const payload={checklistDate:date,staffName:who.name,staffPin:who.pin,tasks:Object.fromEntries(KD_IDS.map(i=>[i,KD.tasks[i]])),taskComments:Object.fromEntries(KD_IDS.filter(i=>(KD.cm[i]||'').trim()).map(i=>[i,KD.cm[i].trim()])),dayComments:KD.day||''};
+ kdBusy=true;kdMsg=['',''];render();
+ try{const r=await fetch('/api/kitchen',{method:'POST',headers:{'X-Staff-Pin':localStorage.sw_pin||'','Content-Type':'application/json'},body:JSON.stringify(payload)});const j=await r.json().catch(()=>({}));
+  if(r.ok&&j.ok){KD={tasks:{},cm:{},day:''};kdSave();kdMsg=['✅ Thank you, '+who.name+'! Your kitchen daily checklist has been recorded.','good'];toast('Kitchen checklist submitted','good')}
+  else kdMsg=[j.error||('Failed (HTTP '+r.status+')'),'warn']}
+ catch(e){kdMsg=['Network error, nothing was sent. Try again.','warn']}
+ kdBusy=false;render()}
+/* ---------- "Who is submitting?" pop-up (Fleet Card, Closing Checklist, Kitchen Daily Checklist). Staff list comes from the server; PIN asked only if that person has one set. ---------- */
 let whoWait=null;
 async function whoPick(){let L=[];try{L=(await api('/api/staff')).staff||[]}catch(e){}
  if(!L.length){toast('No staff list yet — start your shift first so your name is saved','warn');return null}

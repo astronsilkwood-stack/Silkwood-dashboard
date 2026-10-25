@@ -6,6 +6,14 @@ Python stdlib server (`server.py`) + `index.html`. Storage:
 Env vars: PORT (default 8787), DATABASE_URL, STAFF_PIN (shared staff PIN asked once per device and stored there;
 empty = no PIN, local only), MANAGER_PIN (reopen a submitted day; default 1945).
 
+Checklist webhooks (server only; the browser never sees the URL or key). Each is a POST URL plus a bearer token
+sent as `Authorization: Bearer <key>`. If either value is missing, that checklist’s Submit returns 503.
+- Closing Checklist: CLOSING_WEBHOOK_URL, CLOSING_WEBHOOK_KEY
+- Kitchen Daily Checklist: KITCHEN_WEBHOOK_URL, KITCHEN_WEBHOOK_KEY
+  Payload `type` is `kitchen_daily_checklist`, `site` is `United Silkwood`. `tasks` is id → `done` or `na`
+  (bacon, crumbed_fish, fried_topup, kabana, trifle, oil_fryer, chicken_fryer, defrost_fish, chicken_buckets).
+  `taskLabels` repeats the staff wording. Also sent: checklistDate, staffName, taskComments, dayComments.
+
 Run on the box: ./run.sh (keep-alive; re-run after a box restart). Local URL http://localhost:8787
 Cloud: see DEPLOY.md (Render free web service + Neon free Postgres). Files: requirements.txt, Dockerfile, render.yaml, Procfile.
 Temperature rules: fridge <=5, freezer <=-15, hot hold >=60, cooked core >=75 (°C).
