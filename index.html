@@ -368,7 +368,7 @@ async function kdSubmit(){const date=KD.date||S.today;
  const payload={checklistDate:date,staffName:who.name,staffPin:who.pin,tasks:Object.fromEntries(KD_IDS.map(i=>[i,KD.tasks[i]])),taskComments:Object.fromEntries(KD_IDS.filter(i=>(KD.cm[i]||'').trim()).map(i=>[i,KD.cm[i].trim()])),dayComments:KD.day||''};
  kdBusy=true;kdMsg=['',''];render();
  try{const r=await fetch('/api/kitchen',{method:'POST',headers:{'X-Staff-Pin':localStorage.sw_pin||'','Content-Type':'application/json'},body:JSON.stringify(payload)});const j=await r.json().catch(()=>({}));
-  if(r.ok&&j.ok){KD={tasks:{},cm:{},day:''};kdSave();kdMsg=['✅ Thank you, '+who.name+'! Your kitchen daily checklist has been recorded.','good'];toast('Kitchen checklist submitted','good')}
+  if(r.ok&&j.ok){$$('#main input,#main textarea').forEach(e=>{if(e.type!='date')e.value=''});KD={tasks:{},cm:{},day:''};kdSave();kdMsg=['✅ Thank you, '+who.name+'! Your kitchen daily checklist has been recorded.','good'];toast('Kitchen checklist submitted','good')}
   else kdMsg=[j.error||('Failed (HTTP '+r.status+')'),'warn']}
  catch(e){kdMsg=['Network error, nothing was sent. Try again.','warn']}
  kdBusy=false;render()}
