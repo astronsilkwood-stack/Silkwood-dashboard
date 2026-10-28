@@ -114,14 +114,24 @@ const ts=t=>new Date(t.replace(' ','T')+'+10:00').getTime();
 function tick1(){$('#clock').textContent=new Date().toLocaleString('en-US',{timeZone:TZ,weekday:'short',month:'short',day:'numeric'})+' · '+new Date().toLocaleTimeString('en-US',{timeZone:TZ,hour:'numeric',minute:'2-digit',second:'2-digit'});
  $$('.timer[data-in]').forEach(e=>{const ms=Date.now()-ts(e.dataset.in),m=Math.max(0,Math.floor(ms/6e4));e.textContent=Math.floor(m/60)+'h '+String(m%60).padStart(2,'0')+'m';e.closest('.hb')?.classList.toggle('over',ms>S.hotbox_max_h*36e5)})}
 setInterval(tick1,1000);
-async function api(p,b){if(b&&!me()){await pickName();if(!me())throw 0}
+let epoch=0,loadSeq=0,inflightLoads=0,lastAuto=0;
+async function api(p,b,quiet){if(b&&!me()){if(quiet)throw 0;await pickName();if(!me())throw 0}
  const hd={'X-Staff-Pin':localStorage.sw_pin||''},o=b?{method:'POST',headers:{...hd,'Content-Type':'application/json'},body:JSON.stringify({date:S?.date,staff:me(),...b})}:{headers:hd};
  const r=await fetch(p,o),j=await r.json();
- if(r.status==400&&j.name){await pickName();return api(p,b)}
- if(r.status==401&&j.pin){const pin=prompt((localStorage.sw_pin?'Wrong PIN. ':'')+'Enter the Silkwood staff PIN');if(pin!==null){localStorage.sw_pin=pin.trim();return api(p,b)}throw j}
- if(!r.ok){toast(j.error||'Something went wrong','warn');throw j}return j}
-async function load(d){S=await api('/api/day?date='+(d||$('#date').value||''));$('#date').value=S.date;render()}
-async function post(p,b,msg){S=await api(p,b);render();if(msg)toast(msg,'good');return S}
+ if(r.status==400&&j.name){if(quiet)throw j;await pickName();return api(p,b)}
+ if(r.status==401&&j.pin){if(quiet)throw j;const pin=prompt((localStorage.sw_pin?'Wrong PIN. ':'')+'Enter the Silkwood staff PIN');if(pin!==null){localStorage.sw_pin=pin.trim();return api(p,b)}throw j}
+ if(!r.ok){if(!quiet)toast(j.error||'Something went wrong','warn');throw j}return j}
+/* Drop the clock field so a poll can tell "nothing changed" from a fresh timestamp. Late pills still change the key. */
+function viewKey(s){const {now,...rest}=s;const hm=nowHM();
+ const late=s.date===s.today?(s.tasks||[]).filter(t=>!t.done&&t.due_time&&t.due_time<hm).map(t=>t.id).join(','):'';
+ return late+'\n'+JSON.stringify(rest)}
+async function load(d,quiet){const seen=epoch,seq=++loadSeq;inflightLoads++;
+ try{const data=await api('/api/day?date='+(d||$('#date').value||''),null,quiet);
+  if(seq!==loadSeq||epoch!==seen)return S;
+  lastAuto=Date.now();const prev=S,changed=!prev||viewKey(prev)!==viewKey(data);
+  S=data;$('#date').value=S.date;if(changed)render();return S}
+ finally{inflightLoads--}}
+async function post(p,b,msg){epoch++;let ok=false;try{S=await api(p,b);ok=true;lastAuto=Date.now();render();if(msg)toast(msg,'good');return S}finally{if(ok)epoch++}}
 const items=k=>S.items.filter(i=>i.kind==k),logs=(k,r)=>S.logs.filter(l=>l.kind==k&&(r==null||l.ref==String(r)));
 const isToday=()=>S.date==S.today;
 /* ---------- who's on shift ---------- */
@@ -145,13 +155,16 @@ function navUI(){const s=S.summary,tl=s.tasks_total-s.tasks_done,hbOver=liveHB()
  const badge={tasks:tl,equip:pendingUnits().length,hotbox:hbOver?hbOver+'!':0,fuel:fp};
  $('#nav').innerHTML=PAGES.map(([k,ic,n])=>`<a href="#${k}" class="${k==page?'on':''}"><span class="ic">${ic}</span>${n}${badge[k]?`<span class="badge">${badge[k]}</span>`:''}</a>`).join('')}
 /* ---------- render ---------- */
-function render(){if(!S)return;const typed={};$$('main input[id],main textarea[id],main select[id]').forEach(e=>{if(e.type!='date'&&e.value)typed[e.id]=e.value});
+function render(){if(!S)return;const y=window.scrollY,openD=new Set($$('#main details[data-k]').filter(d=>d.open).map(d=>d.dataset.k));
+ const typed={};$$('main input[id],main textarea[id],main select[id]').forEach(e=>{if(e.type!='date'&&e.value)typed[e.id]=e.value});
  navUI();whoUI();const L=S.locked;
  let h=L?`<div class="lockbar">🔒 This day was submitted by ${esc(L.staff)} at ${hm12(L.at)} — it's read-only now. <button class="btn sm ghost keep" onclick="unlock()">Reopen (manager)</button></div>`:'';
  if(!isToday())h+=`<div class="lockbar">📅 You're looking at <b class="mono">${S.date}</b>, not today. <button class="btn sm ghost keep" onclick="load('${S.today}')">Back to today</button></div>`;
  h+=(VIEWS[page]||VIEWS.dashboard)();$('#main').innerHTML=h;
+ $$('#main details[data-k]').forEach(d=>{if(openD.has(d.dataset.k))d.open=true});
  for(const[k,v]of Object.entries(typed)){const e=document.getElementById(k);if(e&&e.tagName!='SELECT'&&!e.value){e.value=v;e.dispatchEvent(new Event('input'))}}
- if(L)$$('#main input,#main select,#main textarea,#main button').forEach(e=>{if(!e.classList.contains('keep'))e.disabled=true});tick1()}
+ if(L)$$('#main input,#main select,#main textarea,#main button').forEach(e=>{if(!e.classList.contains('keep'))e.disabled=true});
+ if(y)window.scrollTo(0,y);tick1()}
 const ph=(k,t,p)=>`<div class="ph"><div class="lbl">${k}</div><h1>${t}</h1><p>${p}</p></div>`;
 const tbl=(cols,rows,cls)=>rows.length?`<div class="tw"><table><tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr>${rows.map((r,i)=>`<tr class="${cls?cls(i):''}">${r.map(v=>`<td>${v}</td>`).join('')}</tr>`).join('')}</table></div>`:'';
 /* hot box */
@@ -199,7 +212,7 @@ VIEWS.tasks=()=>{const t=S.tasks.filter(x=>area=='all'||x.tab==area),grp={};t.fo
  `<div class="card" style="margin-bottom:16px"><div class="row" style="align-items:center"><div><div class="lbl">Progress</div><b class="mono" style="font-size:22px">${done}/${t.length}</b> done</div><button class="btn nogrow" onclick="taskDlg()">＋ Add task</button></div><div class="bar" style="margin-top:12px"><i style="width:${t.length?100*done/t.length:0}%"></i></div></div>`+
  (Object.keys(grp).length?Object.entries(grp).sort((a,b)=>(a[0]=='Fill up')-(b[0]=='Fill up')).map(([g,xs])=>{const open=xs.filter(x=>!x.done).sort((a,b)=>isLate(b)-isLate(a)),dn=xs.filter(x=>x.done);
   return `<div class="card" style="margin-bottom:16px"><h2>${esc(g)}<span class="sp"></span><span class="pill ${open.length?'pend':'ok'}">${dn.length}/${xs.length} done</span></h2>${g=='Fill up'?'<p class="help">Fill the shelf, then tap. Quantity to fill is on the right.</p>':''}
-  <div class="list">${open.map(taskRow).join('')||'<div class="empty">✓ All done here</div>'}</div>${dn.length?`<details><summary class="link" style="display:flex;align-items:center">Show ${dn.length} done</summary><div class="list">${dn.map(taskRow).join('')}</div></details>`:''}</div>`}).join(''):'<div class="card empty">No tasks for today. Tap ＋ Add task.</div>')+
+  <div class="list">${open.map(taskRow).join('')||'<div class="empty">✓ All done here</div>'}</div>${dn.length?`<details data-k="${esc(g)}"><summary class="link" style="display:flex;align-items:center">Show ${dn.length} done</summary><div class="list">${dn.map(taskRow).join('')}</div></details>`:''}</div>`}).join(''):'<div class="card empty">No tasks for today. Tap ＋ Add task.</div>')+
  ((area!='shop')?prepCard()+tomorrowCard():'')};
 function prepCard(){return `<div class="card" style="margin-bottom:16px"><h2>🍳 Prep<span class="sp"></span><button class="link" onclick="manage('prep')">Edit list</button></h2><p class="help">Log what you prepped and how many.</p>
  <div class="row"><label class="f">Item<select id="pI">${opts('prep')}</select></label><label class="f">How many<input id="pQ" inputmode="decimal" placeholder="e.g. 10"></label><label class="f">Use by<input type="date" id="pU"></label><button class="btn nogrow" onclick="logPrep()">Save</button></div>
@@ -465,8 +478,35 @@ async function rem(id,k){if(confirm('Remove from the list? (old records kept)'))
 async function addItem(k){if(!$('#mNew').value.trim())return;await post('/api/item',{kind:k,name:$('#mNew').value,type:$('#yNew')?.value},'✓ Added');manage(k)}
 /* boot */
 page=PAGES.some(x=>x[0]==location.hash.slice(1))?location.hash.slice(1):'dashboard';
+/* While this page is open, pull jobs and the rest of the day every 15s, and straight away
+   when the phone comes back to this app. Skip the same cases as before: a dialog, the
+   walkthrough, the name prompt, a focused field, or a form that already has text.
+   Background failures stay quiet so a blip does not stack error toasts. */
+function formBusy(){const a=document.activeElement;
+ if(dlg.open||$('#walk').open||$('#nameDlg').open)return true;
+ if(a&&['INPUT','SELECT','TEXTAREA'].includes(a.tagName))return true;
+ if($$('main input').some(e=>e.value&&e.type!='time'&&e.type!='date'))return true;
+ if($$('main textarea').some(e=>e.value))return true;
+ if(clBusy||kdBusy||fcBusy||clUp.pump||clUp.dip)return true;
+ return false}
+function noteNewTasks(prev,next){if(!prev||!next||prev.date!==next.date)return;
+ const seen=new Set((prev.tasks||[]).map(t=>t.id));
+ const fresh=(next.tasks||[]).filter(t=>!t.done&&!seen.has(t.id));
+ if(!fresh.length)return;
+ if(fresh.length===1){const title=String(fresh[0].title||'Task').trim()||'Task';toast('New task: '+(title.length>60?title.slice(0,57)+'…':title))}
+ else toast(fresh.length+' new tasks')}
+let refreshing=false,wakeT=null;
+async function refreshDay(){if(refreshing||inflightLoads||document.hidden||formBusy())return;
+ if(S&&Date.now()-lastAuto<2000)return;
+ refreshing=true;const prev=S,seen=epoch;
+ try{await load($('#date').value,true);if(epoch===seen)noteNewTasks(prev,S)}catch(e){}
+ finally{refreshing=false}}
+function wake(){if(document.hidden)return;clearTimeout(wakeT);wakeT=setTimeout(()=>{wakeT=null;refreshDay()},300)}
 load().then(()=>{if(!me())pickName()});
-setInterval(()=>{const a=document.activeElement;if(!dlg.open&&!$('#walk').open&&!['INPUT','SELECT','TEXTAREA'].includes(a.tagName)&&!$$('main input').some(e=>e.value&&e.type!='time'&&e.type!='date'))load($('#date').value)},60000);
+setInterval(()=>{if(!document.hidden)refreshDay()},15000);
+document.addEventListener('visibilitychange',wake);
+addEventListener('pageshow',wake);
+addEventListener('focus',wake);
 /* PWA: service worker + install prompts */
 if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
 (()=>{const bar=$('#installBar'),standalone=matchMedia('(display-mode: standalone)').matches||navigator.standalone;if(standalone)return;let ev=null;
