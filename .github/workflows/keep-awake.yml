@@ -1,4 +1,5 @@
 name: Keep dashboard awake
+# Every 10 minutes so the free host is awake. /healthz also runs the 8:30pm Brisbane auto final.
 on:
   schedule:
     - cron: "*/10 * * * *"

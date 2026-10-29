@@ -65,7 +65,7 @@ td{padding:10px 8px;border-bottom:1px solid #f1f5f9;vertical-align:middle}td.mon
 .fb{font-size:14px;font-weight:600;min-height:20px;margin-top:6px}.fb.ok{color:var(--ok)}.fb.bad{color:var(--bad)}
 .unit{border:1px solid var(--bd);border-radius:12px;padding:14px;display:grid;gap:8px}.unit.ok{border-color:#a7f3d0}.unit.bad{border-color:#fecaca;background:#fffafa}
 .unit .nm{font-weight:600;display:flex;gap:8px;align-items:center}.unit .nm .sp{flex:1}
-.hb.over{background:var(--badl);border-radius:10px;padding-left:8px;padding-right:8px}.timer{font:600 15px var(--mono)}.hb.over .timer{color:var(--bad)}
+.hb.over,.cold.over{background:var(--badl);border-radius:10px;padding-left:8px;padding-right:8px}.timer{font:600 15px var(--mono)}.hb.over .timer,.cold.over .timer{color:var(--bad)}
 .group-h{display:flex;align-items:center;gap:10px;margin:18px 0 6px}.group-h:first-child{margin-top:0}.group-h .sp{flex:1}
 dialog{border:0;border-radius:16px;padding:0;width:min(560px,94vw);max-height:90vh;color:var(--ink)}dialog::backdrop{background:rgba(15,23,42,.45)}
 .dh{padding:16px 18px;border-bottom:1px solid var(--bd);font-weight:700;font-size:17px;display:flex;align-items:center}.dh span{flex:1}.dh button{border:0;background:none;font-size:22px;min-width:44px;min-height:44px;cursor:pointer}
@@ -98,7 +98,7 @@ dialog{border:0;border-radius:16px;padding:0;width:min(560px,94vw);max-height:90
 <script>
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let S=null,page='dashboard',mgr=sessionStorage.sw_mgr=='1',area=localStorage.sw_area||'all';
-const PAGES=[['dashboard','▦','Dashboard'],['equip','❄','Equipment Temps'],['food','🌡','Food Temps'],['hotbox','♨','Hot Box'],['cold','🧊','Cold Holding'],['discards','🗑','Discards'],['fuel','⛽','Fuel Water Paste'],['kitchen','🍳','Kitchen Daily Checklist'],['closing','🔐','Closing Checklist'],['fleet','💳','Fleet Card'],['reports','▤','Reports'],['settings','⚙','Settings']];
+const PAGES=[['dashboard','▦','Dashboard'],['equip','❄','Equipment Temps'],['food','🌡','Food Temps'],['hotbox','♨','Food Activity Log'],['cold','🧊','Cold Holding'],['discards','🗑','Discards'],['fuel','⛽','Fuel Water Paste'],['kitchen','🍳','Kitchen Daily Checklist'],['closing','🔐','Closing Checklist'],['fleet','💳','Fleet Card'],['reports','▤','Reports'],['settings','⚙','Settings']];
 const TZ='Australia/Brisbane';
 const SUB='type="button" class="btn full" style="min-height:60px;font-size:18px;margin-top:12px"';
 const TYPES={fridge:'Fridge — should be 0–5°C',freezer:'Freezer — should be −15°C or colder',hot:'Hot hold — should be 60°C or hotter',core:'Cooked food — core 75°C or hotter'};
@@ -189,10 +189,10 @@ VIEWS.dashboard=()=>{const s=S.summary,tl2=[...S.logs.filter(l=>l.kind=='ktemp'|
  (s.alerts.length?`<div class="alert">⚠ Tell the manager: ${s.alerts.map(esc).join(' · ')}</div>`:'')+
  `<div class="grid g3" style="margin-bottom:16px">
  <a class="card stat" href="#equip"><div class="lbl">Temp logs</div><b>${tl2.length}</b><div class="sub ${bad?'bad':''}">${bad} out of range</div></a>
- <a class="card stat" href="#hotbox"><div class="lbl">In hot box</div><b>${lv.length}</b><div class="sub ${ov?'bad':''}">${ov} overdue</div></a>
+ <a class="card stat" href="#hotbox"><div class="lbl">Food activity</div><b>${lv.length}</b><div class="sub ${ov?'bad':''}">${ov} overdue</div></a>
  <a class="card stat" href="#discards"><div class="lbl">Items discarded</div><b>${dis.length}</b><div class="sub">today</div></a></div>
  <div class="grid g2">
- <div class="card"><h2>Hot box — live<span class="sp"></span><a class="link" href="#hotbox">Add items</a></h2><p class="help">Items go in the bin ${S.hotbox_max_h} hours after they go in.</p>${lv.length?`<div class="list">${lv.map(hbRow).join('')}</div>`:`<div class="empty">Hot box is empty. <a class="link" href="#hotbox">Add items</a></div>`}</div>
+ <div class="card"><h2>Food Activity Log<span class="sp"></span><a class="link" href="#hotbox">Add items</a></h2><p class="help">Items go in the bin ${S.hotbox_max_h} hours after they go in.</p>${lv.length?`<div class="list">${lv.map(hbRow).join('')}</div>`:`<div class="empty">Nothing in the log. <a class="link" href="#hotbox">Add items</a></div>`}</div>
  <div class="card"><h2>Fuel water paste<span class="sp"></span><a class="link" href="#fuel">Log a check</a></h2><p class="help">Dip each tank once a day.</p><div class="list">${S.tanks.map(t=>{const l=logs('fuel',t).pop(),[g,c]=grade(t);return `<div class="li"><span class="tank ${c}">${g}</span><div class="t"><b>Tank ${esc(t)}</b>${l?`<small>${hm12(l.at)} · ${esc(l.staff)}</small>`:''}</div>${l?(l.data.water=='yes'?`<span class="pill bad">Water ${esc(l.data.water_mm)}mm</span>`:'<span class="pill ok">Done</span>'):'<span class="pill pend">Pending</span>'}</div>`}).join('')}</div></div>
  <div class="card"><h2>Still to check today<span class="sp"></span><span class="pill ${miss.length?'pend':'ok'}">${miss.length} left</span></h2><p class="help">Equipment temperatures not logged yet.</p>${miss.length?`<div class="chips">${miss.slice(0,8).map(n=>`<a class="chip" style="display:inline-flex;align-items:center;text-decoration:none;color:inherit" href="#equip">${esc(n)}</a>`).join('')}${miss.length>8?`<span class="chip" style="display:inline-flex;align-items:center">+${miss.length-8} more</span>`:''}</div><div style="margin-top:12px"><button class="btn full" onclick="go('equip');walkStart()">🌡 Check temps now</button></div>`:'<div class="empty">✓ All equipment temps logged.</div>'}</div>
  <div class="card"><h2>Finish the day</h2><p class="help">When everything's done, submit the day. It's emailed to the manager and locked.</p><a class="btn full" href="#reports">Go to submit</a></div></div>`+prepCard()+tomorrowCard()};
@@ -257,16 +257,21 @@ async function walkLog(){const[it,lk]=W.q[W.i],v=wNum();if(v==null)return;let ac
  await post('/api/log',{kind:lk,ref:it.id,data:action?{temp:v,action}:{temp:v}});W.done++;toast(action?'⚠ Saved — tell the manager':'✓ '+v+'°C OK',action?'warn':'good');W.i++;W.v='';walkShow()}
 let foodStage=localStorage.sw_stage||'cook';if(foodStage=='coldhold')foodStage='cook';
 let cdItem='';const COLD_FIX=['Returned to fridge','Threw food out','Moved to another fridge','Will re-check in 30 min','Told manager'];
-VIEWS.cold=()=>{const F=(S.food||[]).filter(f=>f.stage=='coldhold');
- return ph('Cold holding','Cold holding','Probe cold food in the display fridge. Safe at 5°C or colder — above 5°C, act straight away.')+
- `<div class="card" style="margin-bottom:16px"><h2>Check a cold food</h2><p class="help">Tap the food, type the temp, then Submit.</p>
+function coldRow(x){const warm=+x.bad;return `<div class="li cold ${warm?'over':''}"><div class="t"><b>${esc(x.item)}${x.qty?` <span class="mono">× ${esc(x.qty)}</span>`:''}</b><small>${esc(x.temp)}°C${warm?' · <b style="color:var(--bad)">ABOVE 5°C — tell the manager</b>':' · OK'} · in ${hm12(x.time_in)}${x.action?' · '+esc(x.action):''}</small></div><span class="timer" data-in="${x.time_in}"></span>
+ <button class="btn sm ghost" onclick="coldOut(${x.id},'sold')">Sold</button><button class="btn sm danger" onclick="coldOut(${x.id},'discarded')">Bin</button></div>`}
+VIEWS.cold=()=>{const rows=S.cold_items||[],lv=rows.filter(x=>!x.out_at),old=rows.filter(x=>x.out_at&&x.date==S.date);
+ return ph('Cold holding','Cold holding','Log food when it goes in the fridge. Above 5°C, tell the manager. Mark it sold or binned when it comes out.')+
+ `<div class="grid g2"><div class="card"><h2>Put food in</h2><p class="help">Tap the food, type the temperature, then Submit. Above 5°C is flagged.</p>
  <div class="chips" style="margin-bottom:12px">${items('cold').map(i=>`<button type="button" class="chip ${cdItem==i.name?'on':''}" onclick="cdItem=this.textContent;render()">${esc(i.name)}</button>`).join('')}<button type="button" class="chip" onclick="manage('cold')">✎ Edit</button></div>
- <div class="row"><label class="f">Temperature °C${tempBox('cdT','fridge')}</label></div>
- <button ${SUB} onclick="saveCold()">Submit cold check</button></div>
- <div class="card"><h2>Today's cold holding checks</h2>${tbl(['Time','Food','Temp','Result','By',''],F.map(f=>[`<span class="mono">${hm12(f.at)}</span>`,esc(f.food),`<span class="mono">${f.temp}°C</span>`,f.bad?`<span class="pill bad">Too warm</span>${f.action?' '+esc(f.action):''}`:'<span class="pill ok">OK</span>',esc(f.staff),delBtn('food',f.id)]),i=>F[i].bad?'bad':'')||'<div class="empty">No cold holding checks yet today.</div>'}</div>`};
-async function saveCold(){if(!cdItem)return toast('Tap a food first','warn');const v=parseT($('#cdT').value,$('#cdTs')?.classList.contains('on'));if(v==null||Number.isNaN(v))return toast('Type the temperature','warn');
+ <div class="row"><label class="f">How many<input id="cdQ" inputmode="numeric" placeholder="e.g. 4"></label><label class="f">Time in<input type="time" id="cdTime" value="${nowHM()}"></label><label class="f">Temperature °C${tempBox('cdT','fridge')}</label></div>
+ <button ${SUB} onclick="coldAdd()">Submit cold holding</button></div>
+ <div class="card"><h2>In cold holding now<span class="sp"></span><span class="pill ${lv.some(x=>+x.bad)?'bad':'grey'}">${lv.length} items</span></h2>${lv.length?`<div class="list">${lv.map(coldRow).join('')}</div>`:'<div class="empty">Nothing in cold holding.</div>'}</div></div>
+ <div class="card" style="margin-top:16px"><h2>Taken out today</h2>${tbl(['Item','Qty','In','Out','Temp','Result','By',''],old.map(x=>[esc(x.item),`<span class="mono">${esc(x.qty)}</span>`,`<span class="mono">${hm12(x.time_in)}</span>`,`<span class="mono">${hm12(x.out_at)}</span>`,+x.bad?`<span class="pill bad">${esc(x.temp)}°C</span>`:`<span class="mono">${esc(x.temp)}°C</span>`,x.outcome=='discarded'?'<span class="pill bad">Binned</span>':'<span class="pill ok">Sold</span>',esc(x.out_by),delBtn('cold',x.id)]))||'<div class="empty">Nothing taken out yet.</div>'}</div>`};
+async function coldAdd(){if(!cdItem)return toast('Tap a food first','warn');const v=parseT($('#cdT').value,$('#cdTs')?.classList.contains('on'));if(v==null||Number.isNaN(v))return toast('Type the temperature','warn');
  let action;if(judgeT('fridge',v)===false){action=await askFix('fridge',v,cdItem,COLD_FIX);if(action==null)return}
- await post('/api/food',{food:cdItem,stage:'coldhold',temp:v,action});$('#cdT').value='';toast(action?'⚠ Saved — tell the manager':'✓ '+cdItem+' '+v+'°C — safe',action?'warn':'good');cdItem='';render()}
+ const t=$('#cdTime').value||nowHM();
+ await post('/api/cold',{item:cdItem,qty:$('#cdQ').value,time_in:t,temp:v,action},action?'⚠ Saved — tell the manager':'✓ '+cdItem+' '+v+'°C logged');cdItem='';render()}
+async function coldOut(id,o){if(o=='discarded'&&!confirm('Bin this item? It will be added to Discards.'))return;await post('/api/cold/out',{id,outcome:o,date:S.today},o=='sold'?'✓ Marked sold':'🗑 Binned and added to discards')}
 VIEWS.food=()=>{const st=Object.fromEntries(Object.entries(S.food_stages).filter(([k])=>k!='coldhold'));if(!st[foodStage])foodStage='cook';const ty=st[foodStage][1],F=(S.food||[]).filter(f=>f.stage!='coldhold');
  return ph('Food safety','Food temps','Probe the thickest part of the food. Green = safe, red = not safe yet.')+
  `<div class="card" style="margin-bottom:16px"><h2>Log a food temp</h2><p class="help">${TYPES[ty]}</p>
@@ -284,14 +289,14 @@ function hbRow(x){return `<div class="li hb ${over(x)?'over':''}"><div class="t"
 async function hbOut(id,o){if(o=='discarded'&&!confirm('Bin this item? It will be added to Discards.'))return;await post('/api/hotbox/out',{id,outcome:o,date:S.today},o=='sold'?'✓ Marked sold':'🗑 Binned and added to discards')}
 let hbItem='';
 VIEWS.hotbox=()=>{const boxes=items('kcheck').filter(i=>i.type=='hot'&&/hot box/i.test(i.name)),lv=liveHB(),old=(S.hotbox||[]).filter(x=>x.out_at),leg=logs('hotbox');
- return ph('Hot holding','Hot box','Add food when it goes in. It turns red after '+S.hotbox_max_h+' hours — then bin it.')+
+ return ph('Food activity','Food Activity Log','Add food when it goes in. It turns red after '+S.hotbox_max_h+' hours — then bin it.')+
  `<div class="grid g2"><div class="card"><h2>Put food in</h2><p class="help">Tap the food, check the time, then Submit.</p>
  <div class="chips" style="margin-bottom:12px">${items('hotbox').map(i=>`<button class="chip ${hbItem==i.name?'on':''}" onclick="hbItem=this.textContent;render()">${esc(i.name)}</button>`).join('')}<button class="chip" onclick="manage('hotbox')">✎ Edit</button></div>
- <div class="row">${boxes.length>1?`<label class="f">Which hot box<select id="hbB">${boxes.map(b=>`<option>${esc(b.name)}</option>`).join('')}</select></label>`:''}<label class="f">How many<input id="hbQ" inputmode="numeric" placeholder="e.g. 6"></label><label class="f">Time in<input type="time" id="hbT" value="${nowHM()}"></label></div>
- <button ${SUB} onclick="hbAdd()">Submit to hot box</button></div>
- <div class="card"><h2>In the hot box now<span class="sp"></span><span class="pill ${lv.some(over)?'bad':'grey'}">${lv.length} items</span></h2>${lv.length?`<div class="list">${lv.map(hbRow).join('')}</div>`:'<div class="empty">Hot box is empty.</div>'}</div></div>
+ <div class="row">${boxes.length>1?`<label class="f">Which unit<select id="hbB">${boxes.map(b=>`<option>${esc(b.name)}</option>`).join('')}</select></label>`:''}<label class="f">How many<input id="hbQ" inputmode="numeric" placeholder="e.g. 6"></label><label class="f">Time in<input type="time" id="hbT" value="${nowHM()}"></label></div>
+ <button ${SUB} onclick="hbAdd()">Add to log</button></div>
+ <div class="card"><h2>In the log now<span class="sp"></span><span class="pill ${lv.some(over)?'bad':'grey'}">${lv.length} items</span></h2>${lv.length?`<div class="list">${lv.map(hbRow).join('')}</div>`:'<div class="empty">Nothing in the log yet.</div>'}</div></div>
  <div class="card" style="margin-top:16px"><h2>Taken out today</h2>${tbl(['Item','Qty','In','Out','Result','By',''],old.filter(x=>x.date==S.date).map(x=>[esc(x.item),`<span class="mono">${esc(x.qty)}</span>`,`<span class="mono">${hm12(x.time_in)}</span>`,`<span class="mono">${hm12(x.out_at)}</span>`,x.outcome=='discarded'?'<span class="pill bad">Binned</span>':'<span class="pill ok">Sold</span>',esc(x.out_by),delBtn('hotbox',x.id)]))||'<div class="empty">Nothing taken out yet.</div>'}
- ${leg.length?`<h2 style="margin-top:16px">Rotation log (old style)</h2>${tbl(['Hot box','Item','Qty','In','Discard','By',''],leg.map(r=>[esc(r.data.box||''),esc(r.data.item),esc(r.data.qty),esc(r.data.time),esc(r.data.discard),esc(r.staff),delBtn('log',r.id)]))}`:''}</div>`};
+ ${leg.length?`<h2 style="margin-top:16px">Rotation log (old style)</h2>${tbl(['Unit','Item','Qty','In','Discard','By',''],leg.map(r=>[esc(r.data.box||''),esc(r.data.item),esc(r.data.qty),esc(r.data.time),esc(r.data.discard),esc(r.staff),delBtn('log',r.id)]))}`:''}</div>`};
 async function hbAdd(){if(!hbItem)return toast('Tap a food first','warn');const t=$('#hbT').value||nowHM();await post('/api/hotbox',{item:hbItem,qty:$('#hbQ').value,time_in:t,box:$('#hbB')?.value||items('kcheck').find(i=>/hot box/i.test(i.name))?.name||'Hot box'},'✓ '+hbItem+' added — bin by '+hm12(new Date(ts(S.date+' '+t+':00')+S.hotbox_max_h*36e5).toLocaleTimeString('en-GB',{timeZone:TZ,hour:'2-digit',minute:'2-digit'})));hbItem='';render()}
 const REASONS=['Out of date','Hot box time up','Dropped / damaged','Temp out of range','Customer return','Other'];let disR=REASONS[0];
 VIEWS.discards=()=>{const D=S.discards||[];return ph('Waste','Discards','Log anything that goes in the bin, so we know what we waste.')+
@@ -451,7 +456,7 @@ async function fcSubmit(){if(fcBusy)return;const v=k=>String(FC[k]??($('#fc_'+k)
  fcBusy=false;render()}
 VIEWS.reports=()=>{const s=S.summary,miss=[...s.tabs.kitchen.missing,...s.tabs.shop.missing];if(!HIST)api('/api/history').then(h=>{HIST=h;if(page=='reports')render()});
  return ph('Records','Reports','Submit the day, and see past days.')+
- `<div class="card" style="margin-bottom:16px"><h2>Submit ${S.date==S.today?'today':S.date}</h2><p class="help">During the day, <b>Save update</b> sends what's logged so far — it does not count as the day's log. The full day's log goes at closing (sent automatically when the Closing Checklist is submitted, or tap <b>Submit end of day log</b>) and locks the day.</p>
+ `<div class="card" style="margin-bottom:16px"><h2>Submit ${S.date==S.today?'today':S.date}</h2><p class="help">During the day, <b>Save update</b> sends what's logged so far — it does not count as the day's log. The full day's log goes at closing (sent automatically when the Closing Checklist is submitted, or tap <b>Submit end of day log</b>). If it is still open at 8:30pm Brisbane, the dashboard sends that same end-of-day log on its own. The final log locks the day.</p>
  <div class="grid g3" style="margin-bottom:12px"><div><div class="lbl">Tasks</div><b class="mono" style="font-size:20px">${s.tasks_done}/${s.tasks_total}</b></div><div><div class="lbl">Not logged</div><b class="mono" style="font-size:20px">${miss.length}</b></div><div><div class="lbl">Alerts</div><b class="mono" style="font-size:20px;color:${s.alerts.length?'var(--bad)':'inherit'}">${s.alerts.length}</b></div></div>
  ${s.alerts.length?`<div class="alert">⚠ ${s.alerts.map(esc).join('<br>⚠ ')}</div>`:''}${miss.length?`<p class="help">Not logged yet: ${miss.map(esc).join(', ')}</p>`:''}
  ${S.locked?'<span class="pill ok">Submitted 🔒</span>':`<div class="lbl" style="margin-bottom:6px">Save an update (not the final log)</div><div class="row"><button class="btn ghost" onclick="submitDay('kitchen')">🍳 Save kitchen update</button><button class="btn ghost" onclick="submitDay('shop')">🏪 Save shop update</button><button class="btn ghost" onclick="submitDay('both')">Save update (both)</button></div><button class="btn full" style="margin-top:12px" onclick="submitFinal()">🔒 Submit end of day log</button>`}</div>
@@ -477,7 +482,7 @@ function fixShift(id){const x=S.shifts.find(s=>s.id==id);openDlg('Fix shift — 
  $('#fsDel').onclick=async()=>{if(confirm('Delete this shift?')){await post('/api/shift/delete',{id,pin:sessionStorage.sw_mpin},'Shift deleted');dlg.close()}}}
 /* dialogs: lists */
 const dlg=$('#dlg');function openDlg(t,h){$('#dt').textContent=t;$('#dbody').innerHTML=h;if(!dlg.open)dlg.showModal()}
-const KN={fridge:'Shop fridges',freezer:'Shop freezers',kcheck:'Kitchen check points',prep:'Prep items',hotbox:'Hot box foods',cold:'Cold holding foods'};
+const KN={fridge:'Shop fridges',freezer:'Shop freezers',kcheck:'Kitchen check points',prep:'Prep items',hotbox:'Food activity foods',cold:'Cold holding foods'};
 function manage(kind){const its=items(kind),typ=kind=='kcheck';const TS=Object.entries(TYPES);
  openDlg('Edit '+KN[kind],`${its.map(i=>`<div class="row"><input id="m${i.id}" value="${esc(i.name)}">${typ?`<select id="y${i.id}">${TS.map(([k,v])=>`<option value="${k}" ${i.type==k?'selected':''}>${v.split(' —')[0]}</option>`).join('')}</select>`:''}<button class="btn sm ghost nogrow" onclick="ren(${i.id},'${kind}')">Save</button><button class="btn sm danger nogrow" onclick="rem(${i.id},'${kind}')">🗑</button></div>`).join('')}
  <hr style="border:0;border-top:1px solid var(--bd)"><div class="row"><input id="mNew" placeholder="Add new…">${typ?`<select id="yNew">${TS.map(([k,v])=>`<option value="${k}">${v.split(' —')[0]}</option>`).join('')}</select>`:''}<button class="btn nogrow" onclick="addItem('${kind}')">Add</button></div><p class="help">Removing keeps old records.</p>`)}
