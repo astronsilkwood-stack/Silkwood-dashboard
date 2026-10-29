@@ -82,6 +82,27 @@ dialog{border:0;border-radius:16px;padding:0;width:min(560px,94vw);max-height:90
  main{padding:16px 14px 40px}.g4{grid-template-columns:repeat(2,minmax(0,1fr))}.g3,.g2{grid-template-columns:1fr}.ph h1{font-size:22px}.stat b{font-size:26px}.card{padding:14px}
  .who{width:100%}.who select{flex:1;max-width:none}
 }
+#printRoot{display:none}
+@media print{
+ @page{margin:12mm;size:A4}
+ html,body{background:#fff!important;color:#111!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+ .app,.toast,#installBar,dialog{display:none!important}
+ #printRoot{display:block!important;width:100%}
+ .sheet{font:12px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#111}
+ .sheet h1{font-size:22px;margin:2px 0 4px}
+ .sheet h2{font-size:14px;margin:16px 0 6px}
+ .sheet .site{margin:0;font-weight:800;letter-spacing:.08em;text-transform:uppercase;font-size:12px}
+ .sheet .meta{margin:0 0 6px}
+ .sheet .note{margin:0 0 8px}
+ .sheet .banner{margin:8px 0 12px;padding:8px 10px;font-weight:800;border:2px solid #111}
+ .sheet table{width:100%;border-collapse:collapse}
+ .sheet th,.sheet td{border:1px solid #222;padding:5px 6px;text-align:left;vertical-align:top}
+ .sheet th{font-size:10px;letter-spacing:.04em;text-transform:uppercase}
+ .sheet tr,.sheet h2{break-inside:avoid}
+ .sheet .sub{display:block;font-size:11px;color:#333}
+ .sheet .foot{margin-top:16px;font-size:11px;color:#333}
+ .sheet .none{margin:0;color:#333}
+}
 </style>
 </head><body><div class="app">
 <aside><div class="logo"><i></i><div>SILK<span>WOOD</span><small>Daily ops · servo + kitchen</small></div></div><nav id="nav"></nav><div class="side-foot">Food safety &amp; daily ops</div></aside>
@@ -93,6 +114,7 @@ dialog{border:0;border-radius:16px;padding:0;width:min(560px,94vw);max-height:90
 <dialog id="nameDlg" style="max-width:380px"><form method="dialog" id="nameForm" class="db" style="padding:20px"><div class="lbl">Who's on shift?</div><h2 style="margin:0">Your name</h2><p class="help" style="margin:0;color:var(--sl)">Everything you tick or log is saved under this name. This phone remembers it.</p>
 <input id="nameIn" placeholder="e.g. Sam" autocomplete="name" maxlength="40" required><button class="btn full" type="submit">Save name</button></form></dialog>
 <div class="toast" id="toast"></div>
+<div id="printRoot"></div>
 <div id="installBar" hidden style="position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:90;max-width:460px;margin:0 auto;background:#fff;border:1px solid var(--bd);border-radius:14px;box-shadow:0 8px 24px rgba(15,23,42,.15);padding:12px 14px;display:flex;gap:10px;align-items:center">
 <img src="/static/icon-192.png" alt="" width="40" height="40" style="border-radius:10px"><div style="flex:1;font-size:14px" id="installTxt"></div><button class="btn sm" id="installGo" hidden>Install</button><button class="edit" id="installX" aria-label="Dismiss">✕</button></div>
 <script>
@@ -257,16 +279,56 @@ async function walkLog(){const[it,lk]=W.q[W.i],v=wNum();if(v==null)return;let ac
  await post('/api/log',{kind:lk,ref:it.id,data:action?{temp:v,action}:{temp:v}});W.done++;toast(action?'⚠ Saved — tell the manager':'✓ '+v+'°C OK',action?'warn':'good');W.i++;W.v='';walkShow()}
 let foodStage=localStorage.sw_stage||'cook';if(foodStage=='coldhold')foodStage='cook';
 let cdItem='';const COLD_FIX=['Returned to fridge','Threw food out','Moved to another fridge','Will re-check in 30 min','Told manager'];
+/* Print today's Food Activity Log or Cold Holding. Entries can print as a DRAFT before the day is submitted; after submit, Send to print is the record. window.print() uses the tablet print dialog (printer or Save as PDF). */
+const SITE='United Silkwood';
+const longDate=d=>new Date(d+'T12:00:00+10:00').toLocaleDateString('en-AU',{timeZone:TZ,weekday:'long',day:'numeric',month:'long',year:'numeric'});
+const binBy=t=>hm12(new Date(ts(t)+S.hotbox_max_h*36e5).toLocaleTimeString('en-GB',{timeZone:TZ,hour:'2-digit',minute:'2-digit',hour12:false}));
+function logReady(kind){if(kind=='food')return (S.hotbox||[]).some(x=>x.date==S.date||!x.out_at)||logs('hotbox').length>0;return (S.cold_items||[]).some(x=>x.date==S.date||!x.out_at)}
+function printBar(kind){const food=kind=='food',what=food?'Food Activity Log':'Cold Holding',can=logReady(kind),locked=!!S.locked;
+ const label=!can?'🖨 Send to print':locked?'🖨 Send to print':'🖨 Print draft';
+ const help=!can?(locked?`Nothing in the ${what} for this day.`:`Add ${food?'food':'a cold item'} first. After this day is submitted, Send to print makes the record. Until then, a copy is marked DRAFT.`)
+  :locked?`Prints this day's submitted ${what}. Choose a printer or Save as PDF.`
+  :`This day is not submitted yet, so the copy says DRAFT. After the day is submitted, Send to print makes the record.`;
+ const fn=food?'printFoodActivity()':'printColdHolding()';
+ return `<div class="card food-print" style="margin-bottom:16px"><button type="button" class="btn ${locked&&can?'':'ghost '}full keep" style="min-height:60px;font-size:18px" ${can?`onclick="${fn}"`:'disabled'}>${label}</button><p class="help" style="margin:10px 0 0">${help}</p></div>`}
+function pTable(cols,rows){if(!rows.length)return '<p class="none">None for this date.</p>';
+ return `<table><thead><tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`}
+function whoCell(inn,out){if(out&&out!==inn)return esc(inn)+' · out '+esc(out);return esc(inn||out||'')}
+function sheetBanner(){const L=S.locked;return L?`<p class="banner">Submitted record · ${esc(L.staff||'')} · ${esc(hm12(L.at))}</p>`:`<p class="banner">DRAFT — this day has not been submitted</p>`}
+function sendToPrint(title,body){const when=new Date().toLocaleString('en-AU',{timeZone:TZ,day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit'});
+ $('#printRoot').innerHTML=`<article class="sheet"><p class="site">${SITE}</p><h1>${esc(title)}</h1><p class="meta">${esc(longDate(S.date))}</p>${sheetBanner()}${body}<p class="foot">${SITE} · ${esc(title)} · ${esc(S.date)} · printed ${esc(when)}</p></article>`;
+ const prev=document.title;document.title=`${SITE} ${title} ${S.date}`;
+ addEventListener('afterprint',()=>{document.title=prev;$('#printRoot').innerHTML=''},{once:true});
+ setTimeout(()=>window.print(),80)}
+function hbResult(x){if(x.outcome=='discarded'){const reason=(S.discards||[]).find(d=>d.hotbox_id==x.id);return 'Binned'+(reason&&reason.reason?' — '+reason.reason:'')}
+ if(x.outcome=='sold')return 'Sold';if(over(x))return 'In the log — overdue';return 'In the log'}
+function hbPrintRow(x){return [`${esc(x.item)}<span class="sub">${esc(x.box||'Hot box')}${x.date!=S.date?' · '+esc(x.date):''}</span>`,esc(x.qty||'—'),esc(hm12(x.time_in)),esc(binBy(x.time_in)),x.out_at?esc(hm12(x.out_at)):'—',esc(hbResult(x)),whoCell(x.staff,x.out_by)]}
+function printFoodActivity(){if(!logReady('food'))return;const all=S.hotbox||[],day=all.filter(x=>x.date==S.date),carried=all.filter(x=>x.date!=S.date&&!x.out_at),leg=logs('hotbox');
+ const cols=['Item','Qty','In','Bin by','Out','Result','Staff'];
+ const staff=[...new Set([...day,...carried].flatMap(x=>[x.staff,x.out_by]).concat(leg.map(r=>r.staff)).filter(Boolean))];
+ let body=`<p class="meta">Staff: ${esc(staff.join(', ')||'—')}</p><p class="note">Bin by is ${S.hotbox_max_h} hours after the food goes in.</p><h2>This day</h2>${pTable(cols,day.map(hbPrintRow))}`;
+ if(carried.length)body+=`<h2>Still in from an earlier day</h2>${pTable(cols,carried.map(hbPrintRow))}`;
+ if(leg.length)body+=`<h2>Rotation log</h2>${pTable(['Unit','Item','Qty','In','Discard','Staff'],leg.map(r=>[esc(r.data.box||''),esc(r.data.item||''),esc(r.data.qty||'—'),esc(r.data.time||'—'),esc(r.data.discard||'—'),esc(r.staff)]))}`;
+ sendToPrint('Food Activity Log',body)}
+function coldResult(x){if(x.outcome=='discarded')return 'Binned';if(x.outcome=='sold')return 'Sold';return 'In cold holding'}
+function coldPrintRow(x){const check=(+x.bad?'Above 5°C':'OK')+(x.action?' — '+x.action:'');
+ return [`${esc(x.item)}${x.date!=S.date?`<span class="sub">${esc(x.date)}</span>`:''}`,esc(x.qty||'—'),esc(hm12(x.time_in)),`${esc(x.temp)}°C<span class="sub">${esc(check)}</span>`,x.out_at?esc(hm12(x.out_at)):'—',esc(coldResult(x)),whoCell(x.staff,x.out_by)]}
+function printColdHolding(){if(!logReady('cold'))return;const all=S.cold_items||[],day=all.filter(x=>x.date==S.date),carried=all.filter(x=>x.date!=S.date&&!x.out_at);
+ const cols=['Item','Qty','In','Temp','Out','Result','Staff'];
+ const staff=[...new Set([...day,...carried].flatMap(x=>[x.staff,x.out_by]).filter(Boolean))];
+ let body=`<p class="meta">Staff: ${esc(staff.join(', ')||'—')}</p><p class="note">Cold food should be 5°C or colder.</p><h2>This day</h2>${pTable(cols,day.map(coldPrintRow))}`;
+ if(carried.length)body+=`<h2>Still in from an earlier day</h2>${pTable(cols,carried.map(coldPrintRow))}`;
+ sendToPrint('Cold Holding',body)}
 function coldRow(x){const warm=+x.bad;return `<div class="li cold ${warm?'over':''}"><div class="t"><b>${esc(x.item)}${x.qty?` <span class="mono">× ${esc(x.qty)}</span>`:''}</b><small>${esc(x.temp)}°C${warm?' · <b style="color:var(--bad)">ABOVE 5°C — tell the manager</b>':' · OK'} · in ${hm12(x.time_in)}${x.action?' · '+esc(x.action):''}</small></div><span class="timer" data-in="${x.time_in}"></span>
  <button class="btn sm ghost" onclick="coldOut(${x.id},'sold')">Sold</button><button class="btn sm danger" onclick="coldOut(${x.id},'discarded')">Bin</button></div>`}
-VIEWS.cold=()=>{const rows=S.cold_items||[],lv=rows.filter(x=>!x.out_at),old=rows.filter(x=>x.out_at&&x.date==S.date);
- return ph('Cold holding','Cold holding','Log food when it goes in the fridge. Above 5°C, tell the manager. Mark it sold or binned when it comes out.')+
+VIEWS.cold=()=>{const rows=S.cold_items||[],lv=rows.filter(x=>!x.out_at),old=rows.filter(x=>x.out_at&&x.date==S.date),bar=printBar('cold');
+ return ph('Cold holding','Cold holding','Log food when it goes in the fridge. Above 5°C, tell the manager. Mark it sold or binned when it comes out.')+(S.locked?bar:'')+
  `<div class="grid g2"><div class="card"><h2>Put food in</h2><p class="help">Tap the food, type the temperature, then Submit. Above 5°C is flagged.</p>
  <div class="chips" style="margin-bottom:12px">${items('cold').map(i=>`<button type="button" class="chip ${cdItem==i.name?'on':''}" onclick="cdItem=this.textContent;render()">${esc(i.name)}</button>`).join('')}<button type="button" class="chip" onclick="manage('cold')">✎ Edit</button></div>
  <div class="row"><label class="f">How many<input id="cdQ" inputmode="numeric" placeholder="e.g. 4"></label><label class="f">Time in<input type="time" id="cdTime" value="${nowHM()}"></label><label class="f">Temperature °C${tempBox('cdT','fridge')}</label></div>
  <button ${SUB} onclick="coldAdd()">Submit cold holding</button></div>
  <div class="card"><h2>In cold holding now<span class="sp"></span><span class="pill ${lv.some(x=>+x.bad)?'bad':'grey'}">${lv.length} items</span></h2>${lv.length?`<div class="list">${lv.map(coldRow).join('')}</div>`:'<div class="empty">Nothing in cold holding.</div>'}</div></div>
- <div class="card" style="margin-top:16px"><h2>Taken out today</h2>${tbl(['Item','Qty','In','Out','Temp','Result','By',''],old.map(x=>[esc(x.item),`<span class="mono">${esc(x.qty)}</span>`,`<span class="mono">${hm12(x.time_in)}</span>`,`<span class="mono">${hm12(x.out_at)}</span>`,+x.bad?`<span class="pill bad">${esc(x.temp)}°C</span>`:`<span class="mono">${esc(x.temp)}°C</span>`,x.outcome=='discarded'?'<span class="pill bad">Binned</span>':'<span class="pill ok">Sold</span>',esc(x.out_by),delBtn('cold',x.id)]))||'<div class="empty">Nothing taken out yet.</div>'}</div>`};
+ <div class="card" style="margin-top:16px"><h2>Taken out today</h2>${tbl(['Item','Qty','In','Out','Temp','Result','By',''],old.map(x=>[esc(x.item),`<span class="mono">${esc(x.qty)}</span>`,`<span class="mono">${hm12(x.time_in)}</span>`,`<span class="mono">${hm12(x.out_at)}</span>`,+x.bad?`<span class="pill bad">${esc(x.temp)}°C</span>`:`<span class="mono">${esc(x.temp)}°C</span>`,x.outcome=='discarded'?'<span class="pill bad">Binned</span>':'<span class="pill ok">Sold</span>',esc(x.out_by),delBtn('cold',x.id)]))||'<div class="empty">Nothing taken out yet.</div>'}</div>`+(S.locked?'':bar)};
 async function coldAdd(){if(!cdItem)return toast('Tap a food first','warn');const v=parseT($('#cdT').value,$('#cdTs')?.classList.contains('on'));if(v==null||Number.isNaN(v))return toast('Type the temperature','warn');
  let action;if(judgeT('fridge',v)===false){action=await askFix('fridge',v,cdItem,COLD_FIX);if(action==null)return}
  const t=$('#cdTime').value||nowHM();
@@ -288,15 +350,15 @@ function hbRow(x){return `<div class="li hb ${over(x)?'over':''}"><div class="t"
  <button class="btn sm ghost" onclick="hbOut(${x.id},'sold')">Sold</button><button class="btn sm danger" onclick="hbOut(${x.id},'discarded')">Bin</button></div>`}
 async function hbOut(id,o){if(o=='discarded'&&!confirm('Bin this item? It will be added to Discards.'))return;await post('/api/hotbox/out',{id,outcome:o,date:S.today},o=='sold'?'✓ Marked sold':'🗑 Binned and added to discards')}
 let hbItem='';
-VIEWS.hotbox=()=>{const boxes=items('kcheck').filter(i=>i.type=='hot'&&/hot box/i.test(i.name)),lv=liveHB(),old=(S.hotbox||[]).filter(x=>x.out_at),leg=logs('hotbox');
- return ph('Food activity','Food Activity Log','Add food when it goes in. It turns red after '+S.hotbox_max_h+' hours — then bin it.')+
+VIEWS.hotbox=()=>{const boxes=items('kcheck').filter(i=>i.type=='hot'&&/hot box/i.test(i.name)),lv=liveHB(),old=(S.hotbox||[]).filter(x=>x.out_at),leg=logs('hotbox'),bar=printBar('food');
+ return ph('Food activity','Food Activity Log','Add food when it goes in. It turns red after '+S.hotbox_max_h+' hours — then bin it.')+(S.locked?bar:'')+
  `<div class="grid g2"><div class="card"><h2>Put food in</h2><p class="help">Tap the food, check the time, then Submit.</p>
  <div class="chips" style="margin-bottom:12px">${items('hotbox').map(i=>`<button class="chip ${hbItem==i.name?'on':''}" onclick="hbItem=this.textContent;render()">${esc(i.name)}</button>`).join('')}<button class="chip" onclick="manage('hotbox')">✎ Edit</button></div>
  <div class="row">${boxes.length>1?`<label class="f">Which unit<select id="hbB">${boxes.map(b=>`<option>${esc(b.name)}</option>`).join('')}</select></label>`:''}<label class="f">How many<input id="hbQ" inputmode="numeric" placeholder="e.g. 6"></label><label class="f">Time in<input type="time" id="hbT" value="${nowHM()}"></label></div>
  <button ${SUB} onclick="hbAdd()">Add to log</button></div>
  <div class="card"><h2>In the log now<span class="sp"></span><span class="pill ${lv.some(over)?'bad':'grey'}">${lv.length} items</span></h2>${lv.length?`<div class="list">${lv.map(hbRow).join('')}</div>`:'<div class="empty">Nothing in the log yet.</div>'}</div></div>
  <div class="card" style="margin-top:16px"><h2>Taken out today</h2>${tbl(['Item','Qty','In','Out','Result','By',''],old.filter(x=>x.date==S.date).map(x=>[esc(x.item),`<span class="mono">${esc(x.qty)}</span>`,`<span class="mono">${hm12(x.time_in)}</span>`,`<span class="mono">${hm12(x.out_at)}</span>`,x.outcome=='discarded'?'<span class="pill bad">Binned</span>':'<span class="pill ok">Sold</span>',esc(x.out_by),delBtn('hotbox',x.id)]))||'<div class="empty">Nothing taken out yet.</div>'}
- ${leg.length?`<h2 style="margin-top:16px">Rotation log (old style)</h2>${tbl(['Unit','Item','Qty','In','Discard','By',''],leg.map(r=>[esc(r.data.box||''),esc(r.data.item),esc(r.data.qty),esc(r.data.time),esc(r.data.discard),esc(r.staff),delBtn('log',r.id)]))}`:''}</div>`};
+ ${leg.length?`<h2 style="margin-top:16px">Rotation log (old style)</h2>${tbl(['Unit','Item','Qty','In','Discard','By',''],leg.map(r=>[esc(r.data.box||''),esc(r.data.item),esc(r.data.qty),esc(r.data.time),esc(r.data.discard),esc(r.staff),delBtn('log',r.id)]))}`:''}</div>`+(S.locked?'':bar)};
 async function hbAdd(){if(!hbItem)return toast('Tap a food first','warn');const t=$('#hbT').value||nowHM();await post('/api/hotbox',{item:hbItem,qty:$('#hbQ').value,time_in:t,box:$('#hbB')?.value||items('kcheck').find(i=>/hot box/i.test(i.name))?.name||'Hot box'},'✓ '+hbItem+' added — bin by '+hm12(new Date(ts(S.date+' '+t+':00')+S.hotbox_max_h*36e5).toLocaleTimeString('en-GB',{timeZone:TZ,hour:'2-digit',minute:'2-digit'})));hbItem='';render()}
 const REASONS=['Out of date','Hot box time up','Dropped / damaged','Temp out of range','Customer return','Other'];let disR=REASONS[0];
 VIEWS.discards=()=>{const D=S.discards||[];return ph('Waste','Discards','Log anything that goes in the bin, so we know what we waste.')+
