@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Silkwood daily ops dashboard: stdlib HTTP server + SQLite. Run: python3 server.py (port 8787)."""
-import json, sqlite3, os, re, threading, smtplib, ssl, html as H_
+import json, sqlite3, os, re, threading, time, smtplib, ssl, html as H_
 from email.message import EmailMessage
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
@@ -12,7 +12,16 @@ ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get("SILKWOOD_DB", ROOT / "silkwood.db"))
 TZ = ZoneInfo("Australia/Brisbane")
 PORT = int(os.environ.get("PORT", "8787"))
-COLD_STARTERS = ['Salad Sandwiches', 'Wraps', 'Salad Rolls', 'Meals', 'Cheesecake', 'Tiramisu', 'Truffle']
+COLD_STARTERS = ["Sandwiches", "Salad rolls", "Salad wraps", "Cheesecake", "Tiramisu", "Trifle", "Meals"]
+# Old starter labels → the names staff should see. Custom foods that are not in this map are left alone.
+COLD_RENAMES = {
+    "salad sandwiches": "Sandwiches",
+    "wraps": "Salad wraps",
+    "salad rolls": "Salad rolls",
+    "truffle": "Trifle",
+}
+# 8:30pm Australia/Brisbane. At or after this time the calendar day's final is sent if nobody submitted one.
+AUTO_FINAL_AT = (20, 30)
 RULES = {"fridge": ("max", 5), "freezer": ("max", -15), "hot": ("min", 60), "core": ("min", 75)}
 TANKS = ["1 Unleaded", "2 P95", "3 Diesel", "4 Diesel", "5 Diesel"]
 STARTERS = [  # kind, name, type, example(1=starter to confirm)
@@ -132,6 +141,9 @@ def init():
     CREATE INDEX IF NOT EXISTS ix_hotbox_date ON hotbox_items(date);
     CREATE INDEX IF NOT EXISTS ix_hotbox_open ON hotbox_items(out_at);
     CREATE INDEX IF NOT EXISTS ix_discards_date ON discards(date);
+    CREATE TABLE IF NOT EXISTS cold_items(id INTEGER PRIMARY KEY, date TEXT, item TEXT, qty TEXT, time_in TEXT, temp REAL, bad INTEGER DEFAULT 0, action TEXT, out_at TEXT, out_by TEXT, outcome TEXT, staff TEXT, at TEXT);
+    CREATE INDEX IF NOT EXISTS ix_cold_items_date ON cold_items(date);
+    CREATE INDEX IF NOT EXISTS ix_cold_items_open ON cold_items(out_at);
     CREATE TABLE IF NOT EXISTS closing_photos(id TEXT PRIMARY KEY, kind TEXT, mime TEXT, size INTEGER, data BYTEA, staff TEXT, at TEXT, submitted INTEGER DEFAULT 0);
     CREATE INDEX IF NOT EXISTS ix_closing_photos_at ON closing_photos(at)
     """)
@@ -140,10 +152,7 @@ def init():
         c.execute("ALTER TABLE submissions ADD COLUMN webhook_status TEXT"); c.commit()
     except Exception:
         if PG: c.c.rollback()
-    if not c.execute("SELECT 1 FROM items WHERE kind='cold' LIMIT 1").fetchone():  # seed cold holding foods once
-        for i, n in enumerate(COLD_STARTERS):
-            c.execute("INSERT INTO items(kind,name,type,example,sort) VALUES(?,?,?,?,?)", ("cold", n, "", 0, i))
-        c.commit()
+    ensure_cold_items(c); c.commit()
     if not c.execute("SELECT 1 FROM items WHERE kind<>'cold' LIMIT 1").fetchone():
         for i, (k, n, t, ex) in enumerate(STARTERS):
             c.execute("INSERT INTO items(kind,name,type,example,sort) VALUES(?,?,?,?,?)", (k, n, t, ex, i))
@@ -155,6 +164,30 @@ def init():
 def is_bad(typ, v):
     if typ not in RULES or v is None: return 0
     op, lim = RULES[typ]; return int(v > lim if op == "max" else v < lim)
+
+def ensure_cold_items(c):
+    """Cold holding always lists the standard foods. Renames the old starter labels; does not delete foods staff added."""
+    canon = {n.lower(): n for n in COLD_STARTERS}
+
+    def active():
+        return [dict(r) for r in c.execute("SELECT id, name FROM items WHERE kind='cold' AND active=1 ORDER BY id")]
+
+    def apply_name(target_for):
+        for r in active():
+            target = target_for(r["name"].strip())
+            if not target or r["name"] == target: continue
+            other = next((x for x in active() if x["name"].strip().lower() == target.lower() and x["id"] != r["id"]), None)
+            if other: c.execute("UPDATE items SET active=0 WHERE id=?", (r["id"],))  # the standard name is already listed
+            else: c.execute("UPDATE items SET name=? WHERE id=?", (target, r["id"]))
+
+    apply_name(lambda n: COLD_RENAMES.get(n.lower()))
+    apply_name(lambda n: canon.get(n.lower()))
+    have = {r["name"].strip().lower() for r in active()}
+    for i, n in enumerate(COLD_STARTERS):
+        if n.lower() not in have:
+            c.execute("INSERT INTO items(kind,name,type,example,sort) VALUES(?,?,?,?,?)", ("cold", n, "", 0, i))
+        else:
+            c.execute("UPDATE items SET sort=? WHERE kind='cold' AND active=1 AND LOWER(name)=LOWER(?)", (i, n))
 
 def tasks_for(c, d):
     wd = date.fromisoformat(d).weekday()
@@ -191,6 +224,7 @@ def day_state(d, extras=True):
         ex["food"] = [dict(r) for r in c.execute("SELECT * FROM food_temps WHERE date=? ORDER BY at", (d,))]
         ex["hotbox"] = [dict(r) for r in c.execute("SELECT * FROM hotbox_items WHERE date=? OR (out_at IS NULL AND date<=?) ORDER BY time_in", (d, d))]
         ex["discards"] = [dict(r) for r in c.execute("SELECT * FROM discards WHERE date=? ORDER BY at", (d,))]
+        ex["cold_items"] = [dict(r) for r in c.execute("SELECT * FROM cold_items WHERE date=? OR (out_at IS NULL AND date<=?) ORDER BY time_in", (d, d))]
     c.close()
     return {**ex, "now": now().strftime("%Y-%m-%d %H:%M:%S"), "food_stages": FOOD_STAGES, "hotbox_max_h": HOTBOX_MAX_H, "pg": PG,"date": d, "today": today(), "items": items, "logs": logs, "tasks": tasks, "tanks": TANKS,
             "rules": RULES, "locked": dict(lock) if lock else None, "shifts": shifts, "summary": summarise(items, logs, tasks, ex.get("food"))}
@@ -245,6 +279,9 @@ def snapshot(ds, area):
         snap["hotbox_items"] = [{"box": x["box"], "item": x["item"], "qty": x["qty"], "in": (x["time_in"] or "")[11:16], "out": (x["out_at"] or "")[11:16],
                                  "outcome": x["outcome"] or "in hot box", "staff": x["staff"]} for x in ds.get("hotbox", []) if x["date"] == ds["date"]]
         snap["discards"] = [{"item": x["item"], "qty": x["qty"], "reason": x["reason"], "at": (x["at"] or "")[11:16], "staff": x["staff"]} for x in ds.get("discards", [])]
+        snap["cold_items"] = [{"item": x["item"], "qty": x["qty"], "in": (x["time_in"] or "")[11:16], "out": (x["out_at"] or "")[11:16],
+                               "temp": x["temp"], "ok": not x["bad"], "action": x["action"], "outcome": x["outcome"] or "in cold holding",
+                               "staff": x["staff"]} for x in ds.get("cold_items", []) if x["date"] == ds["date"]]
     if "shop" in tabs: snap["fuel"] = [dict(l["data"], tank=l["ref"], staff=l["staff"], at=l["at"][11:16]) for l in L if l["kind"] == "fuel"]
     alerts = [f'{t["unit"]}: {t["temp"]}°C' for t in temps if not t["ok"]]
     alerts += [f'{f["food"]} ({f["stage"]}): {f["temp"]}°C' for f in snap.get("food_temps", []) if not f["ok"]]
@@ -276,6 +313,8 @@ def snapshot_html(sub, snap, standalone=False):
     if snap.get("food_temps") is not None:
         out.append(h2("🍗 Food temps") + table(["Food", "Stage", "Temp", "Result", "Time", "By"], [[(e(f["food"]), ""), (e(f["stage"]), ""), (e(f["temp"]) + "°C", ""), (ok(f["ok"])[0] + (" – " + e(f["action"]) if f.get("action") else ""), ok(f["ok"])[1]), (e(f["at"]), ""), (e(f["staff"]), "")] for f in snap["food_temps"] if f["stage"] != "Cold holding"]))
         out.append(h2("❄ Cold holding") + table(["Food", "Temp", "Result", "Time", "By"], [[(e(f["food"]), ""), (e(f["temp"]) + "°C", ""), (ok(f["ok"])[0] + (" – " + e(f["action"]) if f.get("action") else ""), ok(f["ok"])[1]), (e(f["at"]), ""), (e(f["staff"]), "")] for f in snap["food_temps"] if f["stage"] == "Cold holding"]))
+        if snap.get("cold_items") is not None:
+            out.append(h2("❄ Cold holding activity") + table(["Food", "Qty", "In", "Temp", "Result", "Out", "By"], [[(e(x["item"]), ""), (e(x["qty"]), ""), (e(x["in"]), ""), (e(x["temp"]) + "°C", ""), (ok(x["ok"])[0] + (" – " + e(x["action"]) if x.get("action") else ""), ok(x["ok"])[1]), (e(x["outcome"]) + (" " + e(x["out"]) if x.get("out") else ""), ""), (e(x["staff"]), "")] for x in snap["cold_items"]]))
         out.append(h2("🔥 Hot box items") + table(["Box", "Item", "Qty", "In", "Out", "Result", "By"], [[(e(x["box"]), ""), (e(x["item"]), ""), (e(x["qty"]), ""), (e(x["in"]), ""), (e(x["out"]), ""), (e(x["outcome"]), ""), (e(x["staff"]), "")] for x in snap.get("hotbox_items", [])]))
         out.append(h2("🗑 Discards") + table(["Item", "Qty", "Reason", "Time", "By"], [[(e(x["item"]), ""), (e(x["qty"]), ""), (e(x["reason"]), ""), (e(x["at"]), ""), (e(x["staff"]), "")] for x in snap.get("discards", [])]))
     if "fuel" in snap:
@@ -337,7 +376,7 @@ def webhook_payload(sub, snap):
             "alerts": snap["alerts"], "not_logged": snap["not_logged"], "temperatures": snap["temps"],
             "jobs_done": [j for j in snap["jobs"] if j["done"]], "jobs_not_done": [j for j in snap["jobs"] if not j["done"]],
             "prep": snap.get("prep", []), "hotbox_rotation": snap.get("hotbox", []), "fuel": snap.get("fuel", []),
-            "food_temps": snap.get("food_temps", []), "hotbox_items": snap.get("hotbox_items", []), "discards": snap.get("discards", []),
+            "food_temps": snap.get("food_temps", []), "hotbox_items": snap.get("hotbox_items", []), "cold_items": snap.get("cold_items", []), "discards": snap.get("discards", []),
             "shifts": snap["shifts"], "cold_holding": [f for f in snap.get("food_temps", []) if f["stage"] == "Cold holding"],
             "final": bool(sub.get("final")), "submissionType": "final" if sub.get("final") else "update"}
 
@@ -359,16 +398,113 @@ def day_submit(c, d, staff, area, final):
     return [lambda: threading.Thread(target=send_email, args=(sid, subj, snapshot_html(sub, snap)), daemon=True).start(),
             lambda: threading.Thread(target=post_webhook, args=(sid, webhook_payload(sub, snap)), daemon=True).start()]
 
-def final_day_log(d, staff):
+def final_day_log(d, staff, fallback="Closing"):
+    """Lock the day and send the closing email + webhook (same path as Submit end of day log).
+    fallback is used only when staff is blank. Auto-submit passes fallback='' so a missing name stays blank."""
+    name = (staff or "").strip()[:40]
+    if not name: name = (fallback or "").strip()[:40]
     c = db()
     try:
         if c.execute("SELECT 1 FROM days WHERE date=?", (d,)).fetchone(): return "already_submitted"
-        after = day_submit(c, d, staff or "Closing", "both", True); c.commit()
+        after = day_submit(c, d, name, "both", True); c.commit()
     except Exception as e:
+        msg = f"{type(e).__name__} {e}".lower()
+        if "unique" in msg or "duplicate" in msg: return "already_submitted"  # another worker already locked this date
         return "failed " + type(e).__name__
     finally: c.close()
     for f in after: f()
     return "sent"
+
+_auto_lock = threading.Lock()
+_auto_done = set()  # dates already settled this process; the database is what makes a restart idempotent
+
+def auto_final_dates(when):
+    """Brisbane calendar dates whose 8:30pm cutoff has passed. Today is included only at or after 8:30pm.
+    Yesterday is included so a process that was asleep at 8:30 still sends that day's final (one day only)."""
+    if when.tzinfo is None: when = when.replace(tzinfo=TZ)
+    when = when.astimezone(TZ)
+    dates = [(when.date() - timedelta(days=1)).isoformat()]
+    if (when.hour, when.minute) >= AUTO_FINAL_AT: dates.append(when.date().isoformat())
+    return dates
+
+def final_logged(c, d):
+    """True when this date already has a closing final: the day is locked, or a final submission exists
+    (including after a manager reopen, so auto-submit does not send a second email)."""
+    if c.execute("SELECT 1 FROM days WHERE date=?", (d,)).fetchone(): return True
+    return c.execute(
+        "SELECT 1 FROM submissions WHERE date=? AND email_status IS NOT NULL AND email_status!=? LIMIT 1",
+        (d, "skipped_update")).fetchone() is not None
+
+def latest_staff_name(c, d):
+    """Most recent real name already saved for this date. Does not invent a name."""
+    best_n, best_t = "", ""
+    queries = [
+        "SELECT staff AS n, at AS t FROM logs WHERE date=?",
+        "SELECT staff AS n, at AS t FROM food_temps WHERE date=?",
+        "SELECT staff AS n, at AS t FROM hotbox_items WHERE date=?",
+        "SELECT out_by AS n, out_at AS t FROM hotbox_items WHERE date=? AND out_by IS NOT NULL",
+        "SELECT staff AS n, at AS t FROM discards WHERE date=?",
+        "SELECT staff AS n, at AS t FROM task_done WHERE date=?",
+        "SELECT staff AS n, COALESCE(end_at, start_at) AS t FROM shifts WHERE date=?",
+        "SELECT staff AS n, at AS t FROM audit WHERE date=?",
+        "SELECT staff AS n, at AS t FROM submissions WHERE date=?",
+        "SELECT staff AS n, COALESCE(out_at, at) AS t FROM cold_items WHERE date=?",
+        "SELECT out_by AS n, out_at AS t FROM cold_items WHERE date=? AND out_by IS NOT NULL",
+    ]
+    skip = {"closing", "manager"}
+    for sql in queries:
+        for r in c.execute(sql, (d,)):
+            n = (r["n"] or "").strip()
+            t = r["t"] or ""
+            if not n or n.lower() in skip or n.upper().startswith("TEST"): continue
+            if t >= best_t: best_n, best_t = n[:40], t
+    return best_n
+
+def auto_final_one(d):
+    if d in _auto_done: return "already_submitted"
+    c = db()
+    try:
+        if final_logged(c, d):
+            _auto_done.add(d); return "already_submitted"
+        staff = latest_staff_name(c, d)
+    finally: c.close()
+    result = final_day_log(d, staff, fallback="")
+    if result in ("sent", "already_submitted"): _auto_done.add(d)
+    if result != "already_submitted": print(f"auto final {d}: {result}", flush=True)
+    return result
+
+def maybe_auto_final(when=None):
+    """If 8:30pm Brisbane has passed and that date has no final, submit it through final_day_log."""
+    if not _auto_lock.acquire(blocking=False): return []
+    try:
+        return [auto_final_one(d) for d in auto_final_dates(when or now())]
+    finally: _auto_lock.release()
+
+def _auto_final_loop():
+    while True:
+        try: maybe_auto_final()
+        except Exception as ex: print(f"auto final: {type(ex).__name__}", flush=True)
+        time.sleep(30)
+
+def start_auto_final():
+    threading.Thread(target=_auto_final_loop, name="auto-final", daemon=True).start()
+
+def add_cold_item(c, d, staff, ts, b):
+    """Log a cold-holding item the same way hot-box activity is logged, plus its temperature.
+    Above 5°C is flagged (fridge rule). Also writes food_temps so the existing cold-holding email/webhook stays filled."""
+    item = (b.get("item") or "").strip()[:60]
+    if not item: return "item required"
+    try: temp = float(b.get("temp"))
+    except (TypeError, ValueError): return "temperature required"
+    tin = b.get("time_in") or ts[11:16]
+    if not re.fullmatch(r"\d{2}:\d{2}", str(tin)): return "time must be HH:MM"
+    bad = is_bad("fridge", temp)
+    action = (b.get("action") or "")[:120] or None
+    c.execute("INSERT INTO cold_items(date,item,qty,time_in,temp,bad,action,staff,at) VALUES(?,?,?,?,?,?,?,?,?)",
+              (d, item, str(b.get("qty") or "")[:12], f"{d} {tin}:00", temp, bad, action, staff, ts))
+    c.execute("INSERT INTO food_temps(date,food,stage,temp,bad,action,staff,at) VALUES(?,?,?,?,?,?,?,?)",
+              (d, item, "coldhold", temp, bad, action, staff, ts))
+    return None
 
 def post_webhook(sub_id, payload):
     """POST JSON to WEBHOOK_URL with Authorization: WEBHOOK_AUTH. Returns a short status string (no secrets)."""
@@ -666,7 +802,9 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path); q = {k: v[0] for k, v in parse_qs(u.query).items()}
         if u.path in ("/", "/index.html"):
             return self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
-        if u.path == "/healthz": return self.send(200, {"ok": True})
+        if u.path == "/healthz":
+            threading.Thread(target=maybe_auto_final, name="auto-final-kick", daemon=True).start()
+            return self.send(200, {"ok": True})
         if u.path == "/api/staff": return self.send(200, {"staff": known_staff()})
         m = re.fullmatch(r"/p/([A-Za-z0-9_-]{32})\.jpg", u.path)
         if m:  # unguessable capability link (192-bit random id) so the webhook / routines can fetch it
@@ -771,7 +909,8 @@ class H(BaseHTTPRequestHandler):
             if not staff:  # every write must carry the staff member's name
                 return self.send(400, {"error": "staff name required", "name": True})
             if p in ("/api/tick", "/api/log", "/api/submit", "/api/log/delete", "/api/food", "/api/food/delete",
-                     "/api/hotbox", "/api/hotbox/out", "/api/hotbox/delete", "/api/discard", "/api/discard/delete") and locked():
+                     "/api/hotbox", "/api/hotbox/out", "/api/hotbox/delete", "/api/discard", "/api/discard/delete",
+                     "/api/cold", "/api/cold/out", "/api/cold/delete") and locked():
                 return self.send(409, {"error": f"{d} is submitted and locked"})
             if p == "/api/task":
                 if b.get("delete"): c.execute("UPDATE tasks SET active=0 WHERE id=?", (b["id"],))
@@ -839,8 +978,19 @@ class H(BaseHTTPRequestHandler):
                 if not item: return self.send(400, {"error": "item required"})
                 c.execute("INSERT INTO discards(date,item,qty,reason,staff,at) VALUES(?,?,?,?,?,?)",
                           (d, item, str(b.get("qty") or "")[:12], (b.get("reason") or "")[:120], staff, ts))
-            elif p in ("/api/food/delete", "/api/hotbox/delete", "/api/discard/delete"):
-                tbl = {"food": "food_temps", "hotbox": "hotbox_items", "discard": "discards"}[p.split("/")[2]]
+            elif p == "/api/cold":
+                err = add_cold_item(c, d, staff, ts, b)
+                if err: return self.send(400, {"error": err})
+            elif p == "/api/cold/out":
+                x = c.execute("SELECT * FROM cold_items WHERE id=? AND out_at IS NULL", (b.get("id"),)).fetchone()
+                if not x: return self.send(404, {"error": "not in cold holding"})
+                oc = "discarded" if b.get("outcome") == "discarded" else "sold"
+                c.execute("UPDATE cold_items SET out_at=?, out_by=?, outcome=? WHERE id=?", (ts, staff, oc, x["id"]))
+                if oc == "discarded":
+                    c.execute("INSERT INTO discards(date,item,qty,reason,staff,at) VALUES(?,?,?,?,?,?)",
+                              (today(), x["item"], x["qty"], "Discarded from cold holding", staff, ts))
+            elif p in ("/api/food/delete", "/api/hotbox/delete", "/api/discard/delete", "/api/cold/delete"):
+                tbl = {"food": "food_temps", "hotbox": "hotbox_items", "discard": "discards", "cold": "cold_items"}[p.split("/")[2]]
                 c.execute(f"DELETE FROM {tbl} WHERE id=? AND date=?", (b.get("id"), d))
             elif p == "/api/item":
                 if b.get("delete"): c.execute("UPDATE items SET active=0 WHERE id=?", (b["id"],))
@@ -896,5 +1046,6 @@ if __name__ == "__main__":
         try: print(f"SMTP check: login OK on port {smtp_session(h, int(os.environ.get('SMTP_PORT') or 587), os.environ.get('SMTP_USER', '').strip(), os.environ.get('SMTP_PASS', ''))}", flush=True)
         except Exception as ex: print(f"SMTP check: FAILED {ex}"[:600], flush=True)
     threading.Thread(target=_smtp_check, daemon=True).start()
-    print(f"Silkwood dashboard on :{PORT} ({'postgres' if PG else DB})", flush=True)
+    start_auto_final()
+    print(f"Silkwood dashboard on :{PORT} ({'postgres' if PG else DB}); auto final at 20:30 Australia/Brisbane", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
