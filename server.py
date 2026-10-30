@@ -705,20 +705,24 @@ def kitchen_submit(b):
 
 FC_PRODUCTS = ("Diesel", "Unleaded", "Premium Unleaded")
 def fleet_submit(b):
-    """Fleet Card Pay: same fields/validation/payload as the Apps Script form, forwarded server-side.
+    """Fleet Card Pay, forwarded server-side. Fuel lines are optional; tillLookup tells the webhook to fill them from the sale.
     URL and bearer key come only from env (FLEET_CARD_WEBHOOK_URL / FLEET_CARD_WEBHOOK_KEY).
-    Only the card's last 4 digits are ever stored or returned. dryRun=true validates without posting."""
+    Card number must be exactly 16 digits. Only the last 4 are ever stored or returned. dryRun=true validates without posting."""
     import urllib.request, urllib.error
     g = lambda k, d="": str(b.get(k) if b.get(k) is not None else d).strip()
     sales, card, exp = g("salesNumber"), re.sub(r"[\s-]+", "", g("cardNumber")), g("cardExpiry").replace(" ", "")
     sur, odo, notes = g("surcharge", "0") or "0", g("odo", "0") or "0", g("notes")[:500]
     staff, err = check_staff(b)
     if err: return 400, {"error": err, "staff": True}
-    # fuel lines: new multi-product `lines`, or legacy single fuelProduct/fuelLitres/fuelAmount
-    raw = b.get("lines")
-    if raw is None:
+    # Fuel lines are optional. An explicit `lines` array (including []) is used as sent.
+    # Missing `lines` still accepts the legacy single fuelProduct/fuelLitres/fuelAmount shape when those amounts were sent.
+    if "lines" in b and b.get("lines") is not None:
+        raw = b.get("lines")
+    elif any(g(k) for k in ("fuelLitres", "fuelAmount", "dieselLitres", "dieselAmount")):
         raw = [{"product": g("fuelProduct", "Diesel") or "Diesel", "litres": g("fuelLitres") or g("dieselLitres"), "amount": g("fuelAmount") or g("dieselAmount")}]
-    if not isinstance(raw, list) or not 1 <= len(raw) <= len(FC_PRODUCTS): return 400, {"error": "Choose at least one fuel"}
+    else:
+        raw = []
+    if not isinstance(raw, list) or len(raw) > len(FC_PRODUCTS): return 400, {"error": "Choose at least one fuel"}
     num = r"\d{1,6}(\.\d{1,3})?"; lines = []
     for ln in raw:
         if not isinstance(ln, dict): return 400, {"error": "bad fuel line"}
@@ -733,28 +737,35 @@ def fleet_submit(b):
     for k, v in (("salesNumber", sales), ("cardNumber", card), ("cardExpiry", exp)):
         if not v: return 400, {"error": "Missing " + k}
     if not re.fullmatch(r"[A-Za-z0-9-]{1,30}", sales): return 400, {"error": "Sales number looks wrong"}
-    if not re.fullmatch(r"\d{8,19}", card): return 400, {"error": "Card number must be digits only"}
+    if not re.fullmatch(r"\d{16}", card): return 400, {"error": "Card number must be 16 digits"}
     m = re.fullmatch(r"(\d{2})/?(\d{2})", exp)
     if not m or not 1 <= int(m.group(1)) <= 12: return 400, {"error": "Card expiry must be MM/YY"}
     exp = m.group(1) + "/" + m.group(2)
     sur = sur.lstrip("$")
     if not re.fullmatch(num, sur): return 400, {"error": "Surcharge must be a number"}
-    if not re.fullmatch(r"\d{1,9}", odo): return 400, {"error": "Odo must be a whole number"}
-    first = lines[0]; dsl = next((x for x in lines if x["product"] == "Diesel"), first)
-    prod, litres, amount = first["product"], first["litres"], first["amount"]
-    fuel_total = round(sum(float(x["amount"]) for x in lines), 2)
-    if len(lines) > 1:  # spelled out in notes too, so a routine that ignores `lines` still sees every fuel
-        notes = ("MULTIPLE FUELS - lodge every line: " + "; ".join(f'{x["product"]} {x["litres"]} L ${x["amount"]}' for x in lines) + "." + (" " + notes if notes else ""))[:800]
+    if not re.fullmatch(r"\d{1,9}", odo): return 400, {"error": "Odometer must be a whole number"}
+    if lines:
+        first = lines[0]; dsl = next((x for x in lines if x["product"] == "Diesel"), first)
+        prod, litres, amount = first["product"], first["litres"], first["amount"]
+        fuel_total = round(sum(float(x["amount"]) for x in lines), 2)
+        if len(lines) > 1:  # spelled out in notes too, so a routine that ignores `lines` still sees every fuel
+            notes = ("MULTIPLE FUELS - lodge every line: " + "; ".join(f'{x["product"]} {x["litres"]} L ${x["amount"]}' for x in lines) + "." + (" " + notes if notes else ""))[:800]
+    else:
+        prod = litres = amount = ""
+        dsl = {"litres": "", "amount": ""}
+        fuel_total = 0.0
     last4 = card[-4:]
     sub_at = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     body = {"type": "fleet_card_pay", "site": "United Silkwood", "merchantNumber": "174998", "salesNumber": sales,
             "cardNumber": card, "cardExpiry": exp, "fuelProduct": prod, "fuelLitres": litres, "fuelAmount": amount,
             "dieselLitres": dsl["litres"], "dieselAmount": dsl["amount"], "lines": lines, "lineCount": len(lines),
             "fuelTotal": f"{fuel_total:.2f}", "surcharge": sur, "odo": odo, "staffName": staff,
-            "notes": notes, "submittedAt": sub_at, "source": "silkwood_dashboard", "backupSheet": False}
+            "notes": notes, "submittedAt": sub_at, "source": "silkwood_dashboard", "backupSheet": False,
+            "tillLookup": True}
     url = os.environ.get("FLEET_CARD_WEBHOOK_URL", "").strip(); key = os.environ.get("FLEET_CARD_WEBHOOK_KEY", "").strip()
     preview = {"salesNumber": sales, "card": "•••• " + last4, "cardExpiry": exp, "fuelProduct": prod, "fuelLitres": litres,
-               "fuelAmount": amount, "lines": lines, "fuelTotal": body["fuelTotal"], "surcharge": sur, "odo": odo, "staffName": staff, "configured": bool(url and key)}
+               "fuelAmount": amount, "lines": lines, "fuelTotal": body["fuelTotal"], "surcharge": sur, "odo": odo, "staffName": staff,
+               "tillLookup": True, "configured": bool(url and key)}
     if b.get("dryRun") is True: return 200, {"ok": True, "dryRun": True, "preview": preview}
     if re.fullmatch(r"(?i)test\d*", sales):  # staff test: full validation, never posted to the webhook, not used for duplicate-blocking
         try:
