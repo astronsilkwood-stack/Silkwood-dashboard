@@ -480,39 +480,33 @@ async function whoPick(){let L=[];try{L=(await api('/api/staff')).staff||[]}catc
 function whoDone(v){const w=whoWait;whoWait=null;dlg.close();w&&w(v)}
 function whoTap(i){const x=window._whoL[i];if(!x.pin)return whoDone({name:x.name,pin:''});
  openDlg('PIN for '+x.name,`<input id="whoPin" type="password" inputmode="numeric" autocomplete="off" style="width:100%;font-size:28px;text-align:center;min-height:60px" placeholder="PIN"><button type="button" class="btn full" style="min-height:60px;font-size:18px;margin-top:10px" onclick="whoDone({name:_whoL[${i}].name,pin:$('#whoPin').value})">Submit</button>`);setTimeout(()=>$('#whoPin').focus(),50)}
-/* ---------- fleet card pay (replaces the Apps Script form; same fields/payload, sent via server proxy /api/fleet) ----------
-   Card number is kept in memory only (never localStorage) and cleared after sending. */
-const FC_P=[['Diesel','D'],['Unleaded','U'],['Premium Unleaded','P']];
-let FC={fuels:['Diesel'],surcharge:'0',odo:'0'},fcBusy=false,fcMsg=['',''],fcDup=false;
-const FC_F=[['salesNumber','Sales number','text','',''],['cardNumber','Card number','numeric','digits only',''],['cardExpiry','Card expiry','numeric','type 4 digits, e.g. 0630','MM/YY','maxlength="5" pattern="[0-9]*" autocorrect="off" spellcheck="false"']];
-const fcIn=(k,lb,im,hint,phd,extra='')=>`<label class="f" style="display:block;margin:10px 0">${esc(lb)}${hint?` <span class="muted">(${esc(hint)})</span>`:''}<input class="keep" id="fc_${k}" inputmode="${im}" autocomplete="off" ${phd?`placeholder="${esc(phd)}"`:''} value="${esc(FC[k]??'')}" oninput="${k=='cardExpiry'?'fcExp(this,event);':''}FC['${k}']=this.value;fcDup=false;fcTot()" style="width:100%;font-size:20px;min-height:54px" ${extra}></label>`;
-function fcLines(){return FC_P.filter(([p])=>FC.fuels.includes(p)).map(([p,c])=>({product:p,litres:String(FC['l'+c]||'').trim(),amount:String(FC['a'+c]||'').trim()}))}
-function fcTotV(){return '$'+(fcLines().reduce((a,x)=>a+(parseFloat(x.amount.replace('$',''))||0),0)+(parseFloat(String(FC.surcharge||'0').replace('$',''))||0)).toFixed(2)}
-function fcTot(){const e=$('#fcTotal');if(e)e.textContent=fcTotV()}
-function fcFuel(p){const i=FC.fuels.indexOf(p);if(i<0)FC.fuels.push(p);else FC.fuels.splice(i,1);fcDup=false;render()}
+/* ---------- fleet card pay (sale + card only; fuel, litres and amount come from the till). Sent via /api/fleet.
+   Card number stays in memory only (never localStorage, never a saved-card list) and is cleared after sending. ---------- */
+let FC={odo:'0'},fcBusy=false,fcMsg=['',''],fcDup=false;
+const FC_F=[['salesNumber','Sales number','text','',''],['cardNumber','Full card number','numeric','16 digits','','maxlength="19" pattern="[0-9]*" autocapitalize="off" autocorrect="off" spellcheck="false"'],['cardExpiry','Card expiry','numeric','type 4 digits, e.g. 0630','MM/YY','maxlength="5" pattern="[0-9]*" autocorrect="off" spellcheck="false"']];
+const fcIn=(k,lb,im,hint,phd,extra='')=>`<label class="f" style="display:block;margin:10px 0">${esc(lb)}${hint?` <span class="muted">(${esc(hint)})</span>`:''}<input class="keep" id="fc_${k}" inputmode="${im}" autocomplete="off" ${phd?`placeholder="${esc(phd)}"`:''} value="${esc(FC[k]??'')}" oninput="${k=='cardExpiry'?'fcExp(this,event);':k=='cardNumber'?'fcCard(this);':''}FC['${k}']=this.value;fcDup=false" style="width:100%;font-size:20px;min-height:54px" ${extra}></label>`;
 function fcExp(e,ev){const d=e.value.replace(/\D/g,'').slice(0,4),back=ev&&/^delete/.test(ev.inputType||'');e.value=d.length>2?d.slice(0,2)+'/'+d.slice(2):(d.length==2&&!back?d+'/':d)}
+function fcCard(e){const d=e.value.replace(/\D/g,'').slice(0,16);if(e.value!==d)e.value=d}
 VIEWS.fleet=()=>ph('Sales','Fleet Card Pay','One sale per submit. Goes straight to G Silkwood Operations for lodging. Do not submit the same sale twice.')+
  `<div class="card">${FC_F.map(f=>fcIn(...f)).join('')}
- <div style="margin:10px 0"><div class="muted" style="margin-bottom:6px">Fuel product <span class="muted">(tap every fuel on this sale)</span></div><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">${FC_P.map(([x])=>`<button type="button" class="btn ${FC.fuels.includes(x)?'':'ghost'} keep" style="min-height:60px;font-size:16px;padding:0 6px" onclick="fcFuel('${x}')">${FC.fuels.includes(x)?'✓ ':''}${x}</button>`).join('')}</div></div>
- ${FC_P.filter(([p])=>FC.fuels.includes(p)).map(([p,c])=>`<div style="border:1px solid var(--bd);border-radius:12px;padding:4px 12px;margin:10px 0"><b>${p}</b><div class="row">${fcIn('l'+c,'Litres','decimal','','')}${fcIn('a'+c,'Amount $','decimal','','')}</div></div>`).join('')||'<p style="color:#b00020;font-weight:600">Tap at least one fuel.</p>'}
- <div class="row">${fcIn('surcharge','Surcharge $','decimal','','')}${fcIn('odo','Odo reading','numeric','','')}</div>
- <div style="display:flex;justify-content:space-between;align-items:center;font-size:20px;font-weight:700;margin:12px 0;padding:12px;background:#f1f5f9;border-radius:12px"><span>Total (incl. surcharge)</span><span id="fcTotal" class="mono">${fcTotV()}</span></div>
+ <p class="help" style="margin:12px 0">Fuel, litres and amount are filled from the till using the sale number.</p>
+ ${fcIn('odo','Odometer','numeric','','')}
  <label class="f" style="display:block;margin:10px 0">Notes <span class="muted">(optional)</span><textarea class="keep" id="fc_notes" rows="2" style="width:100%" oninput="FC.notes=this.value">${esc(FC.notes||'')}</textarea></label>
  <button type="button" class="btn full keep" style="min-height:60px;font-size:18px;margin-top:8px" ${fcBusy?'disabled':''} onclick="fcSubmit()">${fcBusy?'Sending…':(fcDup?'Send anyway (I checked it is not a repeat)':'Submit to ops')}</button>
  ${fcMsg[0]?`<p style="color:${fcMsg[1]=='good'?'#0a7a3e':'#b00020'};font-weight:600;font-size:16px">${esc(fcMsg[0])}</p>`:''}</div>`;
 async function fcSubmit(){if(fcBusy)return;const v=k=>String(FC[k]??($('#fc_'+k)||{}).value??'').trim();
  const card=v('cardNumber').replace(/[\s-]+/g,''),exp=v('cardExpiry').replace(/\s/g,'');
- const L=fcLines(),need=[['salesNumber','Sales number']].find(([k])=>!v(k)),N=/^\$?\d{1,6}(\.\d{1,3})?$/;
- const lerr=!L.length?'Tap at least one fuel.':L.map(x=>!x.litres?'Enter litres for '+x.product+'.':!x.amount?'Enter amount for '+x.product+'.':!N.test(x.litres)||!(parseFloat(x.litres)>0)?x.product+' litres must be a number.':!N.test(x.amount)||!(parseFloat(x.amount.replace('$',''))>0)?x.product+' amount must be a number.':'').find(e=>e);
- let err=need?'Enter '+need[1]+'.':lerr?lerr:!/^\d{8,19}$/.test(card)?'Card number: digits only.':!/^(0[1-9]|1[0-2])\/?\d{2}$/.test(exp)?'Card expiry must be MM/YY.':
-  [['surcharge','Surcharge']].map(([k,n])=>/^\$?\d{1,6}(\.\d{1,3})?$/.test(v(k)||'0')?'':n+' must be a number.').find(x=>x)||(/^\d{1,9}$/.test(v('odo')||'0')?'':'Odo must be a whole number.');
+ const need=[['salesNumber','Sales number']].find(([k])=>!v(k));
+ let err=need?'Enter '+need[1]+'.':!/^\d{16}$/.test(card)?'Card number must be 16 digits.':!/^(0[1-9]|1[0-2])\/?\d{2}$/.test(exp)?'Card expiry must be MM/YY.':
+  (/^\d{1,9}$/.test(v('odo')||'0')?'':'Odometer must be a whole number.');
  if(err){fcMsg=[err,'warn'];return render()}
- const payload={salesNumber:v('salesNumber'),cardNumber:card,cardExpiry:exp,lines:L.map(x=>({product:x.product,litres:x.litres.replace('$',''),amount:x.amount.replace('$','')})),fuelProduct:L[0].product,fuelLitres:L[0].litres.replace('$',''),fuelAmount:L[0].amount.replace('$',''),surcharge:v('surcharge')||'0',odo:v('odo')||'0',notes:v('notes')};
+ const payload={salesNumber:v('salesNumber'),cardNumber:card,cardExpiry:exp,odo:v('odo')||'0',notes:v('notes')};
  const who=await whoPick();if(!who)return;payload.staffName=who.name;payload.staffPin=who.pin;
- const dl=payload.lines.find(x=>x.product=='Diesel')||payload.lines[0];payload.dieselLitres=dl.litres;payload.dieselAmount=dl.amount;if(fcDup)payload.confirmDuplicate=true;
+ if(fcDup)payload.confirmDuplicate=true;
  fcBusy=true;fcMsg=['',''];render();
  try{const r=await fetch('/api/fleet',{method:'POST',headers:{'X-Staff-Pin':localStorage.sw_pin||'','Content-Type':'application/json'},body:JSON.stringify(payload)});const j=await r.json().catch(()=>({}));
-  if(r.ok&&j.ok){$$('#main input,#main textarea').forEach(e=>e.value='');FC={fuels:['Diesel'],surcharge:'0',odo:'0'};fcDup=false;fcMsg=['✅ Thank you, '+who.name+'! Your fleet card submission (card ending '+(j.last4||card.slice(-4))+') has been recorded.'+(j.test?' (TEST – not sent to Fleet Card Online)':''),'good'];toast('Fleet card sale sent','good')}
+  const last4=String(j.last4||'').replace(/\D/g,'').slice(-4)||card.slice(-4);
+  if(r.ok&&j.ok){$$('#main input,#main textarea').forEach(e=>e.value='');FC={odo:'0'};fcDup=false;fcMsg=['✅ Thank you, '+who.name+'! Your fleet card submission (card ending '+last4+') has been recorded.'+(j.test?' (TEST – not sent to Fleet Card Online)':''),'good'];toast('Fleet card sale sent','good')}
   else{fcDup=!!j.duplicate;fcMsg=[j.error||('Could not send (HTTP '+r.status+'). Try again.'),'warn']}}
  catch(e){fcMsg=['Network error, nothing was sent. Try again.','warn']}
  fcBusy=false;render()}
