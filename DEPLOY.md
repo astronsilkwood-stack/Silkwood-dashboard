@@ -15,6 +15,8 @@
    Checklist forwards (optional until that form should go out): CLOSING_WEBHOOK_URL + CLOSING_WEBHOOK_KEY,
    and KITCHEN_WEBHOOK_URL + KITCHEN_WEBHOOK_KEY. Each pair is a POST URL and a bearer token. The server sends
    `Authorization: Bearer <key>`. If a pair is missing, that checklist’s Submit returns 503 and nothing is forwarded.
+   Customer pickup orders (`/order`, no staff PIN) forward to ORDER_WEBHOOK_URL + ORDER_WEBHOOK_KEY the same way.
+   If that pair is missing, or the webhook fails, the order is still saved and the customer still sees a confirmation.
    After this kitchen checklist ships, set KITCHEN_WEBHOOK_URL and KITCHEN_WEBHOOK_KEY on the Render service
    (Environment) before staff use Submit. The payload type is `kitchen_daily_checklist` for site `United Silkwood`.
    (Render's API create-service call can need a card on file, so the first create is done in the dashboard.

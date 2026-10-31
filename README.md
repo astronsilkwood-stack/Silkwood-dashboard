@@ -14,6 +14,8 @@ sent as `Authorization: Bearer <key>`. If either value is missing, that checklis
   (bacon, crumbed_fish, fried_topup, kabana, trifle, oil_fryer, chicken_fryer, defrost_fish, chicken_buckets).
   `taskLabels` repeats the staff wording. Also sent: checklistDate, staffName, taskComments, dayComments.
 
+Public pickup orders (no PIN): `/order`. POST `/api/order` recomputes prices from `static/order/menu.json` and saves the order, then forwards it to ORDER_WEBHOOK_URL with `Authorization: Bearer ORDER_WEBHOOK_KEY`. If either value is missing, or the webhook fails, the order is still saved and the customer still gets a confirmation. The key is never logged. Payment is pay at pickup only.
+
 Run on the box: ./run.sh (keep-alive; re-run after a box restart). Local URL http://localhost:8787
 Cloud: see DEPLOY.md (Render free web service + Neon free Postgres). Files: requirements.txt, Dockerfile, render.yaml, Procfile.
 Temperature rules: fridge <=5, freezer <=-15, hot hold >=60, cooked core >=75 (°C).

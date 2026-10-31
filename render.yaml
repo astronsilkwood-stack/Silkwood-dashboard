@@ -25,3 +25,7 @@ services:
         sync: false
       - key: KITCHEN_WEBHOOK_KEY
         sync: false
+      - key: ORDER_WEBHOOK_URL
+        sync: false
+      - key: ORDER_WEBHOOK_KEY
+        sync: false

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Silkwood daily ops dashboard: stdlib HTTP server + SQLite. Run: python3 server.py (port 8787)."""
-import json, sqlite3, os, re, threading, time, smtplib, ssl, html as H_
+"""Silkwood daily ops dashboard: stdlib HTTP server + SQLite. Run: python3 server.py (port 8787).
+
+Public pickup orders (no staff PIN): GET /order, POST /api/order.
+"""
+import json, sqlite3, os, re, sys, threading, time, smtplib, ssl, html as H_
+from decimal import Decimal, ROUND_HALF_UP
 from email.message import EmailMessage
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
@@ -12,6 +16,23 @@ ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get("SILKWOOD_DB", ROOT / "silkwood.db"))
 TZ = ZoneInfo("Australia/Brisbane")
 PORT = int(os.environ.get("PORT", "8787"))
+# Public /order. Prices are recomputed from static/order/menu.json. Caps are per item.
+ORDER_MAX_BODY = 65536
+ORDER_RATE_MAX = 8
+ORDER_RATE_WINDOW = 600
+ORDER_QTY_CAP = {"takeaway": 30, "catering": 200}
+ORDER_OPEN = 10 * 60 + 30       # 10:30 Australia/Brisbane
+ORDER_CLOSE = 19 * 60 + 15      # 19:15
+ORDER_LEAD = timedelta(minutes=20)
+ORDER_DAYS = 7
+ORDER_NAME_MAX = 80
+ORDER_EMAIL_MAX = 120
+ORDER_NOTE_MAX = 500
+ORDER_ITEM_NOTE_MAX = 160
+_order_hits = {}
+_order_lock = threading.Lock()
+_menu_cache = None
+_menu_lock = threading.Lock()
 COLD_STARTERS = ["Sandwiches", "Salad rolls", "Salad wraps", "Cheesecake", "Tiramisu", "Trifle", "Meals"]
 # Old starter labels → the names staff should see. Custom foods that are not in this map are left alone.
 COLD_RENAMES = {
@@ -145,7 +166,8 @@ def init():
     CREATE INDEX IF NOT EXISTS ix_cold_items_date ON cold_items(date);
     CREATE INDEX IF NOT EXISTS ix_cold_items_open ON cold_items(out_at);
     CREATE TABLE IF NOT EXISTS closing_photos(id TEXT PRIMARY KEY, kind TEXT, mime TEXT, size INTEGER, data BYTEA, staff TEXT, at TEXT, submitted INTEGER DEFAULT 0);
-    CREATE INDEX IF NOT EXISTS ix_closing_photos_at ON closing_photos(at)
+    CREATE INDEX IF NOT EXISTS ix_closing_photos_at ON closing_photos(at);
+    CREATE TABLE IF NOT EXISTS orders(id TEXT PRIMARY KEY, created_at TEXT, payload TEXT, webhook_status TEXT, ip TEXT)
     """)
     c.commit()
     try:  # migrate older submissions tables
@@ -797,11 +819,321 @@ def fleet_submit(b):
     except Exception: pass
     return (200, {"ok": True, "status": st, "last4": last4}) if ok else (502, {"error": "Not sent (" + st + "). Nothing was lodged. Try again."})
 
+def to_cents(price):
+    return int((Decimal(str(price)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+def money(cents):
+    cents = int(cents)
+    sign = "-" if cents < 0 else ""
+    cents = abs(cents)
+    return f"{sign}{cents // 100}.{cents % 100:02d}"
+
+def menu_items():
+    """id -> {name, cents} from static/order/menu.json. Client prices are never used."""
+    global _menu_cache
+    if _menu_cache is not None:
+        return _menu_cache
+    with _menu_lock:
+        if _menu_cache is None:
+            data = json.loads((ROOT / "static" / "order" / "menu.json").read_text())
+            items = {}
+            for cat in data.get("categories") or []:
+                for it in cat.get("items") or []:
+                    items[int(it["id"])] = {"name": str(it["name"]), "cents": to_cents(it["price"])}
+            _menu_cache = items
+    return _menu_cache
+
+def order_warn(msg):
+    """Warnings only. Never include ORDER_WEBHOOK_KEY (or any other secret) in msg."""
+    print(msg, file=sys.stderr, flush=True)
+
+def client_ip(handler):
+    """Last X-Forwarded-For hop (the address the platform appended), else the socket address."""
+    parts = [p.strip() for p in (handler.headers.get("X-Forwarded-For") or "").split(",") if p.strip()]
+    ip = parts[-1] if parts else (handler.client_address[0] if handler.client_address else "")
+    return (ip or "unknown")[:64]
+
+def order_rate_ok(ip):
+    now_ts = time.time()
+    with _order_lock:
+        hits = [t for t in _order_hits.get(ip, []) if now_ts - t < ORDER_RATE_WINDOW]
+        if len(hits) >= ORDER_RATE_MAX:
+            _order_hits[ip] = hits
+            return False
+        hits.append(now_ts)
+        _order_hits[ip] = hits
+        if len(_order_hits) > 4000:
+            cutoff = now_ts - ORDER_RATE_WINDOW
+            for k in list(_order_hits):
+                kept = [t for t in _order_hits[k] if t >= cutoff]
+                if kept:
+                    _order_hits[k] = kept
+                else:
+                    del _order_hits[k]
+        return True
+
+def honeypot_tripped(b):
+    hp = b.get("company_website", "") if isinstance(b, dict) else ""
+    if hp is None or hp == "":
+        return False
+    if not isinstance(hp, str):
+        return True
+    return bool(hp.strip())
+
+def parse_mobile(s):
+    """Australian mobile -> 04xxxxxxxx. Spaces and punctuation are ignored. Landlines are rejected."""
+    raw = str(s or "").strip()
+    plus = raw.startswith("+")
+    raw = re.sub(r"\D", "", raw)
+    if plus or raw.startswith("61"):
+        if raw.startswith("61"):
+            raw = raw[2:]
+    if raw and not raw.startswith("0"):
+        raw = "0" + raw
+    if re.fullmatch(r"04\d{8}", raw):
+        return raw
+    return None
+
+def _plain(v, limit):
+    """Single-line customer text. Returns (text, error). error is 'type' or 'long'."""
+    if v is None:
+        return "", None
+    if not isinstance(v, str):
+        return None, "type"
+    s = v.replace("\r", " ").replace("\n", " ")
+    s = re.sub(r"[\x00-\x1f\x7f]", "", s)
+    s = re.sub(r" +", " ", s).strip()
+    if len(s) > limit:
+        return None, "long"
+    return s, None
+
+def _block(v, limit):
+    if v is None:
+        return "", None
+    if not isinstance(v, str):
+        return None, "type"
+    s = v.replace("\r\n", "\n").replace("\r", "\n")
+    s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", s).strip()
+    if len(s) > limit:
+        return None, "long"
+    return s, None
+
+_EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,80}\.[A-Za-z]{2,24}$")
+
+def parse_pickup(date_s, time_s, when):
+    """A 15-minute Brisbane slot from 10:30 to 19:15, at least 20 minutes away, within 7 days."""
+    if not isinstance(date_s, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_s):
+        return None, "Choose a pickup date."
+    if not isinstance(time_s, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", time_s):
+        return None, "Choose a pickup time."
+    try:
+        day = date.fromisoformat(date_s)
+    except ValueError:
+        return None, "Choose a pickup date."
+    today_d = when.date()
+    if day < today_d or day > today_d + timedelta(days=ORDER_DAYS):
+        return None, "Pickup can be today or up to 7 days ahead."
+    hh, mm = int(time_s[:2]), int(time_s[3:])
+    minutes = hh * 60 + mm
+    if mm % 15 != 0 or minutes < ORDER_OPEN or minutes > ORDER_CLOSE:
+        return None, "Pickup times run from 10:30 to 19:15, every 15 minutes."
+    slot = datetime(day.year, day.month, day.day, hh, mm, tzinfo=TZ)
+    if slot < when + ORDER_LEAD:
+        return None, "Choose a pickup time at least 20 minutes from now."
+    return slot, None
+
+def _parse_id(v):
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str) and re.fullmatch(r"\d{1,12}", v):
+        return int(v)
+    return None
+
+def _parse_qty(v):
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str) and re.fullmatch(r"\d{1,4}", v):
+        return int(v)
+    return None
+
+def build_order(b, when):
+    """Validate and price an order. Returns (status, payload_or_error). Prices come only from the menu."""
+    if not isinstance(b, dict):
+        return 400, {"error": "Could not read that order."}
+    kind = b.get("type")
+    if kind not in ORDER_QTY_CAP:
+        return 400, {"error": "Choose takeaway pickup or catering."}
+    cap = ORDER_QTY_CAP[kind]
+    raw_items = b.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        return 400, {"error": "Add at least one item."}
+    if len(raw_items) > len(menu_items()):
+        return 400, {"error": "That order has too many lines."}
+    catalogue = menu_items()
+    lines, seen, total = [], set(), 0
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            return 400, {"error": "That order has a line we could not read."}
+        iid = _parse_id(raw.get("id"))
+        if iid is None or iid not in catalogue:
+            return 400, {"error": "That item is not on the menu."}
+        if iid in seen:
+            return 400, {"error": "Each item can only be listed once."}
+        seen.add(iid)
+        qty = _parse_qty(raw.get("qty"))
+        if qty is None or qty < 1:
+            return 400, {"error": "Enter a quantity for each item."}
+        if qty > cap:
+            label = "Takeaway" if kind == "takeaway" else "Catering"
+            return 400, {"error": f"{label} orders can include up to {cap} of each item."}
+        note, nerr = _plain(raw.get("notes", raw.get("note")), ORDER_ITEM_NOTE_MAX)
+        if nerr == "type":
+            return 400, {"error": "Item notes must be text."}
+        if nerr == "long":
+            return 400, {"error": f"Item notes must be {ORDER_ITEM_NOTE_MAX} characters or fewer."}
+        item = catalogue[iid]
+        line_cents = item["cents"] * qty
+        total += line_cents
+        lines.append({"id": iid, "name": item["name"], "qty": qty, "unit": money(item["cents"]), "line": money(line_cents), "notes": note})
+    cust = b.get("customer")
+    if not isinstance(cust, dict):
+        return 400, {"error": "Enter your name and mobile."}
+    name, err = _plain(cust.get("name"), ORDER_NAME_MAX)
+    if err == "long":
+        return 400, {"error": f"Name must be {ORDER_NAME_MAX} characters or fewer."}
+    if err or not name:
+        return 400, {"error": "Enter your name."}
+    mobile = parse_mobile(cust.get("mobile"))
+    if not mobile:
+        return 400, {"error": "Enter an Australian mobile number, like 0412 345 678."}
+    email, err = _plain(cust.get("email"), ORDER_EMAIL_MAX)
+    if err == "type":
+        return 400, {"error": "Email must be text."}
+    if err == "long":
+        return 400, {"error": "Email is too long."}
+    if email and not _EMAIL_RE.fullmatch(email):
+        return 400, {"error": "Enter a valid email, or leave it blank."}
+    slot, err = parse_pickup(b.get("pickup_date"), b.get("pickup_time"), when)
+    if err:
+        return 400, {"error": err}
+    notes, err = _block(b.get("notes"), ORDER_NOTE_MAX)
+    if err == "type":
+        return 400, {"error": "Order notes must be text."}
+    if err == "long":
+        return 400, {"error": f"Order notes must be {ORDER_NOTE_MAX} characters or fewer."}
+    payload = {
+        "type": kind,
+        "customer": {"name": name, "mobile": mobile, "email": email},
+        "pickup": slot.isoformat(timespec="seconds"),
+        "items": lines,
+        "total": money(total),
+        "notes": notes,
+        "created_at": when.isoformat(timespec="seconds"),
+    }
+    return 200, payload
+
+def _unique_violation(exc):
+    s = (type(exc).__name__ + " " + str(exc)).lower()
+    return "unique" in s or "duplicate" in s
+
+def next_order_id(c, when):
+    prefix = "SW-" + when.strftime("%m%d") + "-"
+    row = c.execute("SELECT id FROM orders WHERE id LIKE ? ORDER BY id DESC LIMIT 1", (prefix + "%",)).fetchone()
+    n = 1
+    if row:
+        tail = str(row["id"])[len(prefix):]
+        if tail.isdigit():
+            n = int(tail) + 1
+    if n > 999:
+        raise RuntimeError("order id space full")
+    return f"{prefix}{n:03d}"
+
+def insert_order(payload, ip):
+    last = None
+    for _ in range(6):
+        c = db()
+        try:
+            when = datetime.fromisoformat(payload["created_at"])
+            oid = next_order_id(c, when)
+            stored = {"id": oid, **payload}
+            c.execute("INSERT INTO orders(id,created_at,payload,webhook_status,ip) VALUES(?,?,?,?,?)",
+                      (oid, stored["created_at"], json.dumps(stored, ensure_ascii=False), "pending", (ip or "")[:64]))
+            c.commit()
+            return stored, None
+        except RuntimeError as e:
+            return None, e
+        except Exception as e:
+            last = e
+            if not _unique_violation(e):
+                return None, e
+        finally:
+            c.close()
+    return None, last
+
+def forward_order(payload):
+    """POST the order JSON to ORDER_WEBHOOK_URL. Missing config or a failed call is a warning, not a customer error.
+    The bearer key is read from ORDER_WEBHOOK_KEY and is never logged."""
+    import urllib.request, urllib.error
+    url = os.environ.get("ORDER_WEBHOOK_URL", "").strip()
+    key = os.environ.get("ORDER_WEBHOOK_KEY", "").strip()
+    if not url or not key:
+        order_warn("order webhook: not configured; order saved")
+        return "skipped"
+    data = json.dumps(payload, ensure_ascii=False).encode()
+    hd = {"Content-Type": "application/json", "User-Agent": "silkwood-order", "Authorization": "Bearer " + key}
+    try:
+        req = urllib.request.Request(url, data, hd, method="POST")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            st = f"sent {r.status}" if 200 <= r.status < 300 else f"failed HTTP {r.status}"
+    except urllib.error.HTTPError as e:
+        st = f"failed HTTP {e.code}"
+    except Exception as e:
+        st = f"failed {type(e).__name__}"
+    if not st.startswith("sent"):
+        order_warn("order webhook: " + st)
+    return st
+
+def place_order(b, ip, when=None):
+    when = when or now()
+    when = when.replace(tzinfo=TZ) if when.tzinfo is None else when.astimezone(TZ)
+    if honeypot_tripped(b):
+        return 400, {"error": "Could not place this order."}
+    code, result = build_order(b, when)
+    if code != 200:
+        return code, result
+    stored, err = insert_order(result, ip)
+    if isinstance(err, RuntimeError):
+        order_warn("order save failed: id space full")
+        return 503, {"error": "The shop is not taking more online orders today. Please call (07) 4065 2263."}
+    if err is not None or stored is None:
+        order_warn("order save failed: " + (type(err).__name__ if err else "unknown"))
+        return 500, {"error": "Could not save your order. Please call the shop on (07) 4065 2263."}
+    status = forward_order(stored)
+    try:
+        c = db()
+        c.execute("UPDATE orders SET webhook_status=? WHERE id=?", (status[:80], stored["id"]))
+        c.commit(); c.close()
+    except Exception:
+        order_warn("order webhook status not saved")
+    return 200, {
+        "ok": True,
+        "id": stored["id"],
+        "type": stored["type"],
+        "pickup": stored["pickup"],
+        "total": stored["total"],
+        "payment": "Pay when you collect",
+        "items": [{"name": it["name"], "qty": it["qty"], "line": it["line"], "notes": it["notes"]} for it in stored["items"]],
+    }
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
-    def send(self, code, obj, ctype="application/json"):
+    def send(self, code, obj, ctype="application/json", cache=None):
         b = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
-        self.send_response(code); self.send_header("Content-Type", ctype); self.send_header("Cache-Control", "no-store")
+        self.send_response(code); self.send_header("Content-Type", ctype); self.send_header("Cache-Control", cache or "no-store")
         self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         self.send_header("X-Content-Type-Options", "nosniff"); self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "same-origin")
@@ -816,6 +1148,22 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/healthz":
             threading.Thread(target=maybe_auto_final, name="auto-final-kick", daemon=True).start()
             return self.send(200, {"ok": True})
+        if u.path in ("/order", "/order/"):  # public customer page; no staff PIN and no dashboard data
+            return self.send(200, (ROOT / "static" / "order" / "index.html").read_bytes(), "text/html; charset=utf-8")
+        m = re.fullmatch(r"/static/order/(menu\.json|img/[A-Za-z0-9._-]+\.webp)", u.path)
+        if m:
+            rel = m.group(1)
+            base = (ROOT / "static" / "order").resolve()
+            fp = (base / rel).resolve()
+            try:
+                fp.relative_to(base)
+            except ValueError:
+                return self.send(404, {"error": "not found"})
+            if not fp.is_file():
+                return self.send(404, {"error": "not found"})
+            if rel.endswith(".json"):
+                return self.send(200, fp.read_bytes(), "application/json", cache="public, max-age=60")
+            return self.send(200, fp.read_bytes(), "image/webp", cache="public, max-age=86400")
         if u.path == "/api/staff": return self.send(200, {"staff": known_staff()})
         m = re.fullmatch(r"/p/([A-Za-z0-9_-]{32})\.jpg", u.path)
         if m:  # unguessable capability link (192-bit random id) so the webhook / routines can fetch it
@@ -878,7 +1226,37 @@ class H(BaseHTTPRequestHandler):
         self.send(404, {"error": "not found"})
     def authed(self):
         return not STAFF_PIN or self.headers.get("X-Staff-Pin", "") == STAFF_PIN
+    def public_order(self):
+        """POST /api/order. Public. Never reads staff tables and never returns dashboard state."""
+        ip = client_ip(self)
+        raw_len = self.headers.get("Content-Length")
+        if raw_len is None:
+            n = 0
+        elif not re.fullmatch(r"\d{1,8}", raw_len.strip()):
+            return self.send(400, {"error": "Bad request."})
+        else:
+            n = int(raw_len)
+        if n > ORDER_MAX_BODY:
+            self.close_connection = True
+            return self.send(413, {"error": "That order is too large."})
+        if not order_rate_ok(ip):
+            if n:
+                self.rfile.read(n)
+            return self.send(429, {"error": "Too many orders from this network. Please wait a few minutes and try again."})
+        try:
+            raw = self.rfile.read(n) if n else b""
+            b = json.loads(raw or b"{}")
+        except Exception:
+            return self.send(400, {"error": "Could not read that order."})
+        try:
+            code, res = place_order(b, ip)
+        except Exception as e:
+            order_warn("order failed: " + type(e).__name__)
+            return self.send(500, {"error": "Could not place your order. Please call the shop on (07) 4065 2263."})
+        return self.send(code, res)
     def do_POST(self):
+        if urlparse(self.path).path == "/api/order":
+            return self.public_order()
         if not self.authed(): return self.send(401, {"error": "staff PIN required", "pin": True})
         if urlparse(self.path).path == "/api/closing/photo":
             n = int(self.headers.get("Content-Length") or 0)
