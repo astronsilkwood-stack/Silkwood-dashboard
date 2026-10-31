@@ -250,7 +250,10 @@ async function submitEquip(){if(equipBusy||S.locked)return;
   if(Number.isNaN(v))return toast('Type a number for '+it.name+', e.g. 4','warn');
   const last=logs(lk,it.id).pop();if(last&&Number(last.data.temp)===v)continue;
   batch.push({it,lk,v})}
- if(!batch.length)return toast('Type a temperature to submit','warn');
+ if(!batch.length){const missing=pendingUnits(),n=walkUnits().length;
+  if(n&&!missing.length)return toast('✓ All temps already saved','good');
+  if(missing.length&&missing.length<n)return toast('Still to do: '+missing.map(([i])=>i.name).join(', '),'warn');
+  return toast('Type a temperature to submit','warn')}
  equipBusy=true;let bad=false;
  try{for(const row of batch){let action;if(judgeT(row.it.type,row.v)===false){action=await askFix(row.it.type,row.v,row.it.name);if(action==null)return toast('Submit stopped — that temp needs an action','warn')}
   await post('/api/log',{kind:row.lk,ref:row.it.id,data:action?{temp:row.v,action}:{temp:row.v}});
