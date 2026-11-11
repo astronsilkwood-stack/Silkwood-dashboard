@@ -17,6 +17,9 @@
    `Authorization: Bearer <key>`. If a pair is missing, that checklist’s Submit returns 503 and nothing is forwarded.
    Customer pickup orders (`/order`, no staff PIN) forward to ORDER_WEBHOOK_URL + ORDER_WEBHOOK_KEY the same way.
    If that pair is missing, or the webhook fails, the order is still saved and the customer still sees a confirmation.
+   Owner portal (separate from the staff PIN): PORTAL_ADMIN_USER, PORTAL_ADMIN_PASSWORD_HASH, and PORTAL_INGEST_KEY.
+   Generate the hash with `python3 tools/hash_portal_password.py` and open https://silkwood-ops.onrender.com/portal.
+   The nightly box upload and the staff-hours read use `Authorization: Bearer <PORTAL_INGEST_KEY>`. See README.
    After this kitchen checklist ships, set KITCHEN_WEBHOOK_URL and KITCHEN_WEBHOOK_KEY on the Render service
    (Environment) before staff use Submit. The payload type is `kitchen_daily_checklist` for site `United Silkwood`.
    (Render's API create-service call can need a card on file, so the first create is done in the dashboard.
