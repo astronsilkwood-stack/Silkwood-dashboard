@@ -201,6 +201,14 @@ def today():
     return _srv().now().date()
 
 
+def tone(name):
+    """Stable palette slot for a department or group. Visual only."""
+    total = 0
+    for ch in str(name or "").casefold():
+        total = (total * 33 + ord(ch)) & 0xFFFFFFFF
+    return "tone-" + str(total % 8)
+
+
 def h(v):
     import html as _html
     return _html.escape("" if v is None else str(v), quote=True)
@@ -1396,7 +1404,7 @@ def layout(title, active, body, user, when):
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#1c1917">
+<meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#0f2a44">
 <meta name="csrf-token" content="{h(user['csrf'])}">
 <title>{h(title)} · Silkwood owner</title>
 <link rel="icon" type="image/png" href="/static/icon-192.png">
@@ -1588,15 +1596,15 @@ def page_overview(c, query):
 {error}{period_controls('/portal', active, start, end)}
 {parity().override_note(deltas)}{callout}
 <section class="grid g4">
-<div class="card stat"><div class="lbl">Total sales</div><b>{money(total)}</b><span>inc GST</span>{trend}</div>
-<div class="card stat"><div class="lbl">Fuel</div><b>{money(fuel)}</b><span>{pct_points(share) if total else '—'}</span></div>
-<div class="card stat"><div class="lbl">Shop</div><b>{money(shop)}</b><span>{pct_points(100 - share) if total else '—'}</span></div>
-<div class="card stat" id="shop-gp"><div class="lbl">Shop GP</div><b>{money(gp)}</b><span>{pct_ratio(gp_pct)} of covered ex-GST sales</span></div>
+<div class="card stat tone-sales"><div class="lbl">Total sales</div><b>{money(total)}</b><span>inc GST</span>{trend}</div>
+<div class="card stat tone-fuel"><div class="lbl">Fuel</div><b>{money(fuel)}</b><span>{pct_points(share) if total else '—'}</span></div>
+<div class="card stat tone-shop"><div class="lbl">Shop</div><b>{money(shop)}</b><span>{pct_points(100 - share) if total else '—'}</span></div>
+<div class="card stat tone-gp" id="shop-gp"><div class="lbl">Shop GP</div><b>{money(gp)}</b><span>{pct_ratio(gp_pct)} of covered ex-GST sales</span></div>
 </section>
 <section class="grid g3">
-<div class="card stat" id="coverage"><div class="lbl">Cost coverage</div><b>{pct_ratio(coverage)}</b><span>covered ex-GST shop sales</span></div>
-<div class="card stat" id="missing-cost"><div class="lbl">Products missing cost</div><b>{h(missing if missing is not None else '—')}</b><span>{h(missing_label)}</span></div>
-<div class="card stat" id="shop-average"><div class="lbl">Daily shop average</div><b>{money(shop_avg)}</b><span>shop sales inc GST per loaded day</span></div>
+<div class="card stat tone-cover" id="coverage"><div class="lbl">Cost coverage</div><b>{pct_ratio(coverage)}</b><span>covered ex-GST shop sales</span></div>
+<div class="card stat tone-warn" id="missing-cost"><div class="lbl">Products missing cost</div><b>{h(missing if missing is not None else '—')}</b><span>{h(missing_label)}</span></div>
+<div class="card stat tone-avg" id="shop-average"><div class="lbl">Daily shop average</div><b>{money(shop_avg)}</b><span>shop sales inc GST per loaded day</span></div>
 </section>
 {insights_box(latest_insight(c))}
 <section class="card"><h2>Fuel vs shop</h2>
@@ -1951,7 +1959,7 @@ def login_page(error, csrf, setup_missing=False):
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#1c1917">
+<meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#0f2a44">
 <title>Owner login · Silkwood</title>
 <link rel="icon" type="image/png" href="/static/icon-192.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
