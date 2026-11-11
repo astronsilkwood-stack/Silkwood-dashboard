@@ -1,0 +1,976 @@
+{
+ "source": "Bopple Payments by Order",
+ "note": "Paid online via Bopple/Stripe; shown separately from till sales",
+ "daily": [
+  {
+   "date": "2026-10-01",
+   "orders": 2,
+   "total": 126.17,
+   "fees": -1.38,
+   "refunds": 0.0,
+   "net": 124.79
+  },
+  {
+   "date": "2026-10-03",
+   "orders": 1,
+   "total": 64.35,
+   "fees": -0.7,
+   "refunds": 0.0,
+   "net": 63.65
+  },
+  {
+   "date": "2026-10-04",
+   "orders": 2,
+   "total": 93.4,
+   "fees": -1.03,
+   "refunds": 0.0,
+   "net": 92.37
+  },
+  {
+   "date": "2026-10-05",
+   "orders": 2,
+   "total": 97.86,
+   "fees": -1.08,
+   "refunds": 0.0,
+   "net": 96.78
+  },
+  {
+   "date": "2026-10-06",
+   "orders": 1,
+   "total": 24.0,
+   "fees": -0.26,
+   "refunds": 0.0,
+   "net": 23.74
+  },
+  {
+   "date": "2026-10-07",
+   "orders": 1,
+   "total": 27.99,
+   "fees": -0.31,
+   "refunds": 0.0,
+   "net": 27.68
+  },
+  {
+   "date": "2026-10-08",
+   "orders": 2,
+   "total": 38.5,
+   "fees": -0.43,
+   "refunds": 0.0,
+   "net": 38.07
+  },
+  {
+   "date": "2026-10-09",
+   "orders": 3,
+   "total": 154.34,
+   "fees": -1.7,
+   "refunds": 0.0,
+   "net": 152.64
+  },
+  {
+   "date": "2026-10-11",
+   "orders": 3,
+   "total": 116.0,
+   "fees": -1.28,
+   "refunds": 0.0,
+   "net": 114.72
+  },
+  {
+   "date": "2026-10-12",
+   "orders": 2,
+   "total": 57.6,
+   "fees": -0.63,
+   "refunds": 0.0,
+   "net": 56.97
+  },
+  {
+   "date": "2026-10-13",
+   "orders": 2,
+   "total": 64.18,
+   "fees": -0.7,
+   "refunds": 0.0,
+   "net": 63.48
+  },
+  {
+   "date": "2026-10-17",
+   "orders": 2,
+   "total": 101.57,
+   "fees": -1.12,
+   "refunds": 0.0,
+   "net": 100.45
+  },
+  {
+   "date": "2026-10-18",
+   "orders": 2,
+   "total": 88.98,
+   "fees": -0.98,
+   "refunds": 0.0,
+   "net": 88.0
+  },
+  {
+   "date": "2026-10-19",
+   "orders": 3,
+   "total": 94.89,
+   "fees": -1.06,
+   "refunds": 0.0,
+   "net": 93.83
+  },
+  {
+   "date": "2026-10-20",
+   "orders": 2,
+   "total": 58.6,
+   "fees": -0.63,
+   "refunds": 0.0,
+   "net": 57.97
+  },
+  {
+   "date": "2026-10-22",
+   "orders": 1,
+   "total": 8.5,
+   "fees": -0.1,
+   "refunds": 0.0,
+   "net": 8.4
+  },
+  {
+   "date": "2026-10-23",
+   "orders": 2,
+   "total": 106.69,
+   "fees": -1.17,
+   "refunds": 0.0,
+   "net": 105.52
+  },
+  {
+   "date": "2026-10-24",
+   "orders": 3,
+   "total": 170.48,
+   "fees": -1.87,
+   "refunds": -77.4,
+   "net": 91.21
+  },
+  {
+   "date": "2026-10-25",
+   "orders": 4,
+   "total": 94.59,
+   "fees": -1.05,
+   "refunds": -9.6,
+   "net": 83.94
+  },
+  {
+   "date": "2026-10-26",
+   "orders": 2,
+   "total": 51.09,
+   "fees": -0.56,
+   "refunds": 0.0,
+   "net": 50.53
+  },
+  {
+   "date": "2026-10-28",
+   "orders": 1,
+   "total": 47.8,
+   "fees": -0.53,
+   "refunds": 0.0,
+   "net": 47.27
+  },
+  {
+   "date": "2026-10-30",
+   "orders": 1,
+   "total": 35.0,
+   "fees": -0.39,
+   "refunds": 0.0,
+   "net": 34.61
+  },
+  {
+   "date": "2026-10-31",
+   "orders": 1,
+   "total": 36.5,
+   "fees": -0.41,
+   "refunds": 0.0,
+   "net": 36.09
+  },
+  {
+   "date": "2026-11-01",
+   "orders": 3,
+   "total": 118.98,
+   "fees": -1.32,
+   "refunds": 0.0,
+   "net": 117.66
+  },
+  {
+   "date": "2026-11-02",
+   "orders": 1,
+   "total": 19.0,
+   "fees": -0.21,
+   "refunds": 0.0,
+   "net": 18.79
+  },
+  {
+   "date": "2026-11-03",
+   "orders": 2,
+   "total": 104.5,
+   "fees": -1.16,
+   "refunds": 0.0,
+   "net": 103.34
+  },
+  {
+   "date": "2026-11-04",
+   "orders": 1,
+   "total": 11.5,
+   "fees": -0.13,
+   "refunds": 0.0,
+   "net": 11.37
+  },
+  {
+   "date": "2026-11-05",
+   "orders": 2,
+   "total": 136.5,
+   "fees": -1.5,
+   "refunds": 0.0,
+   "net": 135.0
+  },
+  {
+   "date": "2026-11-06",
+   "orders": 1,
+   "total": 91.0,
+   "fees": -1.0,
+   "refunds": 0.0,
+   "net": 90.0
+  },
+  {
+   "date": "2026-11-07",
+   "orders": 3,
+   "total": 243.98,
+   "fees": -2.68,
+   "refunds": 0.0,
+   "net": 241.3
+  },
+  {
+   "date": "2026-11-08",
+   "orders": 4,
+   "total": 160.5,
+   "fees": -1.78,
+   "refunds": 0.0,
+   "net": 158.72
+  },
+  {
+   "date": "2026-11-09",
+   "orders": 1,
+   "total": 27.5,
+   "fees": 0.0,
+   "refunds": 0.0,
+   "net": 27.5
+  },
+  {
+   "date": "2026-11-11",
+   "orders": 1,
+   "total": 16.0,
+   "fees": 0.0,
+   "refunds": 0.0,
+   "net": 16.0
+  }
+ ],
+ "orders": [
+  {
+   "order_no": "25892242",
+   "time": "2026-10-01 05:24:10 PM (Thu)",
+   "trading_date": "2026-10-01",
+   "wallet": "Card",
+   "card": "Master",
+   "total": 71.68,
+   "fees": -0.79,
+   "refunds": 0.0,
+   "net": 70.89
+  },
+  {
+   "order_no": "25892533",
+   "time": "2026-10-01 05:42:53 PM (Thu)",
+   "trading_date": "2026-10-01",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 54.49,
+   "fees": -0.59,
+   "refunds": 0.0,
+   "net": 53.9
+  },
+  {
+   "order_no": "25937544",
+   "time": "2026-10-03 06:04:36 PM (Sat)",
+   "trading_date": "2026-10-03",
+   "wallet": "Link",
+   "card": "Amex",
+   "total": 64.35,
+   "fees": -0.7,
+   "refunds": 0.0,
+   "net": 63.65
+  },
+  {
+   "order_no": "25959574",
+   "time": "2026-10-04 05:43:03 PM (Sun)",
+   "trading_date": "2026-10-04",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 26.0,
+   "fees": -0.29,
+   "refunds": 0.0,
+   "net": 25.71
+  },
+  {
+   "order_no": "25959688",
+   "time": "2026-10-04 05:48:45 PM (Sun)",
+   "trading_date": "2026-10-04",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 67.4,
+   "fees": -0.74,
+   "refunds": 0.0,
+   "net": 66.66
+  },
+  {
+   "order_no": "25969672",
+   "time": "2026-10-05 11:18:53 AM (Mon)",
+   "trading_date": "2026-10-05",
+   "wallet": "Link",
+   "card": "Visa",
+   "total": 41.9,
+   "fees": -0.46,
+   "refunds": 0.0,
+   "net": 41.44
+  },
+  {
+   "order_no": "25973313",
+   "time": "2026-10-05 03:27:37 PM (Mon)",
+   "trading_date": "2026-10-05",
+   "wallet": "Link",
+   "card": "Master",
+   "total": 55.96,
+   "fees": -0.62,
+   "refunds": 0.0,
+   "net": 55.34
+  },
+  {
+   "order_no": "25983605",
+   "time": "2026-10-06 10:44:44 AM (Tue)",
+   "trading_date": "2026-10-06",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 24.0,
+   "fees": -0.26,
+   "refunds": 0.0,
+   "net": 23.74
+  },
+  {
+   "order_no": "26005750",
+   "time": "2026-10-07 06:14:50 PM (Wed)",
+   "trading_date": "2026-10-07",
+   "wallet": "Card",
+   "card": "Master",
+   "total": 27.99,
+   "fees": -0.31,
+   "refunds": 0.0,
+   "net": 27.68
+  },
+  {
+   "order_no": "26018202",
+   "time": "2026-10-08 12:01:53 PM (Thu)",
+   "trading_date": "2026-10-08",
+   "wallet": "Link",
+   "card": "Visa",
+   "total": 24.5,
+   "fees": -0.28,
+   "refunds": 0.0,
+   "net": 24.22
+  },
+  {
+   "order_no": "26020667",
+   "time": "2026-10-08 02:59:39 PM (Thu)",
+   "trading_date": "2026-10-08",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 14.0,
+   "fees": -0.15,
+   "refunds": 0.0,
+   "net": 13.85
+  },
+  {
+   "order_no": "26039011",
+   "time": "2026-10-09 12:56:41 PM (Fri)",
+   "trading_date": "2026-10-09",
+   "wallet": "Google pay",
+   "card": "Master",
+   "total": 19.49,
+   "fees": -0.21,
+   "refunds": 0.0,
+   "net": 19.28
+  },
+  {
+   "order_no": "26045057",
+   "time": "2026-10-09 06:02:08 PM (Fri)",
+   "trading_date": "2026-10-09",
+   "wallet": "Apple pay",
+   "card": "Visa",
+   "total": 48.95,
+   "fees": -0.54,
+   "refunds": 0.0,
+   "net": 48.41
+  },
+  {
+   "order_no": "26045682",
+   "time": "2026-10-09 06:16:56 PM (Fri)",
+   "trading_date": "2026-10-09",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 85.9,
+   "fees": -0.95,
+   "refunds": 0.0,
+   "net": 84.95
+  },
+  {
+   "order_no": "26085384",
+   "time": "2026-10-11 11:07:29 AM (Sun)",
+   "trading_date": "2026-10-11",
+   "wallet": "Link",
+   "card": "Visa",
+   "total": 48.5,
+   "fees": -0.54,
+   "refunds": 0.0,
+   "net": 47.96
+  },
+  {
+   "order_no": "26094129",
+   "time": "2026-10-11 06:28:16 PM (Sun)",
+   "trading_date": "2026-10-11",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 43.5,
+   "fees": -0.48,
+   "refunds": 0.0,
+   "net": 43.02
+  },
+  {
+   "order_no": "26094284",
+   "time": "2026-10-11 06:37:44 PM (Sun)",
+   "trading_date": "2026-10-11",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 24.0,
+   "fees": -0.26,
+   "refunds": 0.0,
+   "net": 23.74
+  },
+  {
+   "order_no": "26106226",
+   "time": "2026-10-12 02:02:40 PM (Mon)",
+   "trading_date": "2026-10-12",
+   "wallet": "Google pay",
+   "card": "Master",
+   "total": 14.1,
+   "fees": -0.15,
+   "refunds": 0.0,
+   "net": 13.95
+  },
+  {
+   "order_no": "26108131",
+   "time": "2026-10-12 06:33:13 PM (Mon)",
+   "trading_date": "2026-10-12",
+   "wallet": "Link",
+   "card": "Master",
+   "total": 43.5,
+   "fees": -0.48,
+   "refunds": 0.0,
+   "net": 43.02
+  },
+  {
+   "order_no": "26121280",
+   "time": "2026-10-13 05:29:24 PM (Tue)",
+   "trading_date": "2026-10-13",
+   "wallet": "Link",
+   "card": "Master",
+   "total": 22.38,
+   "fees": -0.24,
+   "refunds": 0.0,
+   "net": 22.14
+  },
+  {
+   "order_no": "26122156",
+   "time": "2026-10-13 06:33:33 PM (Tue)",
+   "trading_date": "2026-10-13",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 41.8,
+   "fees": -0.46,
+   "refunds": 0.0,
+   "net": 41.34
+  },
+  {
+   "order_no": "26194539",
+   "time": "2026-10-17 11:52:29 AM (Sat)",
+   "trading_date": "2026-10-17",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 50.6,
+   "fees": -0.56,
+   "refunds": 0.0,
+   "net": 50.04
+  },
+  {
+   "order_no": "26204382",
+   "time": "2026-10-17 06:26:19 PM (Sat)",
+   "trading_date": "2026-10-17",
+   "wallet": "Card",
+   "card": "Visa",
+   "total": 50.97,
+   "fees": -0.56,
+   "refunds": 0.0,
+   "net": 50.41
+  },
+  {
+   "order_no": "26226355",
+   "time": "2026-10-18 05:56:53 PM (Sun)",
+   "trading_date": "2026-10-18",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 47.9,
+   "fees": -0.53,
+   "refunds": 0.0,
+   "net": 47.37
+  },
+  {
+   "order_no": "26226489",
+   "time": "2026-10-18 06:03:22 PM (Sun)",
+   "trading_date": "2026-10-18",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 41.08,
+   "fees": -0.45,
+   "refunds": 0.0,
+   "net": 40.63
+  },
+  {
+   "order_no": "26239543",
+   "time": "2026-10-19 02:17:05 PM (Mon)",
+   "trading_date": "2026-10-19",
+   "wallet": "Google pay",
+   "card": "Master",
+   "total": 14.6,
+   "fees": -0.17,
+   "refunds": 0.0,
+   "net": 14.43
+  },
+  {
+   "order_no": "26241126",
+   "time": "2026-10-19 06:02:56 PM (Mon)",
+   "trading_date": "2026-10-19",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 69.79,
+   "fees": -0.77,
+   "refunds": 0.0,
+   "net": 69.02
+  },
+  {
+   "order_no": "26241168",
+   "time": "2026-10-19 06:06:27 PM (Mon)",
+   "trading_date": "2026-10-19",
+   "wallet": "Apple pay",
+   "card": "Visa",
+   "total": 10.5,
+   "fees": -0.12,
+   "refunds": 0.0,
+   "net": 10.38
+  },
+  {
+   "order_no": "26256171",
+   "time": "2026-10-20 06:08:14 PM (Tue)",
+   "trading_date": "2026-10-20",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 24.2,
+   "fees": -0.26,
+   "refunds": 0.0,
+   "net": 23.94
+  },
+  {
+   "order_no": "26257037",
+   "time": "2026-10-20 07:07:25 PM (Tue)",
+   "trading_date": "2026-10-20",
+   "wallet": "Card",
+   "card": "Master",
+   "total": 34.4,
+   "fees": -0.37,
+   "refunds": 0.0,
+   "net": 34.03
+  },
+  {
+   "order_no": "26292047",
+   "time": "2026-10-22 07:13:01 PM (Thu)",
+   "trading_date": "2026-10-22",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 8.5,
+   "fees": -0.1,
+   "refunds": 0.0,
+   "net": 8.4
+  },
+  {
+   "order_no": "26305558",
+   "time": "2026-10-23 12:22:06 PM (Fri)",
+   "trading_date": "2026-10-23",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 35.29,
+   "fees": -0.39,
+   "refunds": 0.0,
+   "net": 34.9
+  },
+  {
+   "order_no": "26312809",
+   "time": "2026-10-23 06:11:47 PM (Fri)",
+   "trading_date": "2026-10-23",
+   "wallet": "Link",
+   "card": "Amex",
+   "total": 71.4,
+   "fees": -0.78,
+   "refunds": 0.0,
+   "net": 70.62
+  },
+  {
+   "order_no": "26325169",
+   "time": "2026-10-24 09:55:44 AM (Sat)",
+   "trading_date": "2026-10-24",
+   "wallet": "Link",
+   "card": "Visa",
+   "total": 77.4,
+   "fees": -0.85,
+   "refunds": -77.4,
+   "net": -0.85
+  },
+  {
+   "order_no": "26337900",
+   "time": "2026-10-24 05:52:26 PM (Sat)",
+   "trading_date": "2026-10-24",
+   "wallet": "Google pay",
+   "card": "Master",
+   "total": 69.79,
+   "fees": -0.77,
+   "refunds": 0.0,
+   "net": 69.02
+  },
+  {
+   "order_no": "26338576",
+   "time": "2026-10-24 06:11:54 PM (Sat)",
+   "trading_date": "2026-10-24",
+   "wallet": "Google pay",
+   "card": "Visa",
+   "total": 23.29,
+   "fees": -0.25,
+   "refunds": 0.0,
+   "net": 23.04
+  },
+  {
+   "order_no": "26359732",
+   "time": "2026-10-25 05:25:55 PM (Sun)",
+   "trading_date": "2026-10-25",
+   "wallet": "Card",
+   "card": "Master",
+   "total": 26.39,
+   "fees": -0.29,
+   "refunds": 0.0,
+   "net": 26.1
+  },
+  {
+   "order_no": "26359846",
+   "time": "2026-10-25 05:31:16 PM (Sun)",
+   "trading_date": "2026-10-25",
+   "wallet": "Card",
+   "card": "Master",
+   "total": 14.7,
+   "fees": -0.17,
+   "refunds": 0.0,
+   "net": 14.53
+  },
+  {
+   "order_no": "26360045",
+   "time": "2026-10-25 05:42:46 PM (Sun)",
+   "trading_date": "2026-10-25",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 43.9,
+   "fees": -0.48,
+   "refunds": 0.0,
+   "net": 43.42
+  },
+  {
+   "order_no": "26361255",
+   "time": "2026-10-25 06:54:44 PM (Sun)",
+   "trading_date": "2026-10-25",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 9.6,
+   "fees": -0.11,
+   "refunds": -9.6,
+   "net": -0.11
+  },
+  {
+   "order_no": "26375132",
+   "time": "2026-10-26 06:02:58 PM (Mon)",
+   "trading_date": "2026-10-26",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 18.7,
+   "fees": -0.21,
+   "refunds": 0.0,
+   "net": 18.49
+  },
+  {
+   "order_no": "26375345",
+   "time": "2026-10-26 06:23:10 PM (Mon)",
+   "trading_date": "2026-10-26",
+   "wallet": "Card",
+   "card": "Master",
+   "total": 32.39,
+   "fees": -0.35,
+   "refunds": 0.0,
+   "net": 32.04
+  },
+  {
+   "order_no": "26406987",
+   "time": "2026-10-28 06:17:11 PM (Wed)",
+   "trading_date": "2026-10-28",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 47.8,
+   "fees": -0.53,
+   "refunds": 0.0,
+   "net": 47.27
+  },
+  {
+   "order_no": "26447568",
+   "time": "2026-10-30 06:22:32 PM (Fri)",
+   "trading_date": "2026-10-30",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 35.0,
+   "fees": -0.39,
+   "refunds": 0.0,
+   "net": 34.61
+  },
+  {
+   "order_no": "26462710",
+   "time": "2026-10-31 11:09:10 AM (Sat)",
+   "trading_date": "2026-10-31",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 36.5,
+   "fees": -0.41,
+   "refunds": 0.0,
+   "net": 36.09
+  },
+  {
+   "order_no": "26489417",
+   "time": "2026-11-01 02:01:30 PM (Sun)",
+   "trading_date": "2026-11-01",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 21.5,
+   "fees": -0.24,
+   "refunds": 0.0,
+   "net": 21.26
+  },
+  {
+   "order_no": "26491589",
+   "time": "2026-11-01 04:39:32 PM (Sun)",
+   "trading_date": "2026-11-01",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 50.5,
+   "fees": -0.56,
+   "refunds": 0.0,
+   "net": 49.94
+  },
+  {
+   "order_no": "26493576",
+   "time": "2026-11-01 06:16:12 PM (Sun)",
+   "trading_date": "2026-11-01",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 46.98,
+   "fees": -0.52,
+   "refunds": 0.0,
+   "net": 46.46
+  },
+  {
+   "order_no": "26503992",
+   "time": "2026-11-02 10:59:51 AM (Mon)",
+   "trading_date": "2026-11-02",
+   "wallet": "Google pay",
+   "card": "Visa",
+   "total": 19.0,
+   "fees": -0.21,
+   "refunds": 0.0,
+   "net": 18.79
+  },
+  {
+   "order_no": "26518378",
+   "time": "2026-11-03 10:37:30 AM (Tue)",
+   "trading_date": "2026-11-03",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 17.0,
+   "fees": -0.19,
+   "refunds": 0.0,
+   "net": 16.81
+  },
+  {
+   "order_no": "26523224",
+   "time": "2026-11-03 04:59:49 PM (Tue)",
+   "trading_date": "2026-11-03",
+   "wallet": "Google pay",
+   "card": "Master",
+   "total": 87.5,
+   "fees": -0.97,
+   "refunds": 0.0,
+   "net": 86.53
+  },
+  {
+   "order_no": "26537581",
+   "time": "2026-11-04 01:40:40 PM (Wed)",
+   "trading_date": "2026-11-04",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 11.5,
+   "fees": -0.13,
+   "refunds": 0.0,
+   "net": 11.37
+  },
+  {
+   "order_no": "26554545",
+   "time": "2026-11-05 12:35:14 PM (Thu)",
+   "trading_date": "2026-11-05",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 23.5,
+   "fees": -0.26,
+   "refunds": 0.0,
+   "net": 23.24
+  },
+  {
+   "order_no": "26557736",
+   "time": "2026-11-05 05:19:37 PM (Thu)",
+   "trading_date": "2026-11-05",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 113.0,
+   "fees": -1.24,
+   "refunds": 0.0,
+   "net": 111.76
+  },
+  {
+   "order_no": "26582782",
+   "time": "2026-11-06 06:52:41 PM (Fri)",
+   "trading_date": "2026-11-06",
+   "wallet": "Card",
+   "card": "Master",
+   "total": 91.0,
+   "fees": -1.0,
+   "refunds": 0.0,
+   "net": 90.0
+  },
+  {
+   "order_no": "26599643",
+   "time": "2026-11-07 12:19:49 PM (Sat)",
+   "trading_date": "2026-11-07",
+   "wallet": "Link",
+   "card": "Visa",
+   "total": 70.5,
+   "fees": -0.78,
+   "refunds": 0.0,
+   "net": 69.72
+  },
+  {
+   "order_no": "26602482",
+   "time": "2026-11-07 02:22:16 PM (Sat)",
+   "trading_date": "2026-11-07",
+   "wallet": "Google pay",
+   "card": "Visa",
+   "total": 49.0,
+   "fees": -0.54,
+   "refunds": 0.0,
+   "net": 48.46
+  },
+  {
+   "order_no": "26607475",
+   "time": "2026-11-07 06:00:41 PM (Sat)",
+   "trading_date": "2026-11-07",
+   "wallet": "Google pay",
+   "card": "Master",
+   "total": 124.48,
+   "fees": -1.36,
+   "refunds": 0.0,
+   "net": 123.12
+  },
+  {
+   "order_no": "26621312",
+   "time": "2026-11-08 11:00:38 AM (Sun)",
+   "trading_date": "2026-11-08",
+   "wallet": "Apple pay",
+   "card": "Master",
+   "total": 27.0,
+   "fees": -0.3,
+   "refunds": 0.0,
+   "net": 26.7
+  },
+  {
+   "order_no": "26622360",
+   "time": "2026-11-08 11:32:26 AM (Sun)",
+   "trading_date": "2026-11-08",
+   "wallet": "Apple pay",
+   "card": "Visa",
+   "total": 36.0,
+   "fees": -0.4,
+   "refunds": 0.0,
+   "net": 35.6
+  },
+  {
+   "order_no": "26630166",
+   "time": "2026-11-08 06:19:28 PM (Sun)",
+   "trading_date": "2026-11-08",
+   "wallet": "Card",
+   "card": "Visa",
+   "total": 44.5,
+   "fees": -0.5,
+   "refunds": 0.0,
+   "net": 44.0
+  },
+  {
+   "order_no": "26630462",
+   "time": "2026-11-08 06:36:35 PM (Sun)",
+   "trading_date": "2026-11-08",
+   "wallet": "Card",
+   "card": "Visa",
+   "total": 53.0,
+   "fees": -0.58,
+   "refunds": 0.0,
+   "net": 52.42
+  },
+  {
+   "order_no": "26640464",
+   "time": "2026-11-09 10:58:05 AM (Mon)",
+   "trading_date": "2026-11-09",
+   "wallet": "Link",
+   "card": "Visa",
+   "total": 27.5,
+   "fees": 0.0,
+   "refunds": 0.0,
+   "net": 27.5
+  },
+  {
+   "order_no": "26672951",
+   "time": "2026-11-11 11:47:23 AM (Wed)",
+   "trading_date": "2026-11-11",
+   "wallet": "Link",
+   "card": "Visa",
+   "total": 16.0,
+   "fees": 0.0,
+   "refunds": 0.0,
+   "net": 16.0
+  }
+ ]
+}

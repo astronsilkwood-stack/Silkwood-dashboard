@@ -19,6 +19,7 @@ FIXTURES = (
     ("fuel-dips.json", "fuel-dips"),
     ("insights.json", "insights"),
     ("invoices.json", "invoices"),
+    ("online-orders.json", "online-orders"),
 )
 SAMPLE = (
     ("Alex", (

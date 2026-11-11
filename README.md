@@ -68,7 +68,7 @@ Content-Type: application/json
 {"dataset": "<name>", "data": { ... }}
 ```
 
-`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept.
+`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept.
 
 No new environment variable is required for these pages.
 
@@ -160,6 +160,23 @@ Authorization: Bearer <PORTAL_INGEST_KEY>
 
 The JSON has `timezone`, `baselineRule`, and `products[]` (`code`, `name`, `group`, `department`, `barcode`, `baselineDate`, `baselineAt`, `openingQty`, `soldSince`, `receivedSince`, `onHand`, `daysCover`, `lastUpdated`, `note`, `manual`). `manual` is true when the owner added the product on the portal rather than from the till catalog. If they leave the code blank, the portal assigns a stable id such as `M-0001`. Post `supplier-invoice` movements against that code. Editing the code later keeps the counts and movements. Stop tracking hides the product from this list and leaves the history in place. Send movements for tracked codes from the day after `baselineDate`.
 
+**online-orders** — Bopple pickup orders paid online (Stripe via Bopple). These are extra sales. They are not rung through the till. The portal adds `daily[].total` (gross) on top of till sales for day, month-to-date, and overview totals, and still shows Till, Online (Bopple), and Total separately. Shop GP is till GP only; online orders have no cost. A sample is `tools/fixtures/online-orders.json`.
+
+```json
+{"dataset":"online-orders","data":{
+  "source":"Bopple Payments by Order",
+  "asOf":"2026-11-11",
+  "daily":[
+    {"date":"2026-11-11","orders":1,"total":16.0,"fees":0.0,"refunds":0.0,"net":16.0}
+  ],
+  "orders":[
+    {"order_no":"26672951","time":"2026-11-11 11:47:23 AM (Wed)","trading_date":"2026-11-11","wallet":"Link","card":"Visa","total":16.0,"fees":0.0,"refunds":0.0,"net":16.0}
+  ]
+}}
+```
+
+`asOf` is optional. If it is omitted, the latest `daily[].date` or `orders[].trading_date` is used. `source` is optional. `daily` rows are upserted by `date`. `orders` are upserted by `order_no`. Rows for other dates stay. On each daily row, `orders` is a whole number of orders that day. Money fields are numbers. `fees` and `refunds` keep Bopple’s sign (a fee is usually negative). Net payout is gross plus fees plus refunds. `card` is the brand (Visa, Master, Amex), not a card number. A card number, or a field named like `card_number`, `cvv`, or a bank account, is rejected and nothing from that upload is stored. `wallet` is a short name such as Card, Apple pay, Link, or Google pay. `time` is the Bopple timestamp text. If `daily` is omitted and `orders` is present, the portal builds the daily totals from the orders. At least one daily row or one order is required.
+
 The kitchen page date presets are Today, Yesterday, This week, Last 7 days, This month and Last month, plus From and To. Those dates apply to the kitchen totals, the group list and a single item. The nightly kitchen file is one total per day (`days[]` is `[date, kitchenSalesInc, coveredGp, coveredEx, kitchenSalesEx, shopSalesInc, packedItems]`). There is no hour field in that pack, so the item view says so. If a future day row includes an 8th `hours` list of `[hour, qty]`, that table is shown.
 
 ### Help chat
@@ -184,6 +201,8 @@ The row is stored. If `PORTAL_CHAT_WEBHOOK_URL` is set, the portal POSTs this pa
 ```
 
 The response `status` is `offline` when the URL is unset (the panel says “Assistant offline — your message is saved”), `sent` when the webhook accepted it, or `saved` when the webhook could not be reached. `GET /api/portal/chat` returns `{assistant, messages:[{id, message, page, context, reply, createdAt, repliedAt}]}`. `assistant` is `offline` or `online`. It does not include the webhook address. The panel polls that every 5 seconds while it is open and shows “Thinking…” until a reply when a webhook is configured. `POST /api/portal/chat/clear` wipes the thread.
+
+The message context sent to the assistant includes the owner’s page query plus server figures for the month through the latest till day: `tillSales`, `onlineOrders` (`not loaded`, or order count, gross, fees, and net), `totalSales` (till plus online gross), and `shopGp` (till GP). Online orders are omitted from the total when that dataset has not been stored.
 
 The assistant answers with the ingest key, not the owner session:
 

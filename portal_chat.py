@@ -81,6 +81,8 @@ def add_message(c, user, message, page, context):
         raise ValueError("Enter a message of 2000 characters or less.")
     portal.reject_sensitive(text, "chat")
     ctx = _clean_context(context)
+    for key, value in portal.chat_figures(c).items():
+        ctx[key] = str(value)[:120]
     portal.reject_sensitive(ctx, "chat")
     created = portal._srv().now().isoformat()
     row = portal.one(c.execute(
