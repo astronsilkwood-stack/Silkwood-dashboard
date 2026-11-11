@@ -1,0 +1,41 @@
+{
+  "timezone": "Australia/Brisbane",
+  "source": "shift-balance.csv",
+  "mediaNames": ["AMEX", "Account Charge", "Account Paid", "CASH", "Cash Drop", "Drive Off", "EFTPOS", "IOU"],
+  "mediaColumns": ["mediaIndex", "expected", "counted", "difference", "count"],
+  "otherTenders": ["AMEX", "Account Charge", "Account Paid"],
+  "differenceBasis": "Expected minus counted. Drive Off and IOU difference means still owed, not turnover.",
+  "missingDates": [],
+  "days": [
+    {
+      "date": "2026-11-10",
+      "txnNo": "362448",
+      "dayId": "1032",
+      "clerk": "1",
+      "windowFrom": "2026-11-09 19:10:24",
+      "windowTo": "2026-11-10 19:12:01",
+      "committed": "2026-11-10 19:36:18",
+      "media": [
+        [3, 126.95, 0.0, 126.95, 93],
+        [6, 4200.0, 4200.0, 0.0, 180],
+        [5, 40.0, 0.0, 40.0, 1],
+        [7, 15.0, 0.0, 15.0, 1],
+        [4, 200.0, 200.0, 0.0, 2],
+        [0, 36.5, 36.5, 0.0, 2]
+      ]
+    },
+    {
+      "date": "2026-11-09",
+      "txnNo": "362100",
+      "dayId": "1031",
+      "clerk": "2",
+      "windowFrom": "2026-11-08 19:05:00",
+      "windowTo": "2026-11-09 19:08:00",
+      "committed": "2026-11-09 19:20:00",
+      "media": [
+        [3, 200.0, 180.0, 20.0, 70],
+        [6, 3500.0, 3490.0, 10.0, 150]
+      ]
+    }
+  ]
+}

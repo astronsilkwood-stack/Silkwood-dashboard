@@ -10,7 +10,10 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-DATASETS = ("sales", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices")
+DATASETS = (
+    "sales", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices",
+    "product-search", "retail-pricing", "till-price-changes", "shifts", "last-year", "cost-overrides",
+)
 INGEST_MAX = 8_000_000
 FORM_MAX = 100_000
 SESSION_COOKIE = "silkwood_portal"
@@ -61,12 +64,21 @@ PART_HOLIDAYS = {
 }
 NAV = [
     ("/portal", "Overview", "overview"),
+    ("/portal/products", "Products", "products"),
+    ("/portal/pricing", "Pricing", "pricing"),
+    ("/portal/till-prices", "Till price changes", "till"),
+    ("/portal/departments", "Departments & products", "departments"),
+    ("/portal/kitchen", "Kitchen", "kitchen"),
     ("/portal/purchases", "Purchases", "purchases"),
-    ("/portal/fuel", "Fuel commission", "fuel"),
     ("/portal/dips", "Pumps & dips", "dips"),
+    ("/portal/shifts", "Shift balancing", "shifts"),
+    ("/portal/commission", "Commission", "commission"),
+    ("/portal/fuel", "Fuel commission", "fuel"),
     ("/portal/invoices", "Invoices", "invoices"),
     ("/portal/hours", "Staff hours", "hours"),
+    ("/portal/notes", "Data notes", "notes"),
 ]
+REDIRECT_OK = {href for href, _label, _key in NAV} | {"/portal/login", "/portal/password"}
 PAID_STATUS = {"paid", "p", "void", "voided", "deleted", "draft", "cancelled", "canceled", "absent", "d"}
 _dummy_hash = None
 _ingest_hits = {}
@@ -112,7 +124,24 @@ CREATE INDEX IF NOT EXISTS ix_portal_roster_date ON portal_roster(work_date);
 CREATE TABLE IF NOT EXISTS portal_roster_audit(
   id INTEGER PRIMARY KEY, at TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL,
   person_id INTEGER, shift_id INTEGER, before_json TEXT, after_json TEXT);
+CREATE TABLE IF NOT EXISTS portal_blobs(
+  dataset TEXT PRIMARY KEY, as_of TEXT NOT NULL, payload TEXT NOT NULL, received_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS portal_cost_overrides(
+  code TEXT NOT NULL, effective_from TEXT NOT NULL, cost_ex_cents INTEGER NOT NULL,
+  source TEXT NOT NULL, as_of TEXT NOT NULL, PRIMARY KEY(code, effective_from));
+CREATE TABLE IF NOT EXISTS portal_shift_days(
+  date TEXT PRIMARY KEY, payload TEXT NOT NULL, source_as_of TEXT);
+CREATE TABLE IF NOT EXISTS portal_spend(
+  spend_key TEXT PRIMARY KEY, supplier TEXT NOT NULL, spend_date TEXT NOT NULL,
+  ex_gst REAL, inc_gst REAL, bucket TEXT NOT NULL, source_as_of TEXT);
+CREATE TABLE IF NOT EXISTS portal_shop_days(
+  date TEXT PRIMARY KEY, sales_inc REAL NOT NULL, source_as_of TEXT);
 """
+
+
+def parity():
+    import portal_parity
+    return portal_parity
 
 
 def wants(path):
@@ -725,6 +754,7 @@ def apply_sales(c, data):
         }
     meta_set(c, "sales", meta)
     save_snapshot(c, "sales", as_of, data)
+    parity().store_sales_extras(c, data)
     maybe_generate_insights(c, as_of)
     return {"asOf": as_of, "days": len(days), "commissionDays": comm_n}
 
@@ -771,6 +801,7 @@ def apply_purchases(c, data):
     meta.update({"asOf": as_of, "suppliers": len(suppliers)})
     meta_set(c, "purchases", meta)
     save_snapshot(c, "purchases", as_of, data)
+    parity().store_purchase_series(c, data, as_of)
     return {"asOf": as_of, "bills": n}
 
 
@@ -819,6 +850,7 @@ def apply_fuel_commission(c, data):
         "latestReported": data.get("latestReported"),
         "mtd": {k: mtd.get(k) for k in ("month", "through", "days", "amount", "target", "daysInMonth", "projectedAtCurrentAvg", "aheadBy", "status", "remaining", "remainingDays", "neededPerDay")},
         "tomorrow": tomorrow,
+        "missingCosts": data.get("missingCosts") if isinstance(data.get("missingCosts"), list) else [],
         "basis": {k: basis.get(k) for k in ("margin", "commission", "cost", "board", "targets") if isinstance(basis.get(k), str)},
     })
     meta_set(c, "fuel", meta)
@@ -877,7 +909,14 @@ def apply_fuel_dips(c, data):
         )
         dates.append(d)
     as_of = max(dates)
-    meta_set(c, "dips", {"asOf": as_of, "days": len(dates)})
+    meta_set(c, "dips", {
+        "asOf": as_of,
+        "days": len(dates),
+        "missingDates": data.get("missingDates") if isinstance(data.get("missingDates"), list) else [],
+        "varianceToleranceLitres": data.get("varianceToleranceLitres") if isinstance(data.get("varianceToleranceLitres"), (int, float)) and not isinstance(data.get("varianceToleranceLitres"), bool) else None,
+        "deliveryBasis": str(data.get("deliveryBasis") or "")[:300],
+        "olderMonths": data.get("olderMonths") if isinstance(data.get("olderMonths"), list) else [],
+    })
     save_snapshot(c, "fuel-dips", as_of, data)
     return {"asOf": as_of, "days": len(dates)}
 
@@ -958,6 +997,12 @@ APPLIERS = {
     "fuel-dips": apply_fuel_dips,
     "insights": apply_insights,
     "invoices": apply_invoices,
+    "product-search": lambda c, data: parity().apply_product_search(c, data),
+    "retail-pricing": lambda c, data: parity().apply_retail_pricing(c, data),
+    "till-price-changes": lambda c, data: parity().apply_till_prices(c, data),
+    "shifts": lambda c, data: parity().apply_shifts(c, data),
+    "last-year": lambda c, data: parity().apply_last_year(c, data),
+    "cost-overrides": lambda c, data: parity().apply_cost_overrides(c, data),
 }
 
 
@@ -1067,6 +1112,14 @@ def target_for(latest, sales_meta, fuel_meta):
     if (y, m) == ("2026", "10"):
         return 9000.0
     return None
+
+
+def anchor_day(c):
+    """Period chips end on the latest loaded sales day, not today. Today's sales wait for 9:30pm."""
+    through = data_through(c)
+    if through:
+        return date.fromisoformat(through)
+    return today()
 
 
 def data_through(c):
@@ -1380,20 +1433,23 @@ def daily_table(days):
         body.append(
             "<tr><td>" + h(fmt_date(row["date"])) + "</td><td class=\"num\">" + money(row["total"]) +
             "</td><td class=\"num\">" + money(row["fuel"]) + "</td><td class=\"num\">" + money(row["shop"]) +
-            "</td><td class=\"num\">" + money(row["gp"]) + "</td><td class=\"num\">" + pct_ratio(row["gp_pct"]) + "</td></tr>"
+            "</td><td class=\"num\">" + money(row["gp"]) + "</td><td class=\"num\">" + pct_ratio(row["gp_pct"]) +
+            "</td><td class=\"num\">" + pct_ratio(row.get("coverage")) + "</td><td class=\"num\">" +
+            h(row.get("missing") if row.get("missing") is not None else "—") + "</td></tr>"
         )
-    return """<div class="tw"><table><thead><tr><th>Date</th><th>Total</th><th>Fuel</th><th>Shop</th><th>Shop GP</th><th>GP%</th></tr></thead><tbody>""" + "".join(body) + "</tbody></table></div>"
+    return """<div class="tw"><table><thead><tr><th>Date</th><th>Total</th><th>Fuel</th><th>Shop</th><th>Shop GP</th><th>GP%</th><th>Coverage</th><th>Missing cost</th></tr></thead><tbody>""" + "".join(body) + "</tbody></table></div>"
 
 
 def page_overview(c, query):
     through = data_through(c)
+    anchor = anchor_day(c)
     try:
-        active, start, end = period_bounds(query.get("period"), query.get("from"), query.get("to"), today())
+        active, start, end = period_bounds(query.get("period"), query.get("from"), query.get("to"), anchor)
         error = ""
     except ValueError as ex:
-        active, start, end = period_bounds("month", None, None, today())
+        active, start, end = period_bounds("month", None, None, anchor)
         error = f'<p class="alert">{h(str(ex))}</p>'
-    days = sales_between(c, start, end)
+    days, deltas = parity().adjust_sales_days(c, sales_between(c, start, end))
     total = sum(r["total"] or 0 for r in days)
     fuel = sum(r["fuel"] or 0 for r in days)
     shop = sum(r["shop"] or 0 for r in days)
@@ -1401,34 +1457,68 @@ def page_overview(c, query):
     covered = sum(r["covered_ex"] or 0 for r in days)
     gp_pct = (gp / covered) if covered else None
     share = (fuel / total * 100) if total else 0
-    all_sales = rows(c.execute("SELECT * FROM portal_sales_days"))
+    shop_avg = (shop / len(days)) if days else None
+    period = parity().matching_period(c, active, start, end)
+    summary = (period or {}).get("summary") or {}
+    exact = period and period.get("fromDate") == start.isoformat() and period.get("toDate") == end.isoformat()
+    covered_changed = any(d.get("covered_delta") for d in deltas)
+    if exact and summary and not covered_changed:
+        coverage = summary.get("coverage")
+        missing = summary.get("missing")
+        missing_label = "products missing cost"
+    else:
+        weighted = shop_ex = 0.0
+        missing = 0
+        for row in days:
+            if row.get("_shop_ex"):
+                shop_ex += row["_shop_ex"]
+                weighted += row.get("covered_ex") or 0
+            if row.get("missing") is not None:
+                missing += row["missing"]
+        coverage = (weighted / shop_ex) if shop_ex else None
+        missing_label = "sum of each day's missing-cost count"
+    all_sales, _all_deltas = parity().adjust_sales_days(c, rows(c.execute("SELECT * FROM portal_sales_days")))
     all_comm = rows(c.execute("SELECT * FROM portal_commission_days"))
     latest = through or (max((r["date"] for r in all_sales), default=None))
     proj = project_month(all_sales, all_comm, target_for(latest, meta_get(c, "sales"), meta_get(c, "fuel")), latest) if latest else None
     october = (meta_get(c, "sales").get("commission") or {}).get("october")
     caption = f"{len(days)} completed sales day{'s' if len(days) != 1 else ''} in {fmt_date(start.isoformat())} – {fmt_date(end.isoformat())}"
-    return f"""<div class="ph"><h1>Sales overview</h1>{through_line(through)}<p>{h(caption)}. Figures are the loaded trading days, with no zero filled in for a missing day.</p></div>
+    callout = ""
+    if missing:
+        callout = (
+            f'<p class="callout" id="provisional">Shop GP is provisional. Cost coverage is {pct_ratio(coverage)}. '
+            f'{h(missing)} {missing_label}. This is 2026 only and is not a warning about 2025.</p>'
+        )
+    return f"""<div class="ph"><h1>Sales overview</h1>{through_line(through)}<p>{h(caption)}. Figures are the loaded trading days, with no zero filled in for a missing day. Australia/Brisbane. Today’s sales wait for the 9:30pm refresh.</p></div>
 {error}{insights_box(latest_insight(c))}{period_controls('/portal', active, start, end)}
+{parity().override_note(deltas)}{callout}
 <section class="grid g4">
 <div class="card stat"><div class="lbl">Total sales</div><b>{money(total)}</b><span>inc GST</span></div>
 <div class="card stat"><div class="lbl">Fuel</div><b>{money(fuel)}</b><span>{pct_points(share) if total else '—'}</span></div>
 <div class="card stat"><div class="lbl">Shop</div><b>{money(shop)}</b><span>{pct_points(100 - share) if total else '—'}</span></div>
-<div class="card stat"><div class="lbl">Shop GP</div><b>{money(gp)}</b><span>{pct_ratio(gp_pct)} of covered ex-GST sales</span></div>
+<div class="card stat" id="shop-gp"><div class="lbl">Shop GP</div><b>{money(gp)}</b><span>{pct_ratio(gp_pct)} of covered ex-GST sales</span></div>
+</section>
+<section class="grid g3">
+<div class="card stat" id="coverage"><div class="lbl">Cost coverage</div><b>{pct_ratio(coverage)}</b><span>covered ex-GST shop sales</span></div>
+<div class="card stat" id="missing-cost"><div class="lbl">Products missing cost</div><b>{h(missing if missing is not None else '—')}</b><span>{h(missing_label)}</span></div>
+<div class="card stat" id="shop-average"><div class="lbl">Daily shop average</div><b>{money(shop_avg)}</b><span>shop sales inc GST per loaded day</span></div>
 </section>
 <section class="card"><h2>Fuel vs shop</h2>
 <div class="split"><i class="fuel {bar_class(share)}"></i><i class="shop {bar_class(100 - share if total else 0)}"></i></div>
 <p class="help">Fuel and shop are the loaded daysheet split. Shop GP excludes sales with no usable cost. It is not operating profit.</p></section>
 {projection_card(proj, october)}
+{parity().last_year_with_litres(c, all_sales, all_comm)}
 <section class="card"><h2>Daily sales</h2>{daily_table(days)}</section>"""
 
 
 def page_purchases(c, query):
     through = data_through(c)
+    anchor = anchor_day(c)
     try:
-        active, start, end = period_bounds(query.get("period"), query.get("from"), query.get("to"), today())
+        active, start, end = period_bounds(query.get("period"), query.get("from"), query.get("to"), anchor)
         error = ""
     except ValueError as ex:
-        active, start, end = period_bounds("month", None, None, today())
+        active, start, end = period_bounds("month", None, None, anchor)
         error = f'<p class="alert">{h(str(ex))}</p>'
     bills = rows(c.execute(
         "SELECT * FROM portal_bills WHERE bill_date>=? AND bill_date<=? ORDER BY inc_gst DESC",
@@ -1459,16 +1549,18 @@ def page_purchases(c, query):
 <p>Bills dated in the selected range. This is not a cost-of-goods figure, and fuel direct debits are not in this table.</p></div>
 {error}{period_controls('/portal/purchases', active, start, end)}
 <section class="card"><h2>{money(total_inc)} inc GST</h2>
-<p class="help">{len(bills)} bills. Shop sales in the same dates: {money(shop) if shop_rows else '—'}.</p>{table}</section>"""
+<p class="help">{len(bills)} bills. Shop sales in the same dates: {money(shop) if shop_rows else '—'}.</p>{table}</section>
+{parity().purchase_extra(c, active, start, end, bills)}"""
 
 
 def page_fuel(c, query):
     through = data_through(c)
+    anchor = anchor_day(c)
     try:
-        active, start, end = period_bounds(query.get("period"), query.get("from"), query.get("to"), today())
+        active, start, end = period_bounds(query.get("period"), query.get("from"), query.get("to"), anchor)
         error = ""
     except ValueError as ex:
-        active, start, end = period_bounds("month", None, None, today())
+        active, start, end = period_bounds("month", None, None, anchor)
         error = f'<p class="alert">{h(str(ex))}</p>'
     days = commission_between(c, start, end)
     body = []
@@ -1490,23 +1582,13 @@ def page_fuel(c, query):
     fuel_meta = meta_get(c, "fuel")
     basis = fuel_meta.get("basis") or {}
     basis_html = "".join(f"<li>{h(basis[k])}</li>" for k in ("commission", "margin", "targets") if basis.get(k))
-    tomorrow = fuel_meta.get("tomorrow") if isinstance(fuel_meta.get("tomorrow"), dict) else None
-    tomorrow_html = ""
-    if tomorrow:
-        bits = []
-        for g in tomorrow.get("grades") or []:
-            if isinstance(g, dict):
-                bits.append(f"<li>{h(g.get('label') or g.get('grade'))}: cost {money(g.get('cost'))}/L ex GST, board {h(g.get('boardCpl'))} cpl</li>")
-        text = tomorrow.get("suggestions", {}).get("text") if isinstance(tomorrow.get("suggestions"), dict) else ""
-        tomorrow_html = f"""<section class="card"><h2>Next delivered cost · {h(fmt_date(tomorrow['date'])) if tomorrow.get('date') else ''}</h2>
-<ul>{''.join(bits)}</ul>{f'<details><summary>Board suggestion from the shop computer</summary><p class="pre">{h(text)}</p></details>' if text else ''}</section>"""
     return f"""<div class="ph"><h1>Fuel commission</h1>{through_line(through)}
-<p>Commission is ex GST. The portal does not change pump prices.</p></div>
+<p>Commission is ex GST. The portal does not read or set pump prices.</p></div>
 {error}{projection_card(proj, (meta_get(c, 'sales').get('commission') or {}).get('october')) if proj else ''}
 {period_controls('/portal/fuel', active, start, end)}
 <section class="card"><h2>{money(amount)} in this range</h2>{table}
 {f'<ul class="help">{basis_html}</ul>' if basis_html else ''}</section>
-{tomorrow_html}"""
+{parity().fuel_sections(c, days)}"""
 
 
 def page_dips(c, query):
@@ -1549,11 +1631,20 @@ def page_dips(c, query):
         shown_time = dip_time[11:16] if len(dip_time) >= 16 else ""
         basis = payload.get("deliveryBasis") or ""
         body = f"""<form class="period" method="get" action="/portal/dips"><label class="f">Dip date<select name="date">{options}</select></label><button class="btn" type="submit">Show</button></form>
-<p class="help">Read time {h(shown_time)} Australia/Brisbane. {h(basis)}</p>
+<p class="help">Read time {h(shown_time)} Australia/Brisbane. {h(basis)} The portal does not read or set pump prices.</p>
 <section class="grid g3">{''.join(cards)}</section>
 <section class="card"><h2>Pump readings</h2><div class="tw"><table><thead><tr><th>Pump</th><th>Hose</th><th>Grade</th><th>Tank</th><th>Meter</th><th>Moved</th><th>Reset</th></tr></thead><tbody>{''.join(pumps)}</tbody></table></div></section>"""
+    anchor = anchor_day(c)
+    try:
+        active, start, end = period_bounds(query.get("period"), query.get("from"), query.get("to"), anchor)
+        range_error = ""
+    except ValueError as ex:
+        active, start, end = period_bounds("month", None, None, anchor)
+        range_error = f'<p class="alert">{h(str(ex))}</p>'
     return f"""<div class="ph"><h1>Pump readings and tank dips</h1>{through_line(through)}
-<p>Latest archived dip unless another date is chosen. Nothing here is read from the till.</p></div>{body}"""
+<p>Latest archived dip unless another date is chosen, plus the selected range. Dips are archived readings, not live till data. Inferred inflow is not a confirmed delivery. The portal does not read or set pump prices.</p></div>
+{range_error}{period_controls('/portal/dips', active, start, end)}
+{parity().dips_range(c, active, start, end)}{body}"""
 
 
 def page_invoices(c):
@@ -1838,12 +1929,28 @@ def handle_get(handler, parsed):
     try:
         if path == "/portal":
             html = layout("Sales overview", "overview", page_overview(c, query), user, _srv().now())
+        elif path == "/portal/products":
+            html = layout("Products", "products", parity().page_products(c, query), user, _srv().now())
+        elif path == "/portal/pricing":
+            html = layout("Pricing", "pricing", parity().page_pricing(c, query), user, _srv().now())
+        elif path == "/portal/till-prices":
+            html = layout("Till price changes", "till", parity().page_till(c, query), user, _srv().now())
+        elif path == "/portal/departments":
+            html = layout("Departments", "departments", parity().page_departments(c, query), user, _srv().now())
+        elif path == "/portal/kitchen":
+            html = layout("Kitchen", "kitchen", parity().page_kitchen(c, query), user, _srv().now())
         elif path == "/portal/purchases":
             html = layout("Purchases", "purchases", page_purchases(c, query), user, _srv().now())
         elif path == "/portal/fuel":
             html = layout("Fuel commission", "fuel", page_fuel(c, query), user, _srv().now())
         elif path == "/portal/dips":
             html = layout("Pumps and dips", "dips", page_dips(c, query), user, _srv().now())
+        elif path == "/portal/shifts":
+            html = layout("Shift balancing", "shifts", parity().page_shifts(c, query), user, _srv().now())
+        elif path == "/portal/commission":
+            html = layout("Commission", "commission", parity().page_commission(c, query), user, _srv().now())
+        elif path == "/portal/notes":
+            html = layout("Data notes", "notes", parity().page_notes(c), user, _srv().now())
         elif path == "/portal/invoices":
             html = layout("Invoices", "invoices", page_invoices(c), user, _srv().now())
         elif path == "/portal/hours":

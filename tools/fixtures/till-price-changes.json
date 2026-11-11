@@ -1,0 +1,63 @@
+{
+  "asOf": "2026-11-10",
+  "pendingCount": 1,
+  "sellSourceNote": "Current till sell prices are last-known archive averages. Nothing here is written to SwiftPOS.",
+  "costsRun": "run-2026-11-10-1700",
+  "rows": [
+    {
+      "id": "fuelcost:5:2026-11-11",
+      "flagged": "2026-11-11",
+      "plu": "5",
+      "name": "PREMIUM 95",
+      "category": "A Fuel",
+      "supplier": "United (Cairns TGP + freight)",
+      "oldCost": 2.0412,
+      "newCost": 2.046,
+      "currentSell": 2.499,
+      "sellSource": "board price",
+      "sellAsOf": "2026-11-09",
+      "currentGpPct": 0.0994,
+      "suggestedSell": null,
+      "suggestedGpPct": null,
+      "reason": "COST-ONLY fuel change for 2026-11-11: enter till cost $2.0460/L ex GST (was $2.0412 on 2026-11-10; +0.48 cpl). Sell/board price NOT changed by this row.",
+      "gap": 0,
+      "status": "Pending"
+    },
+    {
+      "id": "shop:804040:2026-11-01",
+      "flagged": "2026-11-01",
+      "plu": "804040",
+      "name": "BACON EGG MUFFIN",
+      "category": "Roadhouse",
+      "supplier": "Kitchen",
+      "oldCost": 3.35,
+      "newCost": 3.35,
+      "currentSell": 7.99,
+      "sellSource": "till",
+      "sellAsOf": "2026-11-10",
+      "currentGpPct": 0.58,
+      "suggestedSell": 8.95,
+      "suggestedGpPct": 0.55,
+      "reason": "Sell check only. Cost is not changed by this row.",
+      "gap": 0,
+      "status": "Done"
+    }
+  ],
+  "noCost": {
+    "from": "2026-10-12",
+    "to": "2026-11-10",
+    "windowDays": 30,
+    "excludedSystem": 5,
+    "columns": ["code", "barcode", "name", "department", "sellInc", "units", "salesInc", "lastSale", "lastCostDate", "lastUnitCostEx"],
+    "rows": [
+      ["804036", null, "CHICKEN BREAST WRAP", "Roadhouse", 13.5, 102.0, 1377.0, "2026-11-10", null, null],
+      ["111", null, "ZERO COST BISCUIT", "Grocery", 2.0, 10.0, 20.0, "2026-11-02", null, 0]
+    ]
+  },
+  "newItems": {
+    "columns": ["flagged", "barcode", "plu", "name", "department", "group", "cost", "sell", "gst", "gpPct", "supplier", "reason", "status"],
+    "rows": [
+      ["2026-11-10", "9310052322250", null, "Mainland Shredded Cheese 200g", "Grocery (4600)", "Grocery Other", 6.0, 10.95, "GST-free (basic food)", 0.4521, "Astron chat", "Barcode not in SwiftPOS. Create the PLU in Back Office.", "Pending"]
+    ]
+  }
+}

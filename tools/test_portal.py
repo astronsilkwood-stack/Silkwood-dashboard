@@ -114,7 +114,9 @@ class PortalTest(unittest.TestCase):
         })
 
     def test_logged_out_pages_redirect_and_staff_routes_stay(self):
-        for path in ("/portal", "/portal/invoices", "/portal/hours", "/portal/purchases", "/portal/fuel", "/portal/dips", "/portal/hours.csv"):
+        for path in ("/portal", "/portal/invoices", "/portal/hours", "/portal/purchases", "/portal/fuel", "/portal/dips", "/portal/hours.csv",
+                     "/portal/products", "/portal/pricing", "/portal/till-prices", "/portal/departments", "/portal/kitchen",
+                     "/portal/shifts", "/portal/commission", "/portal/notes"):
             status, hdrs, body, _ = self.request("GET", path, headers={"X-Staff-Pin": "9999"})
             self.assertEqual(status, 302, path)
             self.assertEqual(hdrs.get("Location"), "/portal/login")
@@ -425,6 +427,140 @@ class PortalTest(unittest.TestCase):
         row = c.execute("SELECT source FROM portal_insights WHERE date='2026-07-03'").fetchone()
         c.close()
         self.assertEqual(row["source"], "server")
+
+    def test_sales_dashboard_parity(self):
+        portal._ingest_hits.clear()
+        self.login()
+        for name in ("sales", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices", "product-search",
+                     "retail-pricing", "till-price-changes", "shifts", "last-year", "cost-overrides"):
+            code, _, raw, _ = self.ingest(name, load(name + ".json"))
+            self.assertEqual(code, 200, name + " " + raw.decode()[:400])
+        code, _, raw, _ = self.ingest("last-year", {"year": 2025, "month": 11, "fromDate": "2025-11-01", "toDate": "2025-11-30", "groups": [{"name": "A", "qty": 1, "salesEx": 2, "gp": 1}]})
+        self.assertEqual(code, 400, raw)
+        self.assertIn(b"GP", raw)
+        code, _, raw, _ = self.ingest("cost-overrides", {"asOf": "2026-11-10", "items": [
+            {"code": "1", "costExCents": 1, "effectiveFrom": "2026-11-01", "source": "till"}
+        ]})
+        self.assertEqual(code, 400, raw)
+        code, _, raw, _ = self.ingest("shifts", {"mediaNames": ["4111111111111111"], "days": [{
+            "date": "2026-11-01", "media": [[0, 1, 1, 0, 1]]
+        }]})
+        self.assertEqual(code, 400, raw)
+        # Full table replace, not a patch.
+        c = server.db()
+        n = c.execute("SELECT COUNT(*) AS n FROM portal_cost_overrides").fetchone()["n"]
+        c.close()
+        self.assertEqual(n, 3)
+
+        page = self.authed("GET", "/portal")[2].decode()
+        self.assertIn("Cost coverage", page)
+        self.assertIn("87.2%", page)
+        self.assertIn(">158<", page)
+        self.assertIn("Daily shop average", page)
+        self.assertIn("$6,933.32", page)
+        self.assertIn("$25,018.09", page)
+        self.assertIn("Cost override", page)
+        self.assertIn("November 2026 · month-end projection", page)
+        self.assertIn("9:30pm", page)
+        self.assertIn("Australia/Brisbane", page)
+        section = page.split('id="last-year"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("115,281.95", section)
+        self.assertIn("$193,763.72", section)
+        self.assertIn("Pro-rated", section)
+        self.assertIn("2025", section)
+        self.assertNotIn("GP", section)
+        self.assertNotIn("coverage", section.lower())
+        self.assertNotIn("missing", section.lower())
+        for label in ("Products", "Pricing", "Till price changes", "Departments", "Kitchen", "Shift balancing",
+                      "Commission", "Fuel commission", "Invoices", "Staff hours", "Data notes"):
+            self.assertIn(label, page)
+
+        last = self.authed("GET", "/portal/products?period=lastmonth&product=804040")[2].decode()
+        self.assertNotIn("Cost override", last.split('id="product-804040"', 1)[-1].split("</section>", 1)[0])
+        prod = self.authed("GET", "/portal/products?product=804040")[2].decode()
+        block = prod.split('id="product-804040"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("Cost override", block)
+        self.assertIn("$1,320.64", block)
+        self.assertIn("BACON EGG MUFFIN", prod)
+        fuel_product = self.authed("GET", "/portal/products?product=2")[2].decode()
+        self.assertIn("November 2025", fuel_product)
+        self.assertIn("no cost or GP", fuel_product)
+
+        depts = self.authed("GET", "/portal/departments")[2].decode()
+        self.assertIn("BACON EGG MUFFIN", depts)
+        self.assertIn("Avg fuel", depts)
+        self.assertIn("Under 15%", depts)
+        self.assertIn("Negative GP", depts)
+        neg = self.authed("GET", "/portal/departments?low=negative")[2].decode()
+        self.assertIn("24132", neg)
+
+        kitchen = self.authed("GET", "/portal/kitchen?day=2026-11-10")[2].decode()
+        self.assertIn("SAUSAGE ROLL", kitchen)
+        self.assertIn("Month to date", kitchen)
+        self.assertIn("$10,979.33", kitchen)
+
+        purchases = self.authed("GET", "/portal/purchases")[2].decode()
+        self.assertIn("TILL8122", purchases)
+        self.assertIn("Previous period", purchases)
+        self.assertIn("Weekly purchases", purchases)
+
+        fuel = self.authed("GET", "/portal/fuel")[2].decode()
+        self.assertIn("does not read or set pump prices", fuel)
+        self.assertIn("Margin cpl", fuel)
+        self.assertIn("Missing delivered-cost days: none", fuel)
+        self.assertIn("Est. commission", fuel)
+
+        dips = self.authed("GET", "/portal/dips")[2].decode()
+        self.assertIn("Pump readings", dips)
+        self.assertIn("does not read or set pump prices", dips)
+        self.assertIn("Inferred inflow", dips)
+
+        shifts = self.authed("GET", "/portal/shifts")[2].decode()
+        self.assertIn("not a cash shortage", shifts.lower())
+        self.assertIn("Drive Off", shifts)
+        self.assertIn("IOU", shifts)
+        self.assertIn("Cash drops", shifts)
+        self.assertIn("Staff hours", shifts)
+        window = self.authed("GET", "/portal/shifts?view=window")[2].decode()
+        self.assertIn("19:10", window)
+
+        commission = self.authed("GET", "/portal/commission")[2].decode()
+        self.assertIn("$11,915.09", commission)
+        self.assertIn("$9,000.00", commission)
+        self.assertIn("ULP cpl", commission)
+
+        till = self.authed("GET", "/portal/till-prices")[2].decode()
+        self.assertIn("PREMIUM 95", till)
+        self.assertIn("COST-ONLY", till)
+        self.assertIn("2.0460", till)
+        self.assertIn("$2.10", till)
+        self.assertIn("Cost only", till)
+        self.assertIn("does not write SwiftPOS", till)
+        self.assertIn("CHICKEN BREAST WRAP", till)
+        self.assertIn("Mainland Shredded Cheese", till)
+        grocery = self.authed("GET", "/portal/till-prices?dept=Grocery")[2].decode()
+        self.assertIn("ZERO COST BISCUIT", grocery)
+        self.assertNotIn("CHICKEN BREAST WRAP", grocery.split('id="no-cost"', 1)[1])
+
+        price = self.authed("GET", "/portal/pricing?product=10000")[2].decode()
+        self.assertIn("Cost override", price)
+        self.assertIn("$4.00", price)
+        self.assertIn("does not write SwiftPOS", price)
+        what = self.authed("GET", "/portal/pricing?what_cost=3.55&what_margin=35&what_gst=inc")[2].decode()
+        self.assertIn("$6.50", what)
+        self.assertIn("$6.95", what)
+        self.assertIn("$6.99", what)
+
+        notes = self.authed("GET", "/portal/notes")[2].decode()
+        self.assertIn("9:30pm", notes)
+        self.assertIn("sales ex GST", notes)
+
+        # Invoices and staff hours still answer.
+        invoices = self.authed("GET", "/portal/invoices")[2].decode()
+        self.assertIn("Bega Dairy", invoices)
+        self.assertIn('target="_blank"', invoices)
+        hours = self.authed("GET", "/portal/hours?week=2026-11-09")[2].decode()
+        self.assertIn("does not send hours to Xero", hours)
 
 
 if __name__ == "__main__":
