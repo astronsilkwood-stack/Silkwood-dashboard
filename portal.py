@@ -8,12 +8,12 @@ import csv, hashlib, hmac, io, json, os, re, secrets
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 DATASETS = (
     "sales", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices",
     "product-search", "retail-pricing", "till-price-changes", "shifts", "last-year", "cost-overrides",
-    "stock-movements",
+    "stock-movements", "online-orders",
 )
 INGEST_MAX = 8_000_000
 FORM_MAX = 100_000
@@ -65,6 +65,7 @@ PART_HOLIDAYS = {
 }
 NAV = [
     ("/portal", "Overview", "overview"),
+    ("/portal/online", "Online orders", "online"),
     ("/portal/products", "Products", "products"),
     ("/portal/stock", "Stock on hand", "stock"),
     ("/portal/pricing", "Pricing", "pricing"),
@@ -156,6 +157,14 @@ CREATE TABLE IF NOT EXISTS portal_stock_audit(
 CREATE TABLE IF NOT EXISTS portal_chat(
   id INTEGER PRIMARY KEY, message TEXT NOT NULL, page TEXT, context TEXT, reply TEXT,
   created_at TEXT NOT NULL, replied_at TEXT, created_by TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS portal_online_days(
+  date TEXT PRIMARY KEY, orders INTEGER NOT NULL, total REAL NOT NULL, fees REAL NOT NULL,
+  refunds REAL NOT NULL, net REAL NOT NULL, source_as_of TEXT);
+CREATE TABLE IF NOT EXISTS portal_online_orders(
+  order_no TEXT PRIMARY KEY, ordered_at TEXT NOT NULL, trading_date TEXT NOT NULL,
+  wallet TEXT NOT NULL, card_brand TEXT NOT NULL, total REAL NOT NULL, fees REAL NOT NULL,
+  refunds REAL NOT NULL, net REAL NOT NULL, source_as_of TEXT);
+CREATE INDEX IF NOT EXISTS ix_portal_online_orders_date ON portal_online_orders(trading_date);
 """
 
 
@@ -1028,6 +1037,124 @@ def apply_invoices(c, data):
     return {"asOf": as_of, "invoices": n}
 
 
+def _drop_card_brand(node):
+    """Skip the Bopple card-brand field. Card numbers and other bank keys are still refused."""
+    if isinstance(node, dict):
+        return {k: _drop_card_brand(v) for k, v in node.items() if _key_name(k) != "card"}
+    if isinstance(node, list):
+        return [_drop_card_brand(v) for v in node]
+    return node
+
+
+def _brand(value, label, required=True):
+    """A wallet or card brand such as Visa or Apple pay. Not a card number."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        if required:
+            raise ValueError(f"{label} is required")
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be text")
+    text = " ".join(value.split())
+    if len(text) > 24 or not re.fullmatch(r"[A-Za-z][A-Za-z &'./-]*", text) or has_card_number(text):
+        raise ValueError(f"{label} must be a short name, not a card number")
+    return text
+
+
+def apply_online_orders(c, data):
+    """Bopple pickup orders paid online. Gross is extra sales, not till sales."""
+    if not isinstance(data, dict):
+        raise ValueError("online-orders data must be an object")
+    reject_sensitive(_drop_card_brand(data), "online-orders")
+    daily = data.get("daily") if data.get("daily") is not None else []
+    orders = data.get("orders") if data.get("orders") is not None else []
+    if not isinstance(daily, list) or not isinstance(orders, list):
+        raise ValueError("online-orders daily and orders must be lists")
+    if len(daily) > 800 or len(orders) > 5000:
+        raise ValueError("online-orders payload is too large")
+    days = {}
+    for i, row in enumerate(daily):
+        if not isinstance(row, dict):
+            raise ValueError(f"daily[{i}] must be an object")
+        d = need_date(row.get("date"), f"daily[{i}] date")
+        count = whole(row.get("orders"), f"daily[{i}] orders", required=True)
+        if count < 0 or count > 100000:
+            raise ValueError(f"daily[{i}] orders is out of range")
+        days[d] = {
+            "orders": count,
+            "total": num(row.get("total"), f"daily[{i}] total"),
+            "fees": num(row.get("fees"), f"daily[{i}] fees"),
+            "refunds": num(row.get("refunds"), f"daily[{i}] refunds"),
+            "net": num(row.get("net"), f"daily[{i}] net"),
+        }
+    by_no = {}
+    for i, row in enumerate(orders):
+        if not isinstance(row, dict):
+            raise ValueError(f"orders[{i}] must be an object")
+        number = str(row.get("order_no") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9-]{1,24}", number) or has_card_number(number):
+            raise ValueError(f"orders[{i}] has a bad order number")
+        when = row.get("time")
+        if not isinstance(when, str) or not when.strip() or len(when.strip()) > 60:
+            raise ValueError(f"orders[{i}] time is required")
+        when = " ".join(when.split())
+        reject_sensitive(when, "online-orders")
+        by_no[number] = {
+            "order_no": number,
+            "time": when,
+            "trading_date": need_date(row.get("trading_date"), f"orders[{i}] trading_date"),
+            "wallet": _brand(row.get("wallet"), f"orders[{i}] wallet"),
+            "cardBrand": _brand(row.get("card"), f"orders[{i}] card", required=False),
+            "total": num(row.get("total"), f"orders[{i}] total"),
+            "fees": num(row.get("fees"), f"orders[{i}] fees"),
+            "refunds": num(row.get("refunds"), f"orders[{i}] refunds"),
+            "net": num(row.get("net"), f"orders[{i}] net"),
+        }
+    clean_orders = list(by_no.values())
+    if not days and clean_orders:
+        for item in clean_orders:
+            bucket = days.setdefault(item["trading_date"], {"orders": 0, "total": 0.0, "fees": 0.0, "refunds": 0.0, "net": 0.0})
+            bucket["orders"] += 1
+            bucket["total"] += item["total"]
+            bucket["fees"] += item["fees"]
+            bucket["refunds"] += item["refunds"]
+            bucket["net"] += item["net"]
+    if not days and not clean_orders:
+        raise ValueError("online-orders needs daily rows or orders")
+    dates = list(days) + [item["trading_date"] for item in clean_orders]
+    as_of = need_date(data.get("asOf"), "asOf") if data.get("asOf") else max(dates)
+    for d, row in days.items():
+        c.execute(
+            """INSERT INTO portal_online_days(date,orders,total,fees,refunds,net,source_as_of) VALUES(?,?,?,?,?,?,?)
+               ON CONFLICT(date) DO UPDATE SET orders=excluded.orders, total=excluded.total, fees=excluded.fees,
+                 refunds=excluded.refunds, net=excluded.net, source_as_of=excluded.source_as_of""",
+            (d, row["orders"], row["total"], row["fees"], row["refunds"], row["net"], as_of),
+        )
+    for item in clean_orders:
+        c.execute(
+            """INSERT INTO portal_online_orders(order_no,ordered_at,trading_date,wallet,card_brand,total,fees,refunds,net,source_as_of)
+               VALUES(?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(order_no) DO UPDATE SET ordered_at=excluded.ordered_at, trading_date=excluded.trading_date,
+                 wallet=excluded.wallet, card_brand=excluded.card_brand, total=excluded.total, fees=excluded.fees,
+                 refunds=excluded.refunds, net=excluded.net, source_as_of=excluded.source_as_of""",
+            (item["order_no"], item["time"], item["trading_date"], item["wallet"], item["cardBrand"],
+             item["total"], item["fees"], item["refunds"], item["net"], as_of),
+        )
+    meta_set(c, "online-orders", {
+        "asOf": as_of,
+        "source": str(data.get("source") or "")[:160],
+        "days": len(days),
+        "orders": len(clean_orders),
+    })
+    save_snapshot(c, "online-orders", as_of, {
+        "source": str(data.get("source") or "")[:160],
+        "asOf": as_of,
+        "daily": [{"date": d, **row} for d, row in sorted(days.items())],
+        "orders": clean_orders,
+    })
+    note_online_for_insights(c)
+    return {"asOf": as_of, "days": len(days), "orders": len(clean_orders)}
+
+
 APPLIERS = {
     "sales": apply_sales,
     "purchases": apply_purchases,
@@ -1042,13 +1169,17 @@ APPLIERS = {
     "last-year": lambda c, data: parity().apply_last_year(c, data),
     "cost-overrides": lambda c, data: parity().apply_cost_overrides(c, data),
     "stock-movements": lambda c, data: stock().apply_stock_movements(c, data),
+    "online-orders": apply_online_orders,
 }
+
+
+def _insights_enabled():
+    return os.environ.get("PORTAL_INSIGHTS_GENERATE", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def maybe_generate_insights(c, as_of):
     """Optional plain-text summary from stored figures. Off unless PORTAL_INSIGHTS_GENERATE=1. No LLM."""
-    flag = os.environ.get("PORTAL_INSIGHTS_GENERATE", "").strip().lower()
-    if flag not in ("1", "true", "yes", "on"):
+    if not _insights_enabled():
         return
     if one(c.execute("SELECT 1 AS x FROM portal_insights WHERE date=?", (as_of,))):
         return
@@ -1057,14 +1188,32 @@ def maybe_generate_insights(c, as_of):
     if not sales:
         return
     latest = max(r["date"] for r in sales)
-    proj = project_month(sales, comm, target_for(latest, meta_get(c, "sales"), meta_get(c, "fuel")), latest)
+    amounts = online_amounts(c)
+    proj = project_month(
+        sales, comm, target_for(latest, meta_get(c, "sales"), meta_get(c, "fuel")), latest, amounts or {},
+    )
     if not proj:
         return
     mtd = proj["mtd"]
-    bullets = [
-        f"Sales through {fmt_date(latest)} are {money(mtd['total'])}: fuel {money(mtd['fuel'])} and shop {money(mtd['shop'])}.",
-        f"Shop gross profit on the loaded days is {money(mtd['gp'])}.",
-    ]
+    online_gross = mtd.get("online") or 0
+    if amounts is not None and online_gross:
+        bullets = [
+            f"Sales through {fmt_date(latest)} are {money(mtd['total'] + online_gross)}: "
+            f"till {money(mtd['total'])} plus online orders (Bopple) {money(online_gross)}. "
+            f"Fuel {money(mtd['fuel'])} and shop {money(mtd['shop'])} are the till split.",
+            f"Shop gross profit is till GP only, {money(mtd['gp'])}. Online orders have no cost in this figure.",
+        ]
+        later = sum(float(amt or 0) for day, amt in (amounts or {}).items() if day > latest and day[:7] == latest[:7])
+        if later:
+            bullets.append(
+                f"Online orders after the latest till day add {money(later)} gross. "
+                "They join the total once that till day is loaded."
+            )
+    else:
+        bullets = [
+            f"Sales through {fmt_date(latest)} are {money(mtd['total'])}: fuel {money(mtd['fuel'])} and shop {money(mtd['shop'])}.",
+            f"Shop gross profit on the loaded days is {money(mtd['gp'])}.",
+        ]
     if proj["commissionMtd"] is not None and proj["target"]:
         bullets.append(
             f"Fuel commission is {money(proj['commissionMtd'])} of the {money(proj['target'])} target. "
@@ -1077,7 +1226,24 @@ def maybe_generate_insights(c, as_of):
     )
 
 
-def project_month(sales, commission, target, latest):
+def note_online_for_insights(c):
+    """Refresh a server-written figure summary so it picks up online totals. A shop headline is left as sent."""
+    if not _insights_enabled():
+        return
+    row = one(c.execute("SELECT MAX(date) AS d FROM portal_sales_days"))
+    if not row or not row["d"]:
+        return
+    latest = row["d"]
+    existing = one(c.execute("SELECT source FROM portal_insights WHERE date=?", (latest,)))
+    if existing and existing["source"] != "server":
+        return
+    if existing:
+        c.execute("DELETE FROM portal_insights WHERE date=? AND source='server'", (latest,))
+    maybe_generate_insights(c, latest)
+
+
+def project_month(sales, commission, target, latest, online_by=None):
+    online_by = online_by or {}
     by_date = {}
     for row in sales:
         if row.get("date"):
@@ -1097,9 +1263,14 @@ def project_month(sales, commission, target, latest):
     n = len(month_days)
 
     def total_of(rows_, key):
+        if key == "online":
+            return sum(float(online_by.get(r["date"]) or 0) for r in rows_)
         return sum(float(r.get(key) or 0) for r in rows_)
 
     mtd = {key: total_of(month_days, key) for key in ("total", "shop", "fuel", "gp")}
+    mtd["online"] = sum(
+        float(amt or 0) for day, amt in online_by.items() if start.isoformat() <= day <= latest
+    )
     last28 = [by_date[k] for k in sorted(by_date)[-28:]]
     buckets = {i: [] for i in range(7)}
     for row in last28:
@@ -1205,6 +1376,102 @@ def commission_between(c, start, end):
         "SELECT * FROM portal_commission_days WHERE date>=? AND date<=? ORDER BY date",
         (start.isoformat(), end.isoformat()),
     ))
+
+
+def online_loaded(c):
+    return bool(meta_get(c, "online-orders").get("asOf"))
+
+
+def online_amounts(c):
+    """Gross online sales by trading date, or None when the dataset has never been stored."""
+    if not online_loaded(c):
+        return None
+    found = {}
+    for row in rows(c.execute("SELECT date, total FROM portal_online_days")):
+        found[row["date"]] = float(row["total"] or 0)
+    return found
+
+
+def online_days_between(c, start, end):
+    if not online_loaded(c):
+        return None
+    return rows(c.execute(
+        "SELECT * FROM portal_online_days WHERE date>=? AND date<=? ORDER BY date",
+        (start.isoformat(), end.isoformat()),
+    ))
+
+
+def online_totals(day_rows):
+    day_rows = day_rows or []
+    return {
+        "orders": sum(int(r["orders"] or 0) for r in day_rows),
+        "total": sum(float(r["total"] or 0) for r in day_rows),
+        "fees": sum(float(r["fees"] or 0) for r in day_rows),
+        "refunds": sum(float(r["refunds"] or 0) for r in day_rows),
+        "net": sum(float(r["net"] or 0) for r in day_rows),
+        "days": len(day_rows),
+    }
+
+
+def online_anchor(c):
+    dates = []
+    through = data_through(c)
+    if through:
+        dates.append(date.fromisoformat(through))
+    as_of = meta_get(c, "online-orders").get("asOf")
+    if as_of:
+        dates.append(date.fromisoformat(as_of))
+    return max(dates) if dates else today()
+
+
+def chat_figures(c):
+    """Month-to-date till, online, and combined sales for the help assistant. Strings only."""
+    sales_rows = rows(c.execute("SELECT date, total, gp FROM portal_sales_days"))
+    amounts = online_amounts(c)
+    if not sales_rows and amounts is None:
+        return {
+            "salesThrough": "",
+            "tillSales": "not loaded",
+            "onlineOrders": "not loaded",
+            "totalSales": "not loaded",
+            "shopGp": "not loaded",
+        }
+    if sales_rows:
+        end = max(r["date"] for r in sales_rows)
+        start = end[:8] + "01"
+    else:
+        end = max(amounts) if amounts else today().isoformat()
+        start = end[:8] + "01"
+    till = sum(float(r["total"] or 0) for r in sales_rows if start <= r["date"] <= end)
+    gp = sum(float(r["gp"] or 0) for r in sales_rows if start <= r["date"] <= end)
+    if amounts is None:
+        online_text = "not loaded"
+        online_gross = 0.0
+    else:
+        totals = online_totals(online_days_between(c, date.fromisoformat(start), date.fromisoformat(end)))
+        online_gross = totals["total"]
+        online_text = (
+            f"{totals['orders']} orders, gross {money(totals['total'])}, "
+            f"fees {money(totals['fees'])}, net {money(totals['net'])}"
+        )
+    combined = till + online_gross
+    return {
+        "salesThrough": end,
+        "tillSales": money(till) if sales_rows else "not loaded",
+        "onlineOrders": online_text,
+        "totalSales": money(combined) if sales_rows or amounts is not None else "not loaded",
+        "shopGp": ("till GP " + money(gp)) if sales_rows else "not loaded",
+    }
+
+
+def order_time_key(text, trading_date):
+    match = re.match(r"(\d{4}-\d{2}-\d{2}) (\d{1,2}):(\d{2}):(\d{2}) (AM|PM)", text or "", re.I)
+    if not match:
+        return (trading_date, 0, 0, 0, text or "")
+    hour = int(match.group(2)) % 12
+    if match.group(5).upper() == "PM":
+        hour += 12
+    return (match.group(1), hour, int(match.group(3)), int(match.group(4)), text or "")
 
 
 def latest_insight(c):
@@ -1359,6 +1626,7 @@ def bar_class(percent):
 def _icon(key):
     paths = {
         "overview": '<path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/>',
+        "online": '<path d="M6 7h12l-1 13H7L6 7zM9 7a3 3 0 0 1 6 0"/>',
         "products": '<path d="M4 7h16M4 12h16M4 17h10"/>',
         "kitchen": '<path d="M6 3v8a3 3 0 0 0 6 0V3M9 14v7M15 3c2 3 2 6 0 8v10"/>',
         "departments": '<path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/>',
@@ -1380,7 +1648,7 @@ def _icon(key):
 def layout(title, active, body, user, when):
     by_key = {key: (href, label) for href, label, key in NAV}
     groups = (
-        ("Trading", ("overview", "products", "kitchen", "departments")),
+        ("Trading", ("overview", "online", "products", "kitchen", "departments")),
         ("Price and stock", ("pricing", "till", "stock")),
         ("Fuel", ("dips", "commission", "fuel")),
         ("Money", ("purchases", "invoices")),
@@ -1472,7 +1740,14 @@ def insights_box(insight):
 <h2>{h(insight['headline'])}</h2><ul>{items}</ul><p class="help">{source}</p></section>"""
 
 
-def projection_card(proj, october):
+def _shown_sales(bucket, online_loaded):
+    total = bucket.get("total") or 0
+    if online_loaded:
+        return total + (bucket.get("online") or 0)
+    return total
+
+
+def projection_card(proj, october, online_loaded=False):
     if not proj:
         return '<section class="card"><h2>Month projection</h2><p class="help">Load sales first.</p></section>'
     title = "month actual" if proj["complete"] else "month-end projection"
@@ -1502,31 +1777,92 @@ def projection_card(proj, october):
         if october.get("target") is not None:
             oct += f" of the {money(october.get('target'))} target"
         oct += ".</p>"
+    online_note = ""
+    if online_loaded:
+        online_note = (
+            f"<p class=\"help\">Sales totals add Bopple online gross ({money(mtd.get('online'))} month to date). "
+            "Fuel, shop and GP stay on the till.</p>"
+        )
     return f"""<section class="card" id="projection"><div class="lbl">{h(proj['month'])}</div>
 <h2>{h(proj['month'])} · {title}</h2>
 <p class="help">Current month, data through {h(fmt_date(proj['latest']))}. This card ignores the date range above. It updates after the nightly 9:30pm Brisbane refresh; today's sales are not in yet.</p>
-{comm}
+{online_note}{comm}
 <div class="grid g2">
-<div><div class="lbl">Straight run-rate</div><b class="stat">{money(run['total'])}</b>
-<p class="help">Fuel {money(run['fuel'])} · shop {money(run['shop'])} · shop GP {money(run['gp'])}</p></div>
-<div><div class="lbl">Weekday-weighted</div><b class="stat">{money(wt['total'])}</b>
-<p class="help">Fuel {money(wt['fuel'])} · shop {money(wt['shop'])} · shop GP {money(wt['gp'])}. Remaining days use the same weekday's average from the last 28 loaded days.</p></div>
+<div><div class="lbl">Straight run-rate</div><b class="stat">{money(_shown_sales(run, online_loaded))}</b>
+<p class="help">Fuel {money(run['fuel'])} · shop {money(run['shop'])} · till GP {money(run['gp'])}</p></div>
+<div><div class="lbl">Weekday-weighted</div><b class="stat">{money(_shown_sales(wt, online_loaded))}</b>
+<p class="help">Fuel {money(wt['fuel'])} · shop {money(wt['shop'])} · till GP {money(wt['gp'])}. Remaining days use the same weekday's average from the last 28 loaded days.</p></div>
 </div>{oct}</section>"""
+
+
+def _dash_money(value):
+    if value is None:
+        return "—"
+    return money(value)
+
+
+def sales_display_rows(days, online_by, loaded):
+    """Till rows plus any online-only days. combined is till gross plus online gross."""
+    online_by = online_by or {}
+    shown = []
+    seen = set()
+    for row in days:
+        seen.add(row["date"])
+        item = dict(row)
+        item["till"] = float(row.get("total") or 0)
+        item["online"] = float(online_by.get(row["date"]) or 0) if loaded else None
+        item["combined"] = item["till"] + (item["online"] or 0)
+        shown.append(item)
+    if loaded:
+        for day, amt in online_by.items():
+            if day in seen:
+                continue
+            shown.append({
+                "date": day, "online_only": True, "till": None, "online": float(amt or 0),
+                "combined": float(amt or 0), "fuel": None, "shop": None, "gp": None,
+                "gp_pct": None, "coverage": None, "missing": None,
+            })
+    shown.sort(key=lambda row: row["date"])
+    return shown
 
 
 def daily_table(days):
     if not days:
         return '<p class="empty">No completed sales days in this range.</p>'
+    loaded = any(row.get("online") is not None or row.get("online_only") for row in days)
     body = []
     for row in days:
+        online_only = row.get("online_only")
+        if online_only:
+            till_cell = fuel_cell = shop_cell = gp_cell = gpp_cell = cov_cell = miss_cell = "—"
+            online_cell = money(row.get("online") or 0)
+            total_cell = money(row.get("combined") or 0)
+        else:
+            till_cell = money(row.get("till") if row.get("till") is not None else row.get("total"))
+            total_cell = money(row.get("combined") if row.get("combined") is not None else row.get("total"))
+            online_cell = money(row.get("online")) if loaded else "—"
+            fuel_cell = _dash_money(row.get("fuel"))
+            shop_cell = _dash_money(row.get("shop"))
+            gp_cell = _dash_money(row.get("gp"))
+            gpp_cell = pct_ratio(row.get("gp_pct"))
+            cov_cell = pct_ratio(row.get("coverage"))
+            miss_cell = h(row.get("missing") if row.get("missing") is not None else "—")
         body.append(
-            "<tr><td>" + h(fmt_date(row["date"])) + "</td><td class=\"num\">" + money(row["total"]) +
-            "</td><td class=\"num\">" + money(row["fuel"]) + "</td><td class=\"num\">" + money(row["shop"]) +
-            "</td><td class=\"num\">" + money(row["gp"]) + "</td><td class=\"num\">" + pct_ratio(row["gp_pct"]) +
-            "</td><td class=\"num\">" + pct_ratio(row.get("coverage")) + "</td><td class=\"num\">" +
-            h(row.get("missing") if row.get("missing") is not None else "—") + "</td></tr>"
+            "<tr><td>" + h(fmt_date(row["date"])) + "</td><td class=\"num\">" + total_cell +
+            "</td><td class=\"num\">" + till_cell + "</td><td class=\"num\">" + online_cell +
+            "</td><td class=\"num\">" + fuel_cell + "</td><td class=\"num\">" + shop_cell +
+            "</td><td class=\"num\">" + gp_cell + "</td><td class=\"num\">" + gpp_cell +
+            "</td><td class=\"num\">" + cov_cell + "</td><td class=\"num\">" + miss_cell + "</td></tr>"
         )
-    return """<div class="tw"><table><thead><tr><th>Date</th><th>Total</th><th>Fuel</th><th>Shop</th><th>Shop GP</th><th>GP%</th><th>Coverage</th><th>Missing cost</th></tr></thead><tbody>""" + "".join(body) + "</tbody></table></div>"
+    note = (
+        "Total is till plus Bopple online gross. Shop GP is till GP. Online orders have no cost here."
+        if loaded else
+        "Online orders are not loaded, so Total equals till sales. Shop GP is till GP."
+    )
+    return (
+        """<div class="tw"><table><thead><tr><th>Date</th><th>Total</th><th>Till</th><th>Online</th><th>Fuel</th><th>Shop</th><th>Shop GP</th><th>GP%</th><th>Coverage</th><th>Missing cost</th></tr></thead><tbody>"""
+        + "".join(body) + f'</tbody></table></div><p class="help">{note}</p>'
+    )
 
 
 def page_overview(c, query):
@@ -1539,14 +1875,21 @@ def page_overview(c, query):
         active, start, end = period_bounds("month", None, None, anchor)
         error = f'<p class="alert">{h(str(ex))}</p>'
     days, deltas = parity().adjust_sales_days(c, sales_between(c, start, end))
-    total = sum(r["total"] or 0 for r in days)
+    till_total = sum(r["total"] or 0 for r in days)
     fuel = sum(r["fuel"] or 0 for r in days)
     shop = sum(r["shop"] or 0 for r in days)
     gp = sum(r["gp"] or 0 for r in days)
     covered = sum(r["covered_ex"] or 0 for r in days)
     gp_pct = (gp / covered) if covered else None
-    share = (fuel / total * 100) if total else 0
+    share = (fuel / till_total * 100) if till_total else 0
     shop_avg = (shop / len(days)) if days else None
+    loaded = online_loaded(c)
+    online_rows = online_days_between(c, start, end) or []
+    online_sum = online_totals(online_rows) if loaded else None
+    online_gross = online_sum["total"] if online_sum else 0
+    total = till_total + online_gross
+    online_by = {r["date"]: float(r["total"] or 0) for r in online_rows} if loaded else {}
+    display = sales_display_rows(days, online_by, loaded)
     period = parity().matching_period(c, active, start, end)
     summary = (period or {}).get("summary") or {}
     exact = period and period.get("fromDate") == start.isoformat() and period.get("toDate") == end.isoformat()
@@ -1569,37 +1912,68 @@ def page_overview(c, query):
     all_sales, _all_deltas = parity().adjust_sales_days(c, rows(c.execute("SELECT * FROM portal_sales_days")))
     all_comm = rows(c.execute("SELECT * FROM portal_commission_days"))
     latest = through or (max((r["date"] for r in all_sales), default=None))
-    proj = project_month(all_sales, all_comm, target_for(latest, meta_get(c, "sales"), meta_get(c, "fuel")), latest) if latest else None
+    amounts = online_amounts(c)
+    proj = project_month(all_sales, all_comm, target_for(latest, meta_get(c, "sales"), meta_get(c, "fuel")), latest, amounts or {}) if latest else None
     october = (meta_get(c, "sales").get("commission") or {}).get("october")
     prev_start, prev_end = parity()._prev_bounds(active, start, end)
     prev_rows, _prev_delta = parity().adjust_sales_days(c, sales_between(c, prev_start, prev_end))
-    prev_total = sum(r["total"] or 0 for r in prev_rows)
+    prev_online = online_totals(online_days_between(c, prev_start, prev_end) or [])["total"] if loaded else 0
+    prev_total = sum(r["total"] or 0 for r in prev_rows) + prev_online
     if prev_total:
         move = (total - prev_total) / prev_total * 100
         trend = f'<span class="trend {"up" if move >= 0 else "down"}">{abs(move):.1f}% vs previous period</span>'
     else:
         trend = ""
-    peak = max((r["total"] or 0 for r in days[-14:]), default=0) or 1
+    series = display[-14:]
+    peak = max((r["combined"] or 0 for r in series), default=0) or 1
     bars = []
-    for row in days[-14:]:
-        height = max(5, min(100, int(round((row["total"] or 0) / peak * 20)) * 5))
+    for row in series:
+        height = max(5, min(100, int(round((row["combined"] or 0) / peak * 20)) * 5))
         bars.append(f'<i class="h{height}"></i>')
-    chart = f'<div class="vchart" role="img" aria-label="Daily sales in this range">{"".join(bars)}</div>' if bars else ""
+    chart = f'<div class="vchart" role="img" aria-label="Daily total sales, till plus online">{"".join(bars)}</div>' if bars else ""
     caption = f"{len(days)} completed sales day{'s' if len(days) != 1 else ''} in {fmt_date(start.isoformat())} – {fmt_date(end.isoformat())}"
+    later_note = ""
+    if loaded and active == "month":
+        month_end = (end.replace(day=28) + timedelta(days=4)).replace(day=1)
+        later_rows = rows(c.execute(
+            "SELECT total FROM portal_online_days WHERE date>? AND date<?",
+            (end.isoformat(), month_end.isoformat()),
+        ))
+        if later_rows:
+            later_amt = sum(float(r["total"] or 0) for r in later_rows)
+            later_note = (
+                f'<p class="mini">Plus {money(later_amt)} online after {h(fmt_date(end.isoformat()))}, '
+                'not in this total yet. <a href="/portal/online">Online orders</a>.</p>'
+            )
+    if loaded:
+        online_card = (
+            f'<div class="card stat tone-online" id="online-sales"><div class="lbl">Online orders (Bopple)</div>'
+            f'<b>{money(online_gross)}</b><span>{online_sum["orders"]} orders · gross, not in the till</span>'
+            f'<a href="/portal/online">View orders</a>{later_note}</div>'
+        )
+        sales_note = "Total sales add Bopple online order gross on top of till sales. Those orders are not rung through the till. Shop GP is till GP only."
+        total_span = "till plus online gross, inc GST"
+    else:
+        online_card = (
+            '<div class="card stat tone-online" id="online-sales"><div class="lbl">Online orders (Bopple)</div>'
+            '<b>—</b><span>not loaded yet</span><a href="/portal/online">View orders</a></div>'
+        )
+        sales_note = "Online orders (Bopple) are not loaded yet, so total sales are the till. Shop GP is till GP."
+        total_span = "till sales, online not loaded"
     callout = ""
     if missing:
         callout = (
             f'<p class="callout" id="provisional">Shop GP is provisional. Cost coverage is {pct_ratio(coverage)}. '
             f'{h(missing)} {missing_label}. This is 2026 only and is not a warning about 2025.</p>'
         )
-    return f"""<div class="ph"><h1>Sales overview</h1>{through_line(through)}<p>{h(caption)}. Figures are the loaded trading days, with no zero filled in for a missing day. Australia/Brisbane. Today’s sales wait for the 9:30pm refresh.</p></div>
+    return f"""<div class="ph"><h1>Sales overview</h1>{through_line(through)}<p>{h(caption)}. Figures are the loaded trading days, with no zero filled in for a missing day. Australia/Brisbane. Today’s sales wait for the 9:30pm refresh. {h(sales_note)}</p></div>
 {error}{period_controls('/portal', active, start, end)}
 {parity().override_note(deltas)}{callout}
-<section class="grid g4">
-<div class="card stat tone-sales"><div class="lbl">Total sales</div><b>{money(total)}</b><span>inc GST</span>{trend}</div>
-<div class="card stat tone-fuel"><div class="lbl">Fuel</div><b>{money(fuel)}</b><span>{pct_points(share) if total else '—'}</span></div>
-<div class="card stat tone-shop"><div class="lbl">Shop</div><b>{money(shop)}</b><span>{pct_points(100 - share) if total else '—'}</span></div>
-<div class="card stat tone-gp" id="shop-gp"><div class="lbl">Shop GP</div><b>{money(gp)}</b><span>{pct_ratio(gp_pct)} of covered ex-GST sales</span></div>
+<section class="grid g4" id="sales-split">
+<div class="card stat tone-sales" id="total-sales"><div class="lbl">Total sales</div><b>{money(total)}</b><span>{h(total_span)}</span>{trend}</div>
+<div class="card stat" id="till-sales"><div class="lbl">Till sales</div><b>{money(till_total)}</b><span>daysheet, inc GST</span></div>
+{online_card}
+<div class="card stat tone-gp" id="shop-gp"><div class="lbl">Shop GP</div><b>{money(gp)}</b><span>Till GP · {pct_ratio(gp_pct)} of covered ex-GST sales</span></div>
 </section>
 <section class="grid g3">
 <div class="card stat tone-cover" id="coverage"><div class="lbl">Cost coverage</div><b>{pct_ratio(coverage)}</b><span>covered ex-GST shop sales</span></div>
@@ -1608,12 +1982,140 @@ def page_overview(c, query):
 </section>
 {insights_box(latest_insight(c))}
 <section class="card"><h2>Fuel vs shop</h2>
+<div class="grid g2">
+<div class="stat tone-fuel"><div class="lbl">Fuel</div><b>{money(fuel)}</b><span>{pct_points(share) if till_total else '—'} of till</span></div>
+<div class="stat tone-shop"><div class="lbl">Shop</div><b>{money(shop)}</b><span>{pct_points(100 - share) if till_total else '—'} of till</span></div>
+</div>
 {chart}
-<div class="split"><i class="fuel {bar_class(share)}"></i><i class="shop {bar_class(100 - share if total else 0)}"></i></div>
-<p class="help">Fuel and shop are the loaded daysheet split. Shop GP excludes sales with no usable cost. It is not operating profit.</p></section>
-{projection_card(proj, october)}
+<div class="split"><i class="fuel {bar_class(share)}"></i><i class="shop {bar_class(100 - share if till_total else 0)}"></i></div>
+<p class="help">Fuel and shop are the till daysheet. Online orders are not in this split. Shop GP is till GP and excludes sales with no usable cost. It is not operating profit.</p></section>
+{projection_card(proj, october, amounts is not None)}
 {parity().last_year_with_litres(c, all_sales, all_comm)}
-<section class="card"><h2>Daily sales</h2>{daily_table(days)}</section>"""
+<section class="card"><h2>Daily sales</h2>{daily_table(display)}</section>"""
+
+
+def _online_query(active, start, end, day=""):
+    params = {"period": active}
+    if active == "custom":
+        params["from"] = start.isoformat()
+        params["to"] = end.isoformat()
+    if day:
+        params["day"] = day
+    return "/portal/online?" + urlencode(params)
+
+
+def _online_stats(title, totals, elem_id):
+    refund = ""
+    if totals["refunds"]:
+        refund = f'<p class="help">Refunds {money(totals["refunds"])}, signed as Bopple reports them.</p>'
+    return f"""<section class="card" id="{elem_id}"><h2>{h(title)}</h2>
+<section class="grid g4">
+<div class="card stat"><div class="lbl">Orders</div><b>{totals['orders']}</b><span>in this range</span></div>
+<div class="card stat tone-sales"><div class="lbl">Gross total</div><b>{money(totals['total'])}</b><span>online order total</span></div>
+<div class="card stat tone-online"><div class="lbl">Bopple fees</div><b>{money(totals['fees'])}</b><span>signed as reported</span></div>
+<div class="card stat"><div class="lbl">Net payout</div><b>{money(totals['net'])}</b><span>gross plus fees plus refunds</span></div>
+</section>
+{refund}</section>"""
+
+
+def page_online(c, query):
+    meta = meta_get(c, "online-orders")
+    anchor = online_anchor(c)
+    try:
+        active, start, end = period_bounds(query.get("period"), query.get("from"), query.get("to"), anchor)
+        error = ""
+    except ValueError as ex:
+        active, start, end = period_bounds("month", None, None, anchor)
+        error = f'<p class="alert">{h(str(ex))}</p>'
+    if not meta.get("asOf"):
+        return f"""<div class="ph"><h1>Online orders</h1>{through_line(data_through(c))}
+<p>Bopple pickup orders paid online. They are extra sales, not rung through the till.</p></div>
+<section class="card"><p class="empty" id="online-empty">No online orders yet. The nightly refresh sends them as dataset online-orders. Till sales are unchanged until then.</p></section>"""
+    mtd_end = anchor
+    mtd_start = anchor.replace(day=1)
+    mtd = online_totals(online_days_between(c, mtd_start, mtd_end))
+    period_rows = online_days_between(c, start, end) or []
+    period = online_totals(period_rows)
+    day_filter = query.get("day") if query.get("day") in {r["date"] for r in period_rows} else ""
+    daily_body = []
+    for row in sorted(period_rows, key=lambda r: r["date"], reverse=True):
+        href = _online_query(active, start, end, row["date"])
+        daily_body.append(
+            f'<tr><td><a href="{href}">{h(fmt_date(row["date"]))}</a></td>'
+            f'<td class="num">{int(row["orders"] or 0)}</td>'
+            f'<td class="num">{money(row["total"])}</td><td class="num">{money(row["fees"])}</td>'
+            f'<td class="num">{money(row["refunds"])}</td><td class="num">{money(row["net"])}</td></tr>'
+        )
+    if daily_body:
+        daily_table_html = (
+            '<div class="tw" id="online-daily"><table><thead><tr><th>Date</th><th>Orders</th><th>Gross</th>'
+            '<th>Bopple fees</th><th>Refunds</th><th>Net payout</th></tr></thead><tbody>'
+            + "".join(daily_body) + "</tbody></table></div>"
+        )
+    else:
+        daily_table_html = '<p class="empty" id="online-daily">No online orders in this range.</p>'
+    if day_filter:
+        order_sql = "SELECT * FROM portal_online_orders WHERE trading_date=? ORDER BY order_no"
+        order_rows = rows(c.execute(order_sql, (day_filter,)))
+    else:
+        order_rows = rows(c.execute(
+            "SELECT * FROM portal_online_orders WHERE trading_date>=? AND trading_date<=?",
+            (start.isoformat(), end.isoformat()),
+        ))
+    order_rows.sort(key=lambda r: order_time_key(r["ordered_at"], r["trading_date"]), reverse=True)
+    grouped = {}
+    for order in order_rows:
+        grouped.setdefault(order["trading_date"], []).append(order)
+    options = ['<option value="">All dates</option>']
+    for row in sorted(period_rows, key=lambda r: r["date"], reverse=True):
+        selected = " selected" if row["date"] == day_filter else ""
+        options.append(f'<option value="{h(row["date"])}"{selected}>{h(fmt_date(row["date"]))}</option>')
+    hidden = f'<input type="hidden" name="period" value="{h(active)}">'
+    if active == "custom":
+        hidden += f'<input type="hidden" name="from" value="{h(start.isoformat())}"><input type="hidden" name="to" value="{h(end.isoformat())}">'
+    blocks = []
+    for trading_date in sorted(grouped, reverse=True):
+        items = grouped[trading_date]
+        gross = sum(float(item["total"] or 0) for item in items)
+        opened = " open" if trading_date == (day_filter or max(grouped)) else ""
+        lines = []
+        for item in items:
+            lines.append(
+                "<tr><td>" + h(item["order_no"]) + "</td><td>" + h(item["ordered_at"]) + "</td><td>"
+                + h(item["wallet"]) + "</td><td>" + h(item["card_brand"] or "—") + "</td><td class=\"num\">"
+                + money(item["total"]) + "</td><td class=\"num\">" + money(item["fees"]) + "</td><td class=\"num\">"
+                + money(item["refunds"]) + "</td><td class=\"num\">" + money(item["net"]) + "</td></tr>"
+            )
+        blocks.append(
+            f'<details class="shift"{opened}><summary>{h(fmt_date(trading_date))} · {len(items)} '
+            f'order{"s" if len(items) != 1 else ""} · {money(gross)}</summary>'
+            '<div class="tw"><table><thead><tr><th>Order</th><th>Time</th><th>Wallet</th><th>Card</th>'
+            '<th>Gross</th><th>Bopple fees</th><th>Refunds</th><th>Net</th></tr></thead><tbody>'
+            + "".join(lines) + "</tbody></table></div></details>"
+        )
+    if not blocks:
+        order_html = '<p class="empty">No orders in this range.</p>'
+    else:
+        order_html = "".join(blocks)
+    clear = ""
+    if day_filter:
+        clear = f'<a class="chip" href="{_online_query(active, start, end)}">All dates</a>'
+    source = meta.get("source") or "Bopple"
+    return f"""<div class="ph"><h1>Online orders</h1>{through_line(meta.get("asOf"))}
+<p>Pickup orders paid online through {h(source)}. These are extra sales and are not rung through the till. The gross total is added on top of till sales on the overview. Shop GP stays till GP, because these orders have no cost.</p>
+<p class="help">Fees and refunds keep the sign Bopple sends. A fee is usually negative. Net payout is gross plus fees plus refunds.</p></div>
+{error}{period_controls('/portal/online', active, start, end)}
+{_online_stats(f"Month to date · {fmt_date(mtd_start.isoformat())} – {fmt_date(mtd_end.isoformat())}", mtd, "online-mtd")}
+{_online_stats(f"Selected period · {fmt_date(start.isoformat())} – {fmt_date(end.isoformat())}", period, "online-period")}
+<section class="card"><h2>Daily totals</h2>
+<p class="help">Newest day first. Choose a date to list that day’s orders.</p>
+{daily_table_html}</section>
+<section class="card" id="online-order-list"><h2>Orders</h2>
+<form class="row" method="get" action="/portal/online">{hidden}
+<label class="f">Date<select name="day">{''.join(options)}</select></label>
+<button class="btn" type="submit">Show</button></form>
+{clear}
+{order_html}</section>"""
 
 
 def page_purchases(c, query):
@@ -1683,13 +2185,14 @@ def page_fuel(c, query):
     all_sales = rows(c.execute("SELECT * FROM portal_sales_days"))
     all_comm = rows(c.execute("SELECT * FROM portal_commission_days"))
     latest = max((r["date"] for r in all_comm), default=None) or data_through(c)
-    proj = project_month(all_sales, all_comm, target_for(latest, meta_get(c, "sales"), meta_get(c, "fuel")), latest) if latest and all_sales else None
+    amounts = online_amounts(c)
+    proj = project_month(all_sales, all_comm, target_for(latest, meta_get(c, "sales"), meta_get(c, "fuel")), latest, amounts or {}) if latest and all_sales else None
     fuel_meta = meta_get(c, "fuel")
     basis = fuel_meta.get("basis") or {}
     basis_html = "".join(f"<li>{h(basis[k])}</li>" for k in ("commission", "margin", "targets") if basis.get(k))
     return f"""<div class="ph"><h1>Fuel commission</h1>{through_line(through)}
 <p>Commission is ex GST. The portal does not read or set pump prices.</p></div>
-{error}{projection_card(proj, (meta_get(c, 'sales').get('commission') or {}).get('october')) if proj else ''}
+{error}{projection_card(proj, (meta_get(c, 'sales').get('commission') or {}).get('october'), amounts is not None) if proj else ''}
 {period_controls('/portal/fuel', active, start, end)}
 <section class="card"><h2>{money(amount)} in this range</h2>{table}
 {f'<ul class="help">{basis_html}</ul>' if basis_html else ''}</section>
@@ -2041,6 +2544,8 @@ def handle_get(handler, parsed):
     try:
         if path == "/portal":
             html = layout("Sales overview", "overview", page_overview(c, query), user, _srv().now())
+        elif path == "/portal/online":
+            html = layout("Online orders", "online", page_online(c, query), user, _srv().now())
         elif path == "/portal/products":
             html = layout("Products", "products", parity().page_products(c, query), user, _srv().now())
         elif path == "/portal/stock":

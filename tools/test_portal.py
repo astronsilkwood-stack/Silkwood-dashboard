@@ -774,7 +774,11 @@ class PortalTest(unittest.TestCase):
             self.assertEqual(received["auth"], "Bearer chat-test-key")
             self.assertEqual(received["body"]["message"], "Relay this")
             self.assertEqual(received["body"]["page"], "/portal")
-            self.assertEqual(received["body"]["context"], {"period": "month"})
+            self.assertEqual(received["body"]["context"]["period"], "month")
+            self.assertEqual(received["body"]["context"]["onlineOrders"], "not loaded")
+            self.assertIn("tillSales", received["body"]["context"])
+            self.assertTrue(received["body"]["context"]["totalSales"].startswith("$"))
+            self.assertTrue(received["body"]["context"]["shopGp"].startswith("till GP"))
             self.assertIn("createdAt", received["body"])
         finally:
             os.environ.pop("PORTAL_CHAT_WEBHOOK_URL", None)
@@ -787,6 +791,153 @@ class PortalTest(unittest.TestCase):
         }, self.jar)
         self.assertEqual(status, 200, body)
         self.assertEqual(json.loads(self.authed("GET", "/api/portal/chat")[2])["messages"], [])
+
+    def _clear_online_fixture(self):
+        c = server.db()
+        c.execute("DELETE FROM portal_online_days")
+        c.execute("DELETE FROM portal_online_orders")
+        c.execute("DELETE FROM portal_snapshots WHERE dataset='online-orders'")
+        c.execute("DELETE FROM portal_meta WHERE k='online-orders'")
+        c.execute("DELETE FROM portal_sales_days WHERE date='2026-11-12'")
+        c.execute("DELETE FROM portal_insights WHERE date='2026-11-12'")
+        c.commit()
+        c.close()
+
+    def test_online_orders_add_to_sales(self):
+        portal._ingest_hits.clear()
+        self.login()
+        self.addCleanup(self._clear_online_fixture)
+        status, _, body, _ = self.authed("GET", "/portal/online")
+        self.assertEqual(status, 200)
+        missing = body.decode()
+        self.assertIn("No online orders yet", missing)
+        self.assertNotIn("Traceback", missing)
+        overview = self.authed("GET", "/portal")[2].decode()
+        self.assertIn("Online orders (Bopple)", overview)
+        self.assertIn("not loaded yet", overview)
+        self.assertIn("Till sales", overview)
+        self.assertIn("Shop GP", overview)
+
+        empty = self.ingest("online-orders", {"daily": [], "orders": []})
+        self.assertEqual(empty[0], 400)
+        data = load("online-orders.json")
+        code, _, raw, _ = self.ingest("online-orders", data)
+        self.assertEqual(code, 200, raw[:400])
+        stored = json.loads(raw)
+        self.assertEqual(stored["asOf"], "2026-11-11")
+        self.assertEqual(stored["days"], len({row["date"] for row in data["daily"]}))
+        self.assertEqual(stored["orders"], len({row["order_no"] for row in data["orders"]}))
+        poisoned = json.loads(json.dumps(data))
+        poisoned["orders"][0]["card"] = "4242424242424242"
+        rejected = self.ingest("online-orders", poisoned)
+        self.assertEqual(rejected[0], 400)
+        self.assertNotIn(b"4242424242424242", rejected[2])
+        c = server.db()
+        self.assertIsNone(c.execute("SELECT 1 FROM portal_online_orders WHERE card_brand LIKE '%4242%'").fetchone())
+        self.assertIsNotNone(c.execute("SELECT 1 FROM portal_online_orders WHERE order_no=?", (data["orders"][0]["order_no"],)).fetchone())
+        c.close()
+
+        page = self.authed("GET", "/portal/online")[2].decode()
+        self.assertIn("Month to date", page)
+        self.assertIn("Bopple fees", page)
+        self.assertIn("Net payout", page)
+        self.assertIn("26672951", page)
+        self.assertIn("Visa", page)
+        daily = page.split('id="online-daily"', 1)[1].split("</section>", 1)[0]
+        self.assertLess(daily.index("11 Nov 2026"), daily.index("9 Nov 2026"))
+        c = server.db()
+        anchor = portal.online_anchor(c)
+        mtd_rows = portal.online_days_between(c, anchor.replace(day=1), anchor)
+        mtd = portal.online_totals(mtd_rows)
+        c.close()
+        mtd_html = page.split('id="online-mtd"', 1)[1].split('id="online-period"', 1)[0]
+        self.assertIn(f"<b>{mtd['orders']}</b>", mtd_html)
+        self.assertIn(portal.money(mtd["total"]), mtd_html)
+        self.assertIn(portal.money(mtd["fees"]), mtd_html)
+        self.assertIn(portal.money(mtd["net"]), mtd_html)
+
+        filtered = self.authed("GET", "/portal/online?period=custom&from=2026-10-01&to=2026-11-11&day=2026-10-24")[2].decode()
+        listing = filtered.split('id="online-order-list"', 1)[1]
+        self.assertIn("26325169", listing)
+        self.assertIn("-$77.40", listing)
+        self.assertNotIn("26672951", listing)
+
+        c = server.db()
+        anchor = portal.anchor_day(c)
+        _active, start, end = portal.period_bounds("month", None, None, anchor)
+        till = sum(r["total"] or 0 for r in portal.sales_between(c, start, end))
+        online = portal.online_totals(portal.online_days_between(c, start, end))
+        gp_rows, _deltas = portal.parity().adjust_sales_days(c, portal.sales_between(c, start, end))
+        gp = sum(r["gp"] or 0 for r in gp_rows)
+        c.close()
+        home = self.authed("GET", "/portal")[2].decode()
+        split = home.split('id="sales-split"', 1)[1].split("</section>", 1)[0]
+        total_card = split.split('id="total-sales"', 1)[1].split('id="till-sales"', 1)[0]
+        till_card = split.split('id="till-sales"', 1)[1].split('id="online-sales"', 1)[0]
+        online_card = split.split('id="online-sales"', 1)[1].split('id="shop-gp"', 1)[0]
+        gp_card = split.split('id="shop-gp"', 1)[1]
+        self.assertIn(portal.money(till + online["total"]), total_card)
+        self.assertIn(portal.money(till), till_card)
+        self.assertIn(portal.money(online["total"]), online_card)
+        self.assertNotIn(portal.money(till + online["total"]), gp_card)
+        self.assertIn("Till GP", gp_card)
+        self.assertIn(portal.money(gp), gp_card)
+        if online["total"]:
+            self.assertNotEqual(portal.money(till + online["total"]), portal.money(till))
+
+        os.environ["PORTAL_INSIGHTS_GENERATE"] = "1"
+        try:
+            portal._ingest_hits.clear()
+            code, _, raw, _ = self.ingest("sales", {"asOf": "2026-11-12", "latestSalesDate": "2026-11-12", "periods": [{"daily": [
+                {"date": "2026-11-12", "total": 50, "shop": 20, "fuel": 30, "gp": 7, "gpPct": 0.35, "coverage": 1, "coveredEx": 18, "missing": 0, "products": 1},
+            ]}]})
+            self.assertEqual(code, 200, raw)
+            code, _, raw, _ = self.ingest("online-orders", {"daily": [
+                {"date": "2026-11-12", "orders": 1, "total": 10, "fees": -0.4, "refunds": 0, "net": 9.6},
+            ], "orders": [{
+                "order_no": "9001", "time": "2026-11-12 01:00:00 PM (Thu)", "trading_date": "2026-11-12",
+                "wallet": "Card", "card": "Visa", "total": 10, "fees": -0.4, "refunds": 0, "net": 9.6,
+            }]})
+            self.assertEqual(code, 200, raw)
+            c = server.db()
+            self.assertAlmostEqual(c.execute("SELECT total FROM portal_online_days WHERE date='2026-10-01'").fetchone()["total"], 126.17, places=2)
+            row = c.execute("SELECT bullets, source FROM portal_insights WHERE date='2026-11-12'").fetchone()
+            sales = portal.rows(c.execute("SELECT * FROM portal_sales_days"))
+            amounts = portal.online_amounts(c)
+            proj = portal.project_month(sales, [], None, "2026-11-12", amounts)
+            c.close()
+            self.assertEqual(row["source"], "server")
+            text = " ".join(json.loads(row["bullets"]))
+            self.assertIn(portal.money(proj["mtd"]["total"] + proj["mtd"]["online"]), text)
+            self.assertIn("Bopple", text)
+            self.assertIn("till GP", text)
+            self.assertIn(portal.money(proj["mtd"]["gp"]), text)
+        finally:
+            os.environ["PORTAL_INSIGHTS_GENERATE"] = ""
+
+        day = self.authed("GET", "/portal?period=custom&from=2026-11-12&to=2026-11-12")[2].decode()
+        self.assertIn("1 completed sales day", day)
+        split = day.split('id="sales-split"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("$60.00", split.split('id="total-sales"', 1)[1].split('id="till-sales"', 1)[0])
+        self.assertIn("$50.00", split.split('id="till-sales"', 1)[1].split('id="online-sales"', 1)[0])
+        self.assertIn("$10.00", split.split('id="online-sales"', 1)[1].split('id="shop-gp"', 1)[0])
+        gp_card = split.split('id="shop-gp"', 1)[1]
+        self.assertIn("$7.00", gp_card)
+        self.assertNotIn("$60.00", gp_card)
+
+        token = self.csrf_from(self.authed("GET", "/portal/online")[2].decode())
+        raw = json.dumps({"message": "How were online orders?", "page": "/portal/online", "context": {"period": "month"}}).encode()
+        status, _, body, _ = self.request("POST", "/api/portal/chat", raw, {
+            "Content-Type": "application/json", "X-CSRF-Token": token, "Content-Length": str(len(raw)),
+        }, self.jar)
+        self.assertEqual(status, 200, body)
+        thread = json.loads(self.authed("GET", "/api/portal/chat")[2])
+        ctx = thread["messages"][-1]["context"]
+        self.assertEqual(ctx["period"], "month")
+        self.assertIn("gross", ctx["onlineOrders"])
+        self.assertNotEqual(ctx["onlineOrders"], "not loaded")
+        self.assertTrue(ctx["totalSales"].startswith("$"))
+        self.assertTrue(ctx["shopGp"].startswith("till GP"))
 
 
 if __name__ == "__main__":

@@ -2268,6 +2268,7 @@ def page_notes(c):
         older_html = f"<p>{len(older)} older month rows are stored. 2025 rows, when present, are read as quantity and sales ex GST only.</p>"
     packs = []
     for key, label in (
+        ("online-orders", "Online orders"),
         ("product-search", "Product archive"),
         ("retail-pricing", "Retail pricing"),
         ("till-price-changes", "Till price changes"),
@@ -2282,6 +2283,7 @@ def page_notes(c):
 <section class="card"><h2>How the figures are built</h2>
 <ul>
 <li>Shop and fuel totals on the 2026 pages are inc GST. Shop GP is covered sales only. It is not operating profit.</li>
+<li>Online orders (Bopple) are extra sales, paid online and not rung through the till. Total sales add the online gross on top of till sales. Shop GP is till GP only. These orders have no cost.</li>
 <li>2026 GP, GP% and cost coverage use a cost override when one is effective on the sale date, and the till cost otherwise. The nightly sales file itself stays on till cost. Do not also rebase that file, or the override would be applied twice.</li>
 <li>A product with an override is marked Cost override. A $0 till cost is not warned on 2025, and a 2026 row with an override is not treated as missing a cost.</li>
 <li>November 2025 is quantity, sales ex GST, and fuel litres for the whole month. It has no cost, GP, GP% or coverage.</li>
