@@ -1,5 +1,5 @@
 """Owner portal: login, ingest, pages, invoices, and staff hours. Uses a temp SQLite file."""
-import http.client, json, os, re, sys, tempfile, threading, unittest
+import http.client, http.server, json, os, re, sys, tempfile, threading, unittest
 from datetime import datetime, date
 from pathlib import Path
 from urllib.parse import urlencode
@@ -655,6 +655,138 @@ class PortalTest(unittest.TestCase):
         ).fetchone()["sold"]
         c.close()
         self.assertEqual(sold, 20)
+
+    def test_manual_stock_kitchen_range_and_chat(self):
+        portal._ingest_hits.clear()
+        self.login()
+        self.assertEqual(self.ingest("product-search", load("product-search.json"))[0], 200)
+        self.assertEqual(self.ingest("retail-pricing", load("retail-pricing.json"))[0], 200)
+        self.assertEqual(self.ingest("sales", load("sales.json"))[0], 200)
+
+        def post_stock(fields):
+            page = self.authed("GET", "/portal/stock")[2].decode()
+            fields = dict(fields)
+            fields["csrf"] = self.csrf_from(page)
+            return self.authed("POST", "/portal/stock", urlencode(fields))
+
+        status, hdrs, _, _ = post_stock({
+            "action": "add_manual", "name": "House sauce", "code": "", "barcode": "", "group": "Kitchen",
+            "qty": "5", "baseline_date": "2026-11-01", "baseline_time": "23:59",
+        })
+        self.assertEqual(status, 302, hdrs)
+        status, _, body, _ = self.request("GET", "/api/portal/stock", headers={"Authorization": "Bearer test-ingest-key"})
+        payload = json.loads(body)
+        manual = next(row for row in payload["products"] if row.get("manual"))
+        self.assertEqual(manual["code"], "M-0001")
+        self.assertEqual(manual["name"], "House sauce")
+        self.assertEqual(manual["openingQty"], 5)
+        self.assertEqual(self.ingest("stock-movements", {"asOf": "2026-11-02", "movements": [
+            {"code": "M-0001", "date": "2026-11-02", "source": "supplier-invoice", "sold": 0, "received": 2, "reference": "HAND"},
+        ]})[0], 200)
+        edited = post_stock({
+            "action": "edit_manual", "old_code": "M-0001", "code": "SAUCE1", "name": "House sauce",
+            "barcode": "123", "group": "Kitchen",
+        })
+        self.assertEqual(edited[0], 302, edited[2][:200])
+        payload = json.loads(self.request("GET", "/api/portal/stock", headers={"Authorization": "Bearer test-ingest-key"})[2])
+        sauce = next(row for row in payload["products"] if row["code"] == "SAUCE1")
+        self.assertTrue(sauce["manual"])
+        self.assertEqual(sauce["onHand"], 7)
+        self.assertEqual(sauce["barcode"], "123")
+        self.assertEqual(post_stock({"action": "untrack", "code": "SAUCE1"})[0], 302)
+        payload = json.loads(self.request("GET", "/api/portal/stock", headers={"Authorization": "Bearer test-ingest-key"})[2])
+        self.assertFalse(any(row["code"] == "SAUCE1" for row in payload["products"]))
+        history = self.authed("GET", "/portal/stock")[2].decode()
+        self.assertIn("House sauce", history)
+        self.assertIn("untrack", history)
+
+        depts = self.authed("GET", "/portal/products?dept=Roadhouse")[2].decode()
+        self.assertIn("BACON EGG MUFFIN", depts)
+        self.assertIn("ROADHOUSE BREAKFAST", depts)
+        self.assertIn("All departments", depts)
+        prices = self.authed("GET", "/portal/pricing?dept=Grocery")[2].decode()
+        self.assertIn("ARNOTTS SHAPES", prices)
+        self.assertIn("Suggested", prices)
+        self.assertIn("All departments", prices)
+
+        one_day = self.authed("GET", "/portal/kitchen?period=custom&from=2026-11-10&to=2026-11-10&item=14494")[2].decode()
+        item = one_day.split('id="kitchen-item"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("SAUSAGE ROLL", item)
+        self.assertIn(">12<", item)
+        self.assertIn("$68.73", item)
+        self.assertIn("No hourly breakdown", item)
+        period = one_day.split('id="kitchen-period"', 1)[1].split("</section>", 1)[0]
+        self.assertIn('<div class="lbl">Kitchen sales</div><b>$2,165.77</b>', period)
+        self.assertIn("Month to date", period)
+        groups = self.authed("GET", "/portal/kitchen?period=custom&from=2026-11-10&to=2026-11-10&dept=Hot%20Pies%20%26%20Sausage%20Rolls")[2].decode()
+        self.assertIn("SAUSAGE ROLL", groups)
+        self.assertIn("All kitchen groups", groups)
+
+        token = self.csrf_from(self.authed("GET", "/portal")[2].decode())
+        raw = json.dumps({"message": "What sold yesterday?", "page": "/portal/kitchen", "context": {"period": "yesterday"}}).encode()
+        status, _, body, _ = self.request("POST", "/api/portal/chat", raw, {
+            "Content-Type": "application/json", "X-CSRF-Token": token, "Content-Length": str(len(raw)),
+        }, self.jar)
+        self.assertEqual(status, 200, body)
+        saved = json.loads(body)
+        self.assertEqual(saved["status"], "offline")
+        self.assertNotIn("PORTAL_CHAT", body.decode())
+        thread = json.loads(self.authed("GET", "/api/portal/chat")[2])
+        self.assertEqual(thread["messages"][0]["message"], "What sold yesterday?")
+        self.assertIsNone(thread["messages"][0]["reply"])
+        reply = json.dumps({"id": saved["id"], "reply": "Yesterday was **quiet**."}).encode()
+        status, _, body, _ = self.request("POST", "/api/portal/chat/reply", reply, {
+            "Content-Type": "application/json", "Authorization": "Bearer test-ingest-key", "Content-Length": str(len(reply)),
+        })
+        self.assertEqual(status, 200, body)
+        thread = json.loads(self.authed("GET", "/api/portal/chat")[2])
+        self.assertEqual(thread["messages"][0]["reply"], "Yesterday was **quiet**.")
+        page = self.authed("GET", "/portal/kitchen")[2].decode()
+        self.assertIn('id="help-panel"', page)
+        self.assertIn("Today", page)
+        self.assertIn("Yesterday", page)
+
+        received = {}
+
+        class Hook(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                size = int(self.headers.get("Content-Length") or 0)
+                received["auth"] = self.headers.get("Authorization")
+                received["body"] = json.loads(self.rfile.read(size))
+                self.send_response(204)
+                self.end_headers()
+
+            def log_message(self, *_args):
+                return
+
+        hook = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Hook)
+        threading.Thread(target=hook.serve_forever, daemon=True).start()
+        os.environ["PORTAL_CHAT_WEBHOOK_URL"] = "http://127.0.0.1:%s/hook" % hook.server_address[1]
+        os.environ["PORTAL_CHAT_WEBHOOK_KEY"] = "chat-test-key"
+        try:
+            raw = json.dumps({"message": "Relay this", "page": "/portal", "context": {"period": "month"}}).encode()
+            status, _, body, _ = self.request("POST", "/api/portal/chat", raw, {
+                "Content-Type": "application/json", "X-CSRF-Token": token, "Content-Length": str(len(raw)),
+            }, self.jar)
+            self.assertEqual(status, 200, body)
+            self.assertEqual(json.loads(body)["status"], "sent")
+            self.assertNotIn(b"chat-test-key", body)
+            self.assertEqual(received["auth"], "Bearer chat-test-key")
+            self.assertEqual(received["body"]["message"], "Relay this")
+            self.assertEqual(received["body"]["page"], "/portal")
+            self.assertEqual(received["body"]["context"], {"period": "month"})
+            self.assertIn("createdAt", received["body"])
+        finally:
+            os.environ.pop("PORTAL_CHAT_WEBHOOK_URL", None)
+            os.environ.pop("PORTAL_CHAT_WEBHOOK_KEY", None)
+            hook.shutdown()
+            hook.server_close()
+        cleared = json.dumps({}).encode()
+        status, _, body, _ = self.request("POST", "/api/portal/chat/clear", cleared, {
+            "Content-Type": "application/json", "X-CSRF-Token": token, "Content-Length": str(len(cleared)),
+        }, self.jar)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(self.authed("GET", "/api/portal/chat")[2])["messages"], [])
 
 
 if __name__ == "__main__":

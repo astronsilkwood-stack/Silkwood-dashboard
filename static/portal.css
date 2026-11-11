@@ -1,4 +1,4 @@
-:root{--ink:#0f172a;--sl:#64748b;--sl2:#475569;--bd:#e5e7eb;--bg:#f8fafc;--ok:#0f9d6e;--okl:#e7f6ef;--bad:#dc2626;--badl:#fef2f2;--amb:#d97706;--ambl:#fff7ed;--or:#f97316;--blue:#2563eb;--bluel:#eff6ff;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+:root{--ink:#1c1917;--sl:#44403c;--sl2:#292524;--bd:#e7e5e4;--bg:#fafaf9;--ok:#047857;--okl:#ecfdf5;--bad:#b91c1c;--badl:#fef2f2;--amb:#c2410c;--ambl:#fff7ed;--or:#c2410c;--blue:#1d4ed8;--bluel:#eff6ff;--card:#fff;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 *{box-sizing:border-box}
 html,body{overflow-x:hidden}
 body{margin:0;font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink)}
@@ -6,29 +6,38 @@ a{color:var(--ink)}
 button,input,select,textarea{font:inherit;color:inherit}
 .skip{position:absolute;left:-999px;top:8px;background:#fff;padding:8px 12px;z-index:50}
 .skip:focus{left:8px}
-.app{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:100vh}
-aside{background:#fff;border-right:1px solid var(--bd);position:sticky;top:0;height:100vh;display:flex;flex-direction:column;padding:18px 12px}
+.app{display:grid;grid-template-columns:248px minmax(0,1fr);min-height:100vh}
+aside{background:var(--card);border-right:1px solid var(--bd);position:sticky;top:0;height:100vh;display:flex;flex-direction:column;padding:18px 12px}
 .logo{font-weight:800;font-size:20px;letter-spacing:.06em;padding:4px 10px 18px;display:flex;align-items:center;gap:8px}
 .logo i{width:10px;height:10px;border-radius:3px;background:var(--or);display:inline-block}
 .logo span{color:var(--or)}
 .logo small{display:block;font:600 10px var(--mono);letter-spacing:.1em;color:var(--sl);text-transform:uppercase}
-nav{display:grid;gap:4px;overflow:auto;min-height:0}
-nav a{display:flex;align-items:center;min-height:44px;padding:8px 12px;border-radius:10px;color:var(--sl2);text-decoration:none;font-weight:600}
+nav{display:grid;gap:14px;overflow:auto;min-height:0;padding-right:4px}
+.nav-group{display:grid;gap:2px}
+.nav-label{font:700 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--sl);padding:4px 12px}
+nav a{display:flex;align-items:center;gap:10px;min-height:44px;padding:8px 12px;border-radius:10px;color:var(--sl2);text-decoration:none;font-weight:600}
+.nav-ico{width:18px;height:18px;flex:none}
 nav a:hover{background:#f1f5f9}
 nav a.on{background:var(--ink);color:#fff}
 .side-foot{margin-top:auto;display:grid;gap:6px;padding:8px 10px;font-size:14px;color:var(--sl)}
 .side-foot a{font-weight:600}
 .side-foot form{margin:0}
 .side-foot button{background:none;border:0;padding:0;min-height:44px;font-weight:700;color:var(--ink);cursor:pointer;text-align:left}
-.top{position:sticky;top:0;z-index:5;background:rgba(248,250,252,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:12px;padding:10px 24px}
+.workspace{min-width:0}
+.top{position:sticky;top:0;z-index:5;background:rgba(250,250,249,.94);backdrop-filter:blur(8px);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:12px;padding:10px 24px}
+.top-title{display:grid;min-width:0}
+.top-title b{font-size:16px;letter-spacing:-.01em}
+.nav-toggle,.nav-backdrop{display:none}
+.nav-toggle{align-items:center;min-height:44px;padding:0 12px;border-radius:10px;border:1px solid var(--bd);background:#fff;font-weight:700;cursor:pointer}
 .mlogo{display:none;font-weight:800;letter-spacing:.06em}
 .mlogo span{color:var(--or)}
 #clock{font:600 14px var(--mono);color:var(--sl2)}
 .tz{color:var(--sl);font-size:13px}
-.account{margin-left:auto;display:none;align-items:center;gap:8px}
+.account{margin-left:auto;display:flex;align-items:center;gap:8px}
+.who{font-weight:700;color:var(--sl2)}
 .account form{margin:0}
 .account button,.account a{min-height:44px;display:inline-flex;align-items:center;background:#fff;border:1px solid var(--bd);border-radius:10px;padding:0 12px;font-weight:700;text-decoration:none;cursor:pointer}
-main{padding:24px;max-width:1100px}
+main{padding:28px 32px 64px;max-width:1180px}
 .ph h1{margin:0 0 6px;font-size:28px;letter-spacing:-.02em}
 .ph p,.help{color:var(--sl2);margin:0 0 12px}
 .through{font-weight:700;margin:0 0 8px}
@@ -40,9 +49,9 @@ main{padding:24px;max-width:1100px}
 .g4{grid-template-columns:repeat(4,minmax(0,1fr))}
 .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
 .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
-.stat b,.stat{font-variant-numeric:tabular-nums}
-.card.stat b,.stat{display:block;font:600 28px var(--mono);letter-spacing:-.03em;margin:4px 0}
-.card.stat span{color:var(--sl);font-size:13px}
+.stat,.stat b{font-variant-numeric:tabular-nums}
+b.stat,.card.stat>b,.stat>b{display:block;font:600 28px var(--mono);letter-spacing:-.03em;margin:4px 0}
+.card.stat>span,.stat>span{display:block;color:var(--sl);font-size:13px;font-weight:600}
 .btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 14px;border-radius:10px;border:1px solid var(--ink);background:var(--ink);color:#fff;font-weight:700;text-decoration:none;cursor:pointer}
 .btn.ghost{background:#fff;color:var(--ink);border-color:var(--bd)}
 .btn.danger{background:#fff;color:var(--bad);border-color:#fecaca}
@@ -70,7 +79,8 @@ tr.negative td{background:var(--badl)}
 th.weekend,td.weekend{background:var(--ambl)}
 th.holiday,td.holiday{background:#f5f3ff}
 th small{display:block;text-transform:none;letter-spacing:0;font:600 11px system-ui;color:var(--sl2)}
-.tw{overflow-x:auto}
+.tw{overflow:auto;max-height:70vh}
+.tw thead th{position:sticky;top:0;background:#fff;z-index:1}
 .bar,.split{height:10px;background:#f1f5f9;border-radius:99px;overflow:hidden;margin:8px 0}
 .split{display:flex}
 .bar i,.split i{display:block;height:100%;background:var(--ok);flex:none}
@@ -85,7 +95,7 @@ th small{display:block;text-transform:none;letter-spacing:0;font:600 11px system
 .callout{background:var(--ambl);border:1px solid #fed7aa;border-radius:12px;padding:12px 14px;margin:0 0 16px}
 .mini{font-size:13px;color:var(--sl2)}
 .tank.low{border-color:#fecaca}
-.empty{color:var(--sl);padding:12px 0}
+.empty{color:var(--sl2);padding:16px;border:1px dashed var(--bd);border-radius:12px;background:#fff}
 .pre{white-space:pre-wrap}
 .weekbar{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px}
 .weekbar form{display:flex;gap:8px;align-items:flex-end}
@@ -103,22 +113,57 @@ th small{display:block;text-transform:none;letter-spacing:0;font:600 11px system
 .login h1{margin:0 0 8px;font-size:26px}
 .login form{display:grid;gap:12px}
 .date{font-size:22px}
+.trend{display:block;margin-top:8px;font:700 12px var(--mono);color:var(--ok);letter-spacing:0}
+.trend.down{color:var(--bad)}
+.vchart{display:flex;align-items:flex-end;gap:4px;height:84px;margin:8px 0}
+.vchart i{display:block;flex:1;background:var(--or);border-radius:4px 4px 0 0;min-width:6px}
+.h5{height:5%}.h10{height:10%}.h15{height:15%}.h20{height:20%}.h25{height:25%}.h30{height:30%}.h35{height:35%}.h40{height:40%}.h45{height:45%}.h50{height:50%}.h55{height:55%}.h60{height:60%}.h65{height:65%}.h70{height:70%}.h75{height:75%}.h80{height:80%}.h85{height:85%}.h90{height:90%}.h95{height:95%}.h100{height:100%}
+.dept-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
+.dept-card{display:grid;gap:4px;min-height:88px;padding:14px;border:1px solid var(--bd);border-radius:14px;background:#fff;text-decoration:none}
+.dept-card b{font-size:16px}
+.dept-card span,.dept-card small{color:var(--sl);font-size:13px}
+.dept-card:hover{border-color:var(--ink)}
+textarea{border:1px solid var(--bd);border-radius:10px;background:#fff;min-height:88px;padding:10px 12px;font-size:16px;width:100%}
+.help-panel{position:fixed;top:0;right:0;z-index:40;width:min(400px,100%);height:100vh;background:#fff;border-left:1px solid var(--bd);display:flex;flex-direction:column;padding:16px;box-shadow:-12px 0 40px rgba(28,25,23,.08)}
+.help-panel[hidden]{display:none}
+.help-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.help-log{flex:1;overflow:auto;display:grid;align-content:start;gap:10px;margin:12px 0}
+.bubble{border:1px solid var(--bd);border-radius:12px;padding:10px 12px}
+.bubble.you{background:var(--bg)}
+.bubble.bot{background:#fff7ed}
+.login-wrap{width:min(880px,100%);display:grid;grid-template-columns:1.1fr .9fr;background:#fff;border:1px solid var(--bd);border-radius:18px;overflow:hidden}
+.login-hero{background:#1c1917;color:#fafaf9;padding:36px;min-height:440px;display:grid;align-content:space-between;gap:12px}
+.login-hero p{font-size:18px;line-height:1.4;max-width:26ch}
+.login-hero .logo,.login-hero p{color:#fafaf9}
+.login-hero .logo span{color:#fdba74}
+.login-hero .logo small{color:#d6d3d1}
+.login{border:0;border-radius:0;margin:0}
+td.actions{min-width:180px}
+td.actions form{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0}
+td.actions .btn{min-height:36px}
+td.nowrap{white-space:nowrap}
 @media(max-width:900px){
  .app{grid-template-columns:1fr}
- aside{position:sticky;top:0;z-index:20;height:auto;flex-direction:row;align-items:center;padding:0;border-right:0;border-bottom:1px solid var(--bd);overflow-x:auto}
- aside .logo,.side-foot{display:none}
- nav{display:flex;gap:4px;padding:8px}
- nav a{white-space:nowrap}
- .top{padding:10px 14px}
+ #portal-nav{position:fixed;z-index:30;transform:translateX(-105%);transition:transform .2s ease;width:min(300px,88vw);box-shadow:8px 0 30px rgba(28,25,23,.12)}
+ body.nav-open #portal-nav{transform:none}
+ .nav-toggle{display:inline-flex}
+ .nav-backdrop{display:none;position:fixed;inset:0;background:rgba(28,25,23,.4);border:0;z-index:25}
+ body.nav-open .nav-backdrop{display:block}
+ .top{padding:10px 14px;display:grid;grid-template-columns:auto auto minmax(0,1fr);align-items:center}
+ .top-title .tz{display:none}
+ #clock{grid-column:1 / -1}
+ .account{grid-column:1 / -1;margin-left:0;justify-content:flex-end}
+ .account a{display:none}
  .mlogo{display:block}
- .account{display:flex}
- .top{flex-wrap:wrap}
- main{padding:16px 14px 40px}
+ .who{display:none}
+ main{padding:16px 14px 48px}
  .g4,.g3,.g2{grid-template-columns:1fr}
  .ph h1{font-size:24px}
  .week-table{display:none}
  .week-cards{display:grid;gap:12px}
  .row>*{min-width:100%}
+ .login-wrap{grid-template-columns:1fr}
+ .help-panel{width:100%}
 }
 @media(min-width:901px){
  .week-cards{display:none}
