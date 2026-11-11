@@ -1404,7 +1404,7 @@ def layout(title, active, body, user, when):
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#1e3a8a">
+<meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#0f2a44">
 <meta name="csrf-token" content="{h(user['csrf'])}">
 <title>{h(title)} · Silkwood owner</title>
 <link rel="icon" type="image/png" href="/static/icon-192.png">
@@ -1959,7 +1959,7 @@ def login_page(error, csrf, setup_missing=False):
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#1e3a8a">
+<meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#0f2a44">
 <title>Owner login · Silkwood</title>
 <link rel="icon" type="image/png" href="/static/icon-192.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
