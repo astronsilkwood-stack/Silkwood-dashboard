@@ -116,7 +116,7 @@ class PortalTest(unittest.TestCase):
     def test_logged_out_pages_redirect_and_staff_routes_stay(self):
         for path in ("/portal", "/portal/invoices", "/portal/hours", "/portal/purchases", "/portal/fuel", "/portal/dips", "/portal/hours.csv",
                      "/portal/products", "/portal/pricing", "/portal/till-prices", "/portal/departments", "/portal/kitchen",
-                     "/portal/shifts", "/portal/commission", "/portal/notes"):
+                     "/portal/shifts", "/portal/commission", "/portal/notes", "/portal/stock"):
             status, hdrs, body, _ = self.request("GET", path, headers={"X-Staff-Pin": "9999"})
             self.assertEqual(status, 302, path)
             self.assertEqual(hdrs.get("Location"), "/portal/login")
@@ -561,6 +561,100 @@ class PortalTest(unittest.TestCase):
         self.assertIn('target="_blank"', invoices)
         hours = self.authed("GET", "/portal/hours?week=2026-11-09")[2].decode()
         self.assertIn("does not send hours to Xero", hours)
+
+    def test_stock_on_hand(self):
+        portal._ingest_hits.clear()
+        status, _, body, _ = self.request("GET", "/api/portal/stock")
+        self.assertEqual(status, 401)
+        self.assertNotIn(b"baselineRule", body)
+        self.login()
+        code, _, raw, _ = self.ingest("product-search", load("product-search.json"))
+        self.assertEqual(code, 200, raw)
+        code, _, raw, _ = self.ingest("stock-movements", load("stock-movements.json"))
+        self.assertEqual(code, 200, raw)
+        self.assertEqual(json.loads(raw)["movements"], 2)
+
+        def save(code, qty, day):
+            page = self.authed("GET", "/portal/stock?pick=" + code)[2].decode()
+            csrf = self.csrf_from(page)
+            return self.authed("POST", "/portal/stock", urlencode({
+                "csrf": csrf, "action": "set_count", "code": code, "qty": str(qty),
+                "baseline_date": day, "baseline_time": "18:30", "note": "stocktake",
+            }))
+
+        status, hdrs, _, _ = save("804040", 40, "2026-11-08")
+        self.assertEqual(status, 302, hdrs)
+        self.assertEqual(hdrs.get("Location"), "/portal/stock?ok=1")
+        page = self.authed("GET", "/portal/stock")[2].decode()
+        row = page.split('id="stock-804040"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("BACON EGG MUFFIN", row)
+        self.assertIn("ROADHOUSE BREAKFAST", row)
+        self.assertIn(">40<", row)
+        self.assertIn(">23<", row)
+        self.assertIn(">12<", row)
+        self.assertIn(">29<", row)
+        self.assertIn("end of 8 Nov 2026", row)
+
+        replaced = {"asOf": "2026-11-10", "movements": [
+            {"code": "804040", "date": "2026-11-10", "source": "till-sales", "sold": 20, "received": 0},
+        ]}
+        self.assertEqual(self.ingest("stock-movements", replaced)[0], 200)
+        self.assertEqual(self.ingest("stock-movements", {"asOf": "2026-11-08", "movements": [
+            {"code": "804040", "date": "2026-11-08", "source": "till-sales", "sold": 100, "received": 0},
+        ]})[0], 200)
+        page = self.authed("GET", "/portal/stock")[2].decode()
+        row = page.split('id="stock-804040"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn(">20<", row)
+        self.assertIn(">32<", row)
+        self.assertIn("1.6", row)
+        self.assertNotIn(">100<", row)
+        c = server.db()
+        stored = c.execute(
+            "SELECT COUNT(*) AS n, SUM(sold) AS sold FROM portal_stock_movements WHERE code='804040' AND move_date='2026-11-10' AND source='till-sales'"
+        ).fetchone()
+        c.close()
+        self.assertEqual(stored["n"], 1)
+        self.assertEqual(stored["sold"], 20)
+
+        self.assertEqual(save("804040", 10, "2026-11-10")[0], 302)
+        self.assertEqual(save("10000", 1, "2026-11-01")[0], 302)
+        self.assertEqual(self.ingest("stock-movements", {"asOf": "2026-11-02", "movements": [
+            {"code": "10000", "date": "2026-11-02", "source": "till-sales", "sold": 4, "received": 0},
+        ]})[0], 200)
+        page = self.authed("GET", "/portal/stock")[2].decode()
+        muffin = page.split('id="stock-804040"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn(">10<", muffin)
+        self.assertIn("to 40", page)
+        self.assertIn("to 10", page)
+        biscuit = page.split('id="stock-10000"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn('class="negative"', biscuit)
+        self.assertIn(">-3<", biscuit)
+        negative = self.authed("GET", "/portal/stock?filter=negative")[2].decode()
+        self.assertIn("stock-10000", negative)
+        self.assertNotIn("stock-804040", negative)
+
+        status, _, body, _ = self.request("GET", "/api/portal/stock", headers={"Authorization": "Bearer test-ingest-key"})
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["timezone"], "Australia/Brisbane")
+        self.assertIn("end of baselineDate", payload["baselineRule"])
+        item = next(row for row in payload["products"] if row["code"] == "804040")
+        self.assertEqual(item["baselineDate"], "2026-11-10")
+        self.assertEqual(item["openingQty"], 10)
+        self.assertEqual(item["onHand"], 10)
+        self.assertEqual(item["group"], "ROADHOUSE BREAKFAST")
+        self.assertEqual(self.request("GET", "/api/portal/stock", headers={"Authorization": "Bearer wrong"})[0], 401)
+        bad = self.ingest("stock-movements", {"asOf": "2026-11-10", "movements": [
+            {"code": "804040", "date": "2026-11-10", "source": "till-sales", "sold": 1, "received": 0, "reference": "4111111111111111"},
+        ]})
+        self.assertEqual(bad[0], 400)
+        self.assertIn(b"card", bad[2].lower())
+        c = server.db()
+        sold = c.execute(
+            "SELECT sold FROM portal_stock_movements WHERE code='804040' AND move_date='2026-11-10' AND source='till-sales'"
+        ).fetchone()["sold"]
+        c.close()
+        self.assertEqual(sold, 20)
 
 
 if __name__ == "__main__":

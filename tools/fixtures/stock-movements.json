@@ -1,0 +1,7 @@
+{
+  "asOf": "2026-11-10",
+  "movements": [
+    {"code": "804040", "date": "2026-11-10", "source": "till-sales", "sold": 23, "received": 0},
+    {"code": "804040", "date": "2026-11-09", "source": "supplier-invoice", "sold": 0, "received": 12, "reference": "TILL8122"}
+  ]
+}
