@@ -116,7 +116,8 @@ CREATE TABLE IF NOT EXISTS portal_insights(
   date TEXT PRIMARY KEY, headline TEXT NOT NULL, bullets TEXT NOT NULL, source TEXT NOT NULL, received_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS portal_invoices(
   invoice_key TEXT PRIMARY KEY, supplier TEXT NOT NULL, invoice_number TEXT NOT NULL, invoice_date TEXT,
-  due_date TEXT, amount_due REAL, status TEXT NOT NULL, pay_url TEXT, source_as_of TEXT, updated_at TEXT NOT NULL);
+  due_date TEXT, amount_due REAL, status TEXT NOT NULL, pay_url TEXT, source_as_of TEXT, updated_at TEXT NOT NULL,
+  paid_date TEXT, amount REAL);
 CREATE TABLE IF NOT EXISTS portal_people(
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -1025,16 +1026,19 @@ def apply_invoices(c, data):
             raise ValueError(f"invoices[{i}] has a bad status")
         key = supplier.casefold() + "\n" + number.casefold()
         pay = clean_pay_url(inv.get("pay_url"))
+        paid_date = need_date(inv.get("paid_date"), "paid date") if inv.get("paid_date") else None
+        amount = num(inv.get("amount"), "amount") if "amount" in inv and inv.get("amount") not in (None, "") else None
         c.execute(
-            """INSERT INTO portal_invoices(invoice_key,supplier,invoice_number,invoice_date,due_date,amount_due,status,pay_url,source_as_of,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?)
+            """INSERT INTO portal_invoices(invoice_key,supplier,invoice_number,invoice_date,due_date,amount_due,status,pay_url,source_as_of,updated_at,paid_date,amount)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(invoice_key) DO UPDATE SET supplier=excluded.supplier, invoice_number=excluded.invoice_number,
                  invoice_date=excluded.invoice_date, due_date=excluded.due_date, amount_due=excluded.amount_due,
-                 status=excluded.status, pay_url=excluded.pay_url, source_as_of=excluded.source_as_of, updated_at=excluded.updated_at""",
+                 status=excluded.status, pay_url=excluded.pay_url, source_as_of=excluded.source_as_of, updated_at=excluded.updated_at,
+                 paid_date=excluded.paid_date, amount=excluded.amount""",
             (key, supplier, number,
              need_date(inv.get("date"), "invoice date") if inv.get("date") else None,
              need_date(inv.get("due_date"), "due date") if inv.get("due_date") else None,
-             num(inv.get("amount_due"), "amount_due"), status, pay, as_of, stamp()),
+             num(inv.get("amount_due"), "amount_due"), status, pay, as_of, stamp(), paid_date, amount),
         )
         seen.add(key)
         n += 1
@@ -1499,21 +1503,23 @@ def latest_insight(c):
     return row
 
 
-def unpaid_invoices(c, today_d):
-    found = []
+def invoice_lists(c, today_d):
+    """Unpaid bills, and bills marked paid. Void, draft, and absent rows stay off both lists."""
+    unpaid, paid = [], []
     for row in rows(c.execute("SELECT * FROM portal_invoices")):
         status = (row["status"] or "").strip().lower()
-        amount = float(row["amount_due"] or 0)
-        if status in PAID_STATUS or amount == 0 and status == "paid":
+        owing = float(row["amount_due"] or 0)
+        if status in ("paid", "p"):
+            paid.append(row)
             continue
         if status in PAID_STATUS:
             continue
-        if status in ("paid", "void", "voided", "deleted", "draft", "cancelled", "canceled", "absent"):
-            continue
-        row["overdue"] = bool(row["due_date"] and row["due_date"] < today_d.isoformat() and amount > 0)
-        found.append(row)
-    found.sort(key=lambda r: (not r["overdue"], r["due_date"] or "9999-99-99", r["supplier"].casefold()))
-    return found
+        row["overdue"] = bool(row["due_date"] and row["due_date"] < today_d.isoformat() and owing > 0)
+        unpaid.append(row)
+    unpaid.sort(key=lambda r: (not r["overdue"], r["due_date"] or "9999-99-99", r["supplier"].casefold()))
+    paid.sort(key=lambda r: r["supplier"].casefold())
+    paid.sort(key=lambda r: r.get("paid_date") or r.get("invoice_date") or "", reverse=True)
+    return unpaid, paid
 
 
 def shift_hours(work_date, start, finish, break_minutes):
@@ -2276,37 +2282,77 @@ def page_dips(c, query):
 {parity().dips_range(c, active, start, end)}{body}"""
 
 
-def page_invoices(c):
+def _paid_total(paid):
+    known = [row["amount"] for row in paid if row.get("amount") is not None]
+    if not paid:
+        return "—", "no paid invoices"
+    if len(known) == len(paid):
+        return money(sum(known)), f"{len(paid)} paid invoice{'s' if len(paid) != 1 else ''}"
+    if known:
+        missing = len(paid) - len(known)
+        return money(sum(known)), f"{missing} paid invoice{'s' if missing != 1 else ''} ha{'ve' if missing != 1 else 's'} no total in the file"
+    return "—", "paid status is in the file; the amount paid is not"
+
+
+def page_invoices(c, query=None):
+    query = query or {}
+    active = "paid" if query.get("list") == "paid" else "unpaid"
     today_d = today()
-    found = unpaid_invoices(c, today_d)
-    overdue_n = sum(1 for r in found if r["overdue"])
-    overdue_sum = sum(r["amount_due"] or 0 for r in found if r["overdue"])
-    total = sum(r["amount_due"] or 0 for r in found)
-    body = []
-    for row in found:
-        cls = ' class="overdue"' if row["overdue"] else ""
-        pay = ""
-        if row["pay_url"]:
-            pay = f'<a class="btn sm" href="{h(row["pay_url"])}" target="_blank" rel="noopener noreferrer">Pay</a>'
-        due = fmt_date(row["due_date"]) if row["due_date"] else "No due date"
-        flag = '<span class="pill bad">Overdue</span>' if row["overdue"] else '<span class="pill">Unpaid</span>'
-        body.append(
-            f"<tr{cls}><td>{h(row['supplier'])}</td><td>{h(row['invoice_number'])}</td><td>{h(fmt_date(row['invoice_date'])) if row['invoice_date'] else '—'}</td>"
-            f"<td>{h(due)}</td><td class=\"num\">{money(row['amount_due'])}</td><td>{flag}</td><td>{pay}</td></tr>"
+    unpaid, paid = invoice_lists(c, today_d)
+    overdue_n = sum(1 for r in unpaid if r["overdue"])
+    overdue_sum = sum(r["amount_due"] or 0 for r in unpaid if r["overdue"])
+    owing = sum(r["amount_due"] or 0 for r in unpaid)
+    paid_figure, paid_note = _paid_total(paid)
+    tabs = []
+    for key, label in (("unpaid", "Unpaid"), ("paid", "Paid")):
+        cls = " on" if key == active else ""
+        tabs.append(f'<a class="chip{cls}" href="/portal/invoices?list={key}">{label}</a>')
+    if active == "paid":
+        body = []
+        for row in paid:
+            paid_on = fmt_date(row["paid_date"]) if row.get("paid_date") else "—"
+            total = money(row["amount"]) if row.get("amount") is not None else "—"
+            body.append(
+                f"<tr class=\"ok\"><td>{h(row['supplier'])}</td><td>{h(row['invoice_number'])}</td>"
+                f"<td>{h(fmt_date(row['invoice_date'])) if row['invoice_date'] else '—'}</td>"
+                f"<td>{h(fmt_date(row['due_date'])) if row['due_date'] else '—'}</td>"
+                f"<td>{h(paid_on)}</td><td class=\"num\">{total}</td><td><span class=\"pill ok\">Paid</span></td></tr>"
+            )
+        table = '<p class="empty">No paid invoices.</p>' if not body else (
+            '<div class="tw"><table><thead><tr><th>Supplier</th><th>Invoice</th><th>Invoice date</th><th>Due</th>'
+            '<th>Paid</th><th>Invoice total</th><th>Status</th></tr></thead><tbody>'
+            + "".join(body) + "</tbody></table></div>"
         )
-    table = '<p class="empty">No unpaid invoices.</p>' if not body else (
-        '<div class="tw"><table><thead><tr><th>Supplier</th><th>Invoice</th><th>Date</th><th>Due</th><th>Amount due</th><th>Status</th><th></th></tr></thead><tbody>'
-        + "".join(body) + "</tbody></table></div>"
-    )
+        listing = f'<section class="card" id="paid-list"><h2>Paid invoices</h2>{table}</section>'
+    else:
+        body = []
+        for row in unpaid:
+            cls = ' class="overdue"' if row["overdue"] else ""
+            pay = ""
+            if row["pay_url"]:
+                pay = f'<a class="btn sm" href="{h(row["pay_url"])}" target="_blank" rel="noopener noreferrer">Pay</a>'
+            due = fmt_date(row["due_date"]) if row["due_date"] else "No due date"
+            flag = '<span class="pill bad">Overdue</span>' if row["overdue"] else '<span class="pill">Unpaid</span>'
+            body.append(
+                f"<tr{cls}><td>{h(row['supplier'])}</td><td>{h(row['invoice_number'])}</td><td>{h(fmt_date(row['invoice_date'])) if row['invoice_date'] else '—'}</td>"
+                f"<td>{h(due)}</td><td class=\"num\">{money(row['amount_due'])}</td><td>{flag}</td><td>{pay}</td></tr>"
+            )
+        table = '<p class="empty">No unpaid invoices.</p>' if not body else (
+            '<div class="tw"><table><thead><tr><th>Supplier</th><th>Invoice</th><th>Date</th><th>Due</th><th>Amount due</th><th>Status</th><th></th></tr></thead><tbody>'
+            + "".join(body) + "</tbody></table></div>"
+        )
+        listing = f'<section class="card" id="invoice-list"><h2>Unpaid invoices</h2>{table}</section>'
     as_of = meta_get(c, "invoices").get("asOf")
-    return f"""<div class="ph"><h1>Unpaid invoices</h1>{through_line(data_through(c))}
-<p>Pay opens that supplier's own page in a new tab. This portal does not pay anyone, and it does not store card or bank numbers.</p></div>
-<section class="grid g3">
-<div class="card stat"><div class="lbl">Unpaid</div><b>{money(total)}</b><span>{len(found)} invoice{'s' if len(found) != 1 else ''}</span></div>
-<div class="card stat"><div class="lbl">Overdue</div><b>{money(overdue_sum)}</b><span>{overdue_n} past the due date</span></div>
+    return f"""<div class="ph"><h1>Invoices</h1>{through_line(data_through(c))}
+<p>Supplier bills from the nightly invoice list. Unpaid is shown first. Pay opens that supplier's own page in a new tab, and only on an unpaid bill. This portal does not pay anyone, and it does not store card or bank numbers.</p></div>
+<section class="grid g4" id="invoice-totals">
+<div class="card stat" id="unpaid-total"><div class="lbl">Total owing</div><b>{money(owing)}</b><span>{len(unpaid)} unpaid invoice{'s' if len(unpaid) != 1 else ''}</span></div>
+<div class="card stat" id="overdue-total"><div class="lbl">Overdue</div><b>{money(overdue_sum)}</b><span>{overdue_n} past the due date</span></div>
+<div class="card stat" id="paid-total"><div class="lbl">Total paid</div><b>{paid_figure}</b><span>{h(paid_note)}</span></div>
 <div class="card stat"><div class="lbl">Invoice list through</div><b class="date">{h(fmt_date(as_of)) if as_of else '—'}</b><span>from the nightly ingest</span></div>
 </section>
-<section class="card" id="invoice-list">{table}</section>"""
+<div class="chips" id="invoice-tabs">{''.join(tabs)}</div>
+{listing}"""
 
 
 ERR_TEXT = {
@@ -2594,7 +2640,7 @@ def handle_get(handler, parsed):
         elif path == "/portal/notes":
             html = layout("Data notes", "notes", parity().page_notes(c), user, _srv().now())
         elif path == "/portal/invoices":
-            html = layout("Invoices", "invoices", page_invoices(c), user, _srv().now())
+            html = layout("Invoices", "invoices", page_invoices(c, query), user, _srv().now())
         elif path == "/portal/hours":
             html = layout("Staff hours", "hours", page_hours(c, user, query), user, _srv().now())
         elif path == "/portal/password":
@@ -3089,11 +3135,29 @@ def handle_ingest(handler):
     handler.send(200, {"ok": True, "dataset": dataset, **result})
 
 
+def ensure_invoice_columns(c):
+    """Older databases were created before paid_date and amount existed."""
+    wanted = (("paid_date", "TEXT"), ("amount", "REAL"))
+    if _srv().PG:
+        found = {
+            row["column_name"]
+            for row in c.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='portal_invoices'"
+            ).fetchall()
+        }
+    else:
+        found = {row["name"] for row in c.execute("PRAGMA table_info(portal_invoices)").fetchall()}
+    for name, kind in wanted:
+        if name not in found:
+            c.execute(f"ALTER TABLE portal_invoices ADD COLUMN {name} {kind}")
+
+
 def install():
     srv = _srv()
     c = srv.PgConn(direct=True) if srv.PG else srv.db()
     try:
         c.executescript(SCHEMA)
+        ensure_invoice_columns(c)
         c.commit()
     finally:
         c.close()

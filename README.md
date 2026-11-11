@@ -100,7 +100,9 @@ No new environment variable is required for these pages.
 ]}}
 ```
 
-`pay_url` is optional. It must be `http` or `https`, with no username or password in the URL. The Pay button opens that address in a new tab. `status` is `unpaid`, `paid`, `void`, `draft`, or `absent`. A due date before today (Brisbane) is shown as overdue. `"sync": true` marks invoices missing from this upload as `absent` so they leave the unpaid list; the row is kept. Card numbers, and fields named like card, cvv, bsb, or bank account, are rejected and nothing from that upload is stored.
+`pay_url` is optional. It must be `http` or `https`, with no username or password in the URL. The Pay button opens that address in a new tab, and only for a bill that is still unpaid. `status` is `unpaid`, `paid`, `void`, `draft`, or `absent`. `paid` and `p` are the paid list. Void, draft, and absent stay off both lists. A due date before today (Brisbane) is shown as overdue on an unpaid bill. `"sync": true` marks invoices missing from this upload as `absent` so they leave the unpaid list; the row is kept. Card numbers, and fields named like card, cvv, bsb, or bank account, are rejected and nothing from that upload is stored.
+
+`amount_due` is what is still owing. On a paid bill it is usually 0, so it is not the amount that was paid. Optional `amount` is the invoice total (inc GST), a number. Optional `paid_date` is `YYYY-MM-DD`. When those two are present, the paid list shows the paid date and the total paid is the sum of `amount`. Without them the paid list still shows who is paid, and the total stays blank.
 
 **sales** also keeps `periods[]` `weekdays`, `departments`, `top`, `low`, and `summary`, plus `products` (code to name), `kitchen`, `window`, `olderMonths`, and the commission header (`planDaily`, `neededDaily`, `missingDates`, `october`, …). `searchPack` is ignored. Optional `lastYear` is rejected if it contains cost, GP, coverage, or a missing-cost field.
 

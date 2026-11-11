@@ -939,6 +939,67 @@ class PortalTest(unittest.TestCase):
         self.assertTrue(ctx["totalSales"].startswith("$"))
         self.assertTrue(ctx["shopGp"].startswith("till GP"))
 
+    def test_invoice_paid_and_unpaid_lists(self):
+        portal._ingest_hits.clear()
+        self.login()
+        c = server.db()
+        c.execute("DELETE FROM portal_invoices")
+        c.commit()
+        c.close()
+        code, _, raw, _ = self.ingest("invoices", load("invoices.json"))
+        self.assertEqual(code, 200, raw[:300])
+        page = self.authed("GET", "/portal/invoices")[2].decode()
+        self.assertIn("Unpaid invoices", page)
+        self.assertIn("Total owing", page)
+        self.assertIn("Total paid", page)
+        self.assertIn("Bega Dairy", page)
+        self.assertIn('class="overdue"', page)
+        self.assertIn('href="https://example.com/pay/bega/577803222"', page)
+        self.assertIn('target="_blank"', page)
+        self.assertIn('rel="noopener noreferrer"', page)
+        self.assertNotIn("Telstra", page)
+        unpaid_rows, paid_rows = portal.invoice_lists(server.db(), portal.today())
+        owing = sum(row["amount_due"] or 0 for row in unpaid_rows)
+        self.assertIn(portal.money(owing), page.split('id="unpaid-total"', 1)[1].split('id="overdue-total"', 1)[0])
+        self.assertIn("<b>—</b>", page.split('id="paid-total"', 1)[1].split('id="invoice-tabs"', 1)[0])
+
+        paid = self.authed("GET", "/portal/invoices?list=paid")[2].decode()
+        paid_table = paid.split('id="paid-list"', 1)[1]
+        self.assertIn("Telstra", paid_table)
+        self.assertIn("Paid invoices", paid_table)
+        self.assertNotIn("Bega Dairy", paid_table)
+        self.assertNotIn("Pay", paid_table)
+        self.assertNotIn('class="overdue"', paid_table)
+        self.assertNotIn("https://example.com/pay/", paid)
+
+        code, _, raw, _ = self.ingest("invoices", {"date": "2026-11-11", "invoices": [
+            {
+                "supplier": "Paid Co", "invoice_number": "P-1", "date": "2026-10-02", "due_date": "2026-10-16",
+                "amount_due": 0, "amount": 40, "paid_date": "2026-11-01", "status": "paid",
+                "pay_url": "https://example.com/pay/paid-co/P-1",
+            },
+            {
+                "supplier": "Void Co", "invoice_number": "V-1", "date": "2026-10-03", "due_date": "2026-10-17",
+                "amount_due": 12, "status": "void",
+            },
+        ]})
+        self.assertEqual(code, 200, raw[:300])
+        unpaid = self.authed("GET", "/portal/invoices")[2].decode()
+        self.assertIn("Bega Dairy", unpaid)
+        self.assertNotIn("Paid Co", unpaid.split('id="invoice-list"', 1)[1])
+        self.assertNotIn("Void Co", unpaid)
+        self.assertNotIn("https://example.com/pay/paid-co/P-1", unpaid)
+        paid = self.authed("GET", "/portal/invoices?list=paid")[2].decode()
+        paid_table = paid.split('id="paid-list"', 1)[1]
+        self.assertIn("Paid Co", paid_table)
+        self.assertIn("Telstra", paid_table)
+        self.assertIn("1 Nov 2026", paid_table)
+        self.assertIn("$40.00", paid.split('id="paid-total"', 1)[1].split('id="invoice-tabs"', 1)[0])
+        self.assertIn("no total in the file", paid)
+        self.assertNotIn("https://example.com/pay/paid-co/P-1", paid)
+        self.assertNotIn("Void Co", paid)
+        self.assertNotIn(">Pay<", paid_table)
+
     def _clear_exceptions(self):
         c = server.db()
         c.execute("DELETE FROM portal_shift_exceptions")
