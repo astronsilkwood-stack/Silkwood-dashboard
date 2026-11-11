@@ -68,7 +68,7 @@ Content-Type: application/json
 {"dataset": "<name>", "data": { ... }}
 ```
 
-`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept.
+`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`, `shift-exceptions`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept.
 
 No new environment variable is required for these pages.
 
@@ -100,7 +100,9 @@ No new environment variable is required for these pages.
 ]}}
 ```
 
-`pay_url` is optional. It must be `http` or `https`, with no username or password in the URL. The Pay button opens that address in a new tab. `status` is `unpaid`, `paid`, `void`, `draft`, or `absent`. A due date before today (Brisbane) is shown as overdue. `"sync": true` marks invoices missing from this upload as `absent` so they leave the unpaid list; the row is kept. Card numbers, and fields named like card, cvv, bsb, or bank account, are rejected and nothing from that upload is stored.
+`pay_url` is optional. It must be `http` or `https`, with no username or password in the URL. The Pay button opens that address in a new tab, and only for a bill that is still unpaid. `status` is `unpaid`, `paid`, `void`, `draft`, or `absent`. `paid` and `p` are the paid list. Void, draft, and absent stay off both lists. A due date before today (Brisbane) is shown as overdue on an unpaid bill. `"sync": true` marks invoices missing from this upload as `absent` so they leave the unpaid list; the row is kept. Card numbers, and fields named like card, cvv, bsb, or bank account, are rejected and nothing from that upload is stored.
+
+`amount_due` is what is still owing. On a paid bill it is usually 0, so it is not the amount that was paid. Optional `amount` is the invoice total (inc GST), a number. Optional `paid_date` is `YYYY-MM-DD`. When those two are present, the paid list shows the paid date and the total paid is the sum of `amount`. Without them the paid list still shows who is paid, and the total stays blank.
 
 **sales** also keeps `periods[]` `weekdays`, `departments`, `top`, `low`, and `summary`, plus `products` (code to name), `kitchen`, `window`, `olderMonths`, and the commission header (`planDaily`, `neededDaily`, `missingDates`, `october`, …). `searchPack` is ignored. Optional `lastYear` is rejected if it contains cost, GP, coverage, or a missing-cost field.
 
@@ -176,6 +178,55 @@ The JSON has `timezone`, `baselineRule`, and `products[]` (`code`, `name`, `grou
 ```
 
 `asOf` is optional. If it is omitted, the latest `daily[].date` or `orders[].trading_date` is used. `source` is optional. `daily` rows are upserted by `date`. `orders` are upserted by `order_no`. Rows for other dates stay. On each daily row, `orders` is a whole number of orders that day. Money fields are numbers. `fees` and `refunds` keep Bopple’s sign (a fee is usually negative). Net payout is gross plus fees plus refunds. `card` is the brand (Visa, Master, Amex), not a card number. A card number, or a field named like `card_number`, `cvv`, or a bank account, is rejected and nothing from that upload is stored. `wallet` is a short name such as Card, Apple pay, Link, or Google pay. `time` is the Bopple timestamp text. If `daily` is omitted and `orders` is present, the portal builds the daily totals from the orders. At least one daily row or one order is required.
+
+Each order may also include the Scheduled Orders export: `customer_name`, `order_type` (such as `Pickup`), `fulfilment_time` (such as `02:21pm`), and `items`. An item is `{category, product, qty, total, modifiers: [{category, name, qty, total}]}`. A modifier belongs to the product row above it. Orders that omit these fields still ingest. A later upload that omits them leaves the stored customer and items in place. `tools/parse_scheduled_orders.py` turns the CSV (UTF-8 with BOM) into that structure keyed by order number.
+
+**shift-exceptions** — price overrides, fuel drive-offs, and account charges (IOU and on account) from the till. These are not extra sales. A sample is `tools/fixtures/shift-exceptions.json`. The usual nightly body is one trade date, the same JSON file the box already writes for that day. `row_count` is ignored. `rows` may be empty, which clears that date.
+
+```json
+{"dataset":"shift-exceptions","data":{
+  "date":"2026-11-11",
+  "location":"Silkwood POS1",
+  "source":"SwiftPOS QUICKFUEL, location 1",
+  "generated_at":"2026-11-12T07:41:24+10:00",
+  "timezone":"Australia/Brisbane",
+  "rows":[]
+}}
+```
+
+`timezone`, when sent, must be `Australia/Brisbane`. `location`, `source`, and `generated_at` are optional. `asOf` is optional. If it is omitted, the latest trade date in the payload is used. A later upload does not move `asOf` backward, so re-sending an older day of the last seven leaves the newer watermark in place.
+
+Each listed date is replaced. Rows for dates not in the payload stay. The row key is `type`, `date`, `receipt`, `time`, and `item` (case and extra spaces ignored). Two rows in one date with the same key keep the later one. A changed item does not leave the old row behind, because the whole date is deleted and written again.
+
+To send several dates in one request, use `days` instead of a top-level `date` and `rows`:
+
+```json
+{"dataset":"shift-exceptions","data":{
+  "days":[
+    {"date":"2026-11-10","rows":[]},
+    {"date":"2026-11-11","rows":[]}
+  ]
+}}
+```
+
+A backfill can send a flat `rows` list. Each row needs its own `date`. Add `dates` when a day in the export has no rows and should be cleared. Dates omitted from both `rows` and `dates` are left as they are.
+
+```json
+{"dataset":"shift-exceptions","data":{
+  "dates":["2026-10-24","2026-11-11"],
+  "rows":[]
+}}
+```
+
+Do not send `days` together with `date`, `dates`, or `rows`. A `200` body includes `asOf`, `dates` (how many dates were replaced), `rows` (how many rows were stored), and `replaced` (those dates).
+
+Every row needs `type`, `time` (`HH:MM:SS`), `receipt`, `staff`, `item`, and `amount`. `receipt` is a digit string (a whole number is accepted). `type` is `price_override`, `drive_off`, or `account`.
+
+A price override also needs `subtype` (`shop` or `surcharge_default_zero`), `normal_price`, `charged_price`, and `difference`. `difference` is `(charged - normal) × quantity`. `plu` and `reason` are optional. `status` is empty.
+
+A drive-off or account row also needs `account_type`, `status` (`paid`, `unpaid`, or `partial`), `status_basis` (`allocated_payments` or `fifo_estimate_vs_account_balance`), and `outstanding`. `account_type` is `Drive Off` for a drive-off, and `IOU` or `On account` for an account charge. `quantity`, `customer`, `rego`, `paid_on_account`, and `lines` are optional. `lines` entries are `item`, `plu`, `quantity`, `amount`, and `adjustment`.
+
+A card number, a run of 12 or more digits, or a field named like `card_number`, `cvv`, `account`, `bsb`, or a bank account is rejected and nothing from that upload is stored. `account_type` is the charge kind, not a bank account. The page does not show card or bank numbers. Paid, unpaid, and partial for named on-account customers is an estimate.
 
 The kitchen page date presets are Today, Yesterday, This week, Last 7 days, This month and Last month, plus From and To. Those dates apply to the kitchen totals, the group list and a single item. The nightly kitchen file is one total per day (`days[]` is `[date, kitchenSalesInc, coveredGp, coveredEx, kitchenSalesEx, shopSalesInc, packedItems]`). There is no hour field in that pack, so the item view says so. If a future day row includes an 8th `hours` list of `[hour, qty]`, that table is shown.
 

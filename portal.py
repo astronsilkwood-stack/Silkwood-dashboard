@@ -1,4 +1,4 @@
-"""Owner portal: login, nightly ingest, sales pages, invoices, and staff hours.
+"""Owner portal: login, nightly ingest, sales pages, till exceptions, invoices, and staff hours.
 
 Separate from the staff PIN. Pages and JSON under /portal and /api/portal require a
 session cookie, except the login page and the bearer-key ingest/hours endpoints.
@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 DATASETS = (
     "sales", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices",
     "product-search", "retail-pricing", "till-price-changes", "shifts", "last-year", "cost-overrides",
-    "stock-movements", "online-orders",
+    "stock-movements", "online-orders", "shift-exceptions",
 )
 INGEST_MAX = 8_000_000
 FORM_MAX = 100_000
@@ -66,6 +66,7 @@ PART_HOLIDAYS = {
 NAV = [
     ("/portal", "Overview", "overview"),
     ("/portal/online", "Online orders", "online"),
+    ("/portal/exceptions", "Till exceptions", "exceptions"),
     ("/portal/products", "Products", "products"),
     ("/portal/stock", "Stock on hand", "stock"),
     ("/portal/pricing", "Pricing", "pricing"),
@@ -115,7 +116,8 @@ CREATE TABLE IF NOT EXISTS portal_insights(
   date TEXT PRIMARY KEY, headline TEXT NOT NULL, bullets TEXT NOT NULL, source TEXT NOT NULL, received_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS portal_invoices(
   invoice_key TEXT PRIMARY KEY, supplier TEXT NOT NULL, invoice_number TEXT NOT NULL, invoice_date TEXT,
-  due_date TEXT, amount_due REAL, status TEXT NOT NULL, pay_url TEXT, source_as_of TEXT, updated_at TEXT NOT NULL);
+  due_date TEXT, amount_due REAL, status TEXT NOT NULL, pay_url TEXT, source_as_of TEXT, updated_at TEXT NOT NULL,
+  paid_date TEXT, amount REAL);
 CREATE TABLE IF NOT EXISTS portal_people(
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -163,14 +165,27 @@ CREATE TABLE IF NOT EXISTS portal_online_days(
 CREATE TABLE IF NOT EXISTS portal_online_orders(
   order_no TEXT PRIMARY KEY, ordered_at TEXT NOT NULL, trading_date TEXT NOT NULL,
   wallet TEXT NOT NULL, card_brand TEXT NOT NULL, total REAL NOT NULL, fees REAL NOT NULL,
-  refunds REAL NOT NULL, net REAL NOT NULL, source_as_of TEXT);
+  refunds REAL NOT NULL, net REAL NOT NULL, source_as_of TEXT,
+  customer_name TEXT, order_type TEXT, fulfilment_time TEXT, items TEXT);
 CREATE INDEX IF NOT EXISTS ix_portal_online_orders_date ON portal_online_orders(trading_date);
+CREATE TABLE IF NOT EXISTS portal_shift_exceptions(
+  row_key TEXT PRIMARY KEY, trade_date TEXT NOT NULL, till_time TEXT NOT NULL, exc_type TEXT NOT NULL,
+  subtype TEXT, receipt TEXT NOT NULL, staff TEXT NOT NULL, item TEXT NOT NULL, quantity REAL,
+  normal_price REAL, charged_price REAL, difference REAL, amount REAL NOT NULL, customer TEXT,
+  status TEXT, account_type TEXT, outstanding REAL, paid_on_account REAL, status_basis TEXT,
+  plu TEXT, reason TEXT, rego TEXT, lines TEXT, source_as_of TEXT, updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_portal_shift_exceptions_date ON portal_shift_exceptions(trade_date, exc_type);
 """
 
 
 def stock():
     import portal_stock
     return portal_stock
+
+
+def exceptions():
+    import portal_exceptions
+    return portal_exceptions
 
 
 def chat():
@@ -1012,16 +1027,19 @@ def apply_invoices(c, data):
             raise ValueError(f"invoices[{i}] has a bad status")
         key = supplier.casefold() + "\n" + number.casefold()
         pay = clean_pay_url(inv.get("pay_url"))
+        paid_date = need_date(inv.get("paid_date"), "paid date") if inv.get("paid_date") else None
+        amount = num(inv.get("amount"), "amount") if "amount" in inv and inv.get("amount") not in (None, "") else None
         c.execute(
-            """INSERT INTO portal_invoices(invoice_key,supplier,invoice_number,invoice_date,due_date,amount_due,status,pay_url,source_as_of,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?)
+            """INSERT INTO portal_invoices(invoice_key,supplier,invoice_number,invoice_date,due_date,amount_due,status,pay_url,source_as_of,updated_at,paid_date,amount)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(invoice_key) DO UPDATE SET supplier=excluded.supplier, invoice_number=excluded.invoice_number,
                  invoice_date=excluded.invoice_date, due_date=excluded.due_date, amount_due=excluded.amount_due,
-                 status=excluded.status, pay_url=excluded.pay_url, source_as_of=excluded.source_as_of, updated_at=excluded.updated_at""",
+                 status=excluded.status, pay_url=excluded.pay_url, source_as_of=excluded.source_as_of, updated_at=excluded.updated_at,
+                 paid_date=excluded.paid_date, amount=excluded.amount""",
             (key, supplier, number,
              need_date(inv.get("date"), "invoice date") if inv.get("date") else None,
              need_date(inv.get("due_date"), "due date") if inv.get("due_date") else None,
-             num(inv.get("amount_due"), "amount_due"), status, pay, as_of, stamp()),
+             num(inv.get("amount_due"), "amount_due"), status, pay, as_of, stamp(), paid_date, amount),
         )
         seen.add(key)
         n += 1
@@ -1044,6 +1062,90 @@ def _drop_card_brand(node):
     if isinstance(node, list):
         return [_drop_card_brand(v) for v in node]
     return node
+
+
+def _order_text(value, label, limit, required=False):
+    if value is None or (isinstance(value, str) and not value.strip()):
+        if required:
+            raise ValueError(f"{label} is required")
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be text")
+    text = " ".join(value.split())
+    if len(text) > limit or has_card_number(text):
+        raise ValueError(f"{label} is too long" if len(text) > limit else f"{label} must not include a card number")
+    return text
+
+
+def _order_qty(value, label):
+    count = num(value, label)
+    if count < 0 or count > 10000:
+        raise ValueError(f"{label} is out of range")
+    if float(count).is_integer():
+        return int(count)
+    return round(count, 2)
+
+
+def _order_items(value, label):
+    """Items from the Scheduled Orders export. None means the key was present but empty."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{label} items must be a list")
+    if len(value) > 80:
+        raise ValueError(f"{label} has too many items")
+    items = []
+    for i, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            raise ValueError(f"{label} items[{i}] must be an object")
+        mods_raw = raw.get("modifiers") if raw.get("modifiers") is not None else []
+        if not isinstance(mods_raw, list) or len(mods_raw) > 40:
+            raise ValueError(f"{label} items[{i}] modifiers must be a list")
+        modifiers = []
+        for j, mod in enumerate(mods_raw):
+            if not isinstance(mod, dict):
+                raise ValueError(f"{label} items[{i}] modifiers[{j}] must be an object")
+            modifiers.append({
+                "category": _order_text(mod.get("category"), f"{label} modifier category", 80) or "",
+                "name": _order_text(mod.get("name"), f"{label} modifier", 120, required=True),
+                "qty": _order_qty(mod.get("qty"), f"{label} modifier qty"),
+                "total": num(mod.get("total"), f"{label} modifier total"),
+            })
+        items.append({
+            "category": _order_text(raw.get("category"), f"{label} category", 80) or "",
+            "product": _order_text(raw.get("product"), f"{label} product", 120, required=True),
+            "qty": _order_qty(raw.get("qty"), f"{label} qty"),
+            "total": num(raw.get("total"), f"{label} item total"),
+            "modifiers": modifiers,
+        })
+    return items
+
+
+def _kept_order_text(row, key, previous, label, limit):
+    if key not in row:
+        return previous
+    return _order_text(row.get(key), label, limit)
+
+
+def _kept_order_items(row, label, previous_json):
+    if "items" not in row:
+        if not previous_json:
+            return []
+        try:
+            previous = json.loads(previous_json)
+        except json.JSONDecodeError:
+            return []
+        return previous if isinstance(previous, list) else []
+    return _order_items(row.get("items"), label)
+
+
+def _fulfilment_time(value, label):
+    if value is None:
+        return None
+    text = _order_text(value, label, 16, required=True)
+    if not re.fullmatch(r"(?i)(?:[01]?\d:[0-5]\d\s?(?:am|pm)|[0-2]\d:[0-5]\d(?::[0-5]\d)?)", text):
+        raise ValueError(f"{label} must be a time such as 02:21pm")
+    return text
 
 
 def _brand(value, label, required=True):
@@ -1086,6 +1188,11 @@ def apply_online_orders(c, data):
             "refunds": num(row.get("refunds"), f"daily[{i}] refunds"),
             "net": num(row.get("net"), f"daily[{i}] net"),
         }
+    ensure_online_order_columns(c)
+    stored_orders = {
+        row["order_no"]: row
+        for row in rows(c.execute("SELECT order_no, customer_name, order_type, fulfilment_time, items FROM portal_online_orders"))
+    }
     by_no = {}
     for i, row in enumerate(orders):
         if not isinstance(row, dict):
@@ -1098,6 +1205,10 @@ def apply_online_orders(c, data):
             raise ValueError(f"orders[{i}] time is required")
         when = " ".join(when.split())
         reject_sensitive(when, "online-orders")
+        previous = stored_orders.get(number) or {}
+        fulfilment = previous.get("fulfilment_time")
+        if "fulfilment_time" in row:
+            fulfilment = _fulfilment_time(row.get("fulfilment_time"), f"orders[{i}] fulfilment_time") if row.get("fulfilment_time") else None
         by_no[number] = {
             "order_no": number,
             "time": when,
@@ -1108,6 +1219,10 @@ def apply_online_orders(c, data):
             "fees": num(row.get("fees"), f"orders[{i}] fees"),
             "refunds": num(row.get("refunds"), f"orders[{i}] refunds"),
             "net": num(row.get("net"), f"orders[{i}] net"),
+            "customer_name": _kept_order_text(row, "customer_name", previous.get("customer_name"), f"orders[{i}] customer_name", 80),
+            "order_type": _kept_order_text(row, "order_type", previous.get("order_type"), f"orders[{i}] order_type", 24),
+            "fulfilment_time": fulfilment,
+            "items": _kept_order_items(row, f"orders[{i}]", previous.get("items")),
         }
     clean_orders = list(by_no.values())
     if not days and clean_orders:
@@ -1131,13 +1246,17 @@ def apply_online_orders(c, data):
         )
     for item in clean_orders:
         c.execute(
-            """INSERT INTO portal_online_orders(order_no,ordered_at,trading_date,wallet,card_brand,total,fees,refunds,net,source_as_of)
-               VALUES(?,?,?,?,?,?,?,?,?,?)
+            """INSERT INTO portal_online_orders(order_no,ordered_at,trading_date,wallet,card_brand,total,fees,refunds,net,source_as_of,customer_name,order_type,fulfilment_time,items)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(order_no) DO UPDATE SET ordered_at=excluded.ordered_at, trading_date=excluded.trading_date,
                  wallet=excluded.wallet, card_brand=excluded.card_brand, total=excluded.total, fees=excluded.fees,
-                 refunds=excluded.refunds, net=excluded.net, source_as_of=excluded.source_as_of""",
+                 refunds=excluded.refunds, net=excluded.net, source_as_of=excluded.source_as_of,
+                 customer_name=excluded.customer_name, order_type=excluded.order_type,
+                 fulfilment_time=excluded.fulfilment_time, items=excluded.items""",
             (item["order_no"], item["time"], item["trading_date"], item["wallet"], item["cardBrand"],
-             item["total"], item["fees"], item["refunds"], item["net"], as_of),
+             item["total"], item["fees"], item["refunds"], item["net"], as_of,
+             item["customer_name"], item["order_type"], item["fulfilment_time"],
+             json.dumps(item["items"], separators=(",", ":"), ensure_ascii=False) if item["items"] else None),
         )
     meta_set(c, "online-orders", {
         "asOf": as_of,
@@ -1170,6 +1289,7 @@ APPLIERS = {
     "cost-overrides": lambda c, data: parity().apply_cost_overrides(c, data),
     "stock-movements": lambda c, data: stock().apply_stock_movements(c, data),
     "online-orders": apply_online_orders,
+    "shift-exceptions": lambda c, data: exceptions().apply_shift_exceptions(c, data),
 }
 
 
@@ -1485,21 +1605,23 @@ def latest_insight(c):
     return row
 
 
-def unpaid_invoices(c, today_d):
-    found = []
+def invoice_lists(c, today_d):
+    """Unpaid bills, and bills marked paid. Void, draft, and absent rows stay off both lists."""
+    unpaid, paid = [], []
     for row in rows(c.execute("SELECT * FROM portal_invoices")):
         status = (row["status"] or "").strip().lower()
-        amount = float(row["amount_due"] or 0)
-        if status in PAID_STATUS or amount == 0 and status == "paid":
+        owing = float(row["amount_due"] or 0)
+        if status in ("paid", "p"):
+            paid.append(row)
             continue
         if status in PAID_STATUS:
             continue
-        if status in ("paid", "void", "voided", "deleted", "draft", "cancelled", "canceled", "absent"):
-            continue
-        row["overdue"] = bool(row["due_date"] and row["due_date"] < today_d.isoformat() and amount > 0)
-        found.append(row)
-    found.sort(key=lambda r: (not r["overdue"], r["due_date"] or "9999-99-99", r["supplier"].casefold()))
-    return found
+        row["overdue"] = bool(row["due_date"] and row["due_date"] < today_d.isoformat() and owing > 0)
+        unpaid.append(row)
+    unpaid.sort(key=lambda r: (not r["overdue"], r["due_date"] or "9999-99-99", r["supplier"].casefold()))
+    paid.sort(key=lambda r: r["supplier"].casefold())
+    paid.sort(key=lambda r: r.get("paid_date") or r.get("invoice_date") or "", reverse=True)
+    return unpaid, paid
 
 
 def shift_hours(work_date, start, finish, break_minutes):
@@ -1627,6 +1749,7 @@ def _icon(key):
     paths = {
         "overview": '<path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/>',
         "online": '<path d="M6 7h12l-1 13H7L6 7zM9 7a3 3 0 0 1 6 0"/>',
+        "exceptions": '<path d="M7 3h8l4 4v14H7zM15 3v5h5M12 11v4M12 17h.01"/>',
         "products": '<path d="M4 7h16M4 12h16M4 17h10"/>',
         "kitchen": '<path d="M6 3v8a3 3 0 0 0 6 0V3M9 14v7M15 3c2 3 2 6 0 8v10"/>',
         "departments": '<path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/>',
@@ -1648,7 +1771,7 @@ def _icon(key):
 def layout(title, active, body, user, when):
     by_key = {key: (href, label) for href, label, key in NAV}
     groups = (
-        ("Trading", ("overview", "online", "products", "kitchen", "departments")),
+        ("Trading", ("overview", "online", "exceptions", "products", "kitchen", "departments")),
         ("Price and stock", ("pricing", "till", "stock")),
         ("Fuel", ("dips", "commission", "fuel")),
         ("Money", ("purchases", "invoices")),
@@ -1714,19 +1837,24 @@ def through_line(iso):
     return f'<p class="through as-of" id="data-through">As of {h(shown)}, Australia/Brisbane. Data through {h(shown)}</p>'
 
 
-def period_controls(base, active, start, end):
+def period_controls(base, active, start, end, extra=None):
+    extra = {k: v for k, v in (extra or {}).items() if v not in (None, "")}
     labels = [("month", "This month"), ("lastmonth", "Last month"), ("last7", "Last 7 days"), ("last28", "Last 28 days")]
     buttons = []
     for key, label in labels:
         cls = " on" if key == active else ""
-        buttons.append(f'<a class="chip{cls}" href="{base}?period={key}">{label}</a>')
+        href = base + "?" + urlencode({"period": key, **extra}) if extra else f"{base}?period={key}"
+        buttons.append(f'<a class="chip{cls}" href="{href}">{label}</a>')
+    hidden = ""
+    if extra:
+        hidden = "".join(f'<input type="hidden" name="{h(k)}" value="{h(v)}">' for k, v in extra.items()) + "\n"
     return f"""<form class="period" method="get" action="{base}">
 <div class="chips">{''.join(buttons)}</div>
 <div class="row">
 <label class="f">From<input type="date" name="from" value="{h(start.isoformat())}" required></label>
 <label class="f">To<input type="date" name="to" value="{h(end.isoformat())}" required></label>
 <input type="hidden" name="period" value="custom">
-<button class="btn" type="submit">Apply</button>
+{hidden}<button class="btn" type="submit">Apply</button>
 </div></form>"""
 
 
@@ -1980,6 +2108,7 @@ def page_overview(c, query):
 <div class="card stat tone-warn" id="missing-cost"><div class="lbl">Products missing cost</div><b>{h(missing if missing is not None else '—')}</b><span>{h(missing_label)}</span></div>
 <div class="card stat tone-avg" id="shop-average"><div class="lbl">Daily shop average</div><b>{money(shop_avg)}</b><span>shop sales inc GST per loaded day</span></div>
 </section>
+{exceptions().overview_card(c)}
 {insights_box(latest_insight(c))}
 <section class="card"><h2>Fuel vs shop</h2>
 <div class="grid g2">
@@ -2018,6 +2147,119 @@ def _online_stats(title, totals, elem_id):
 {refund}</section>"""
 
 
+def _loaded_items(raw):
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _qty_label(value):
+    if value is None:
+        return "—"
+    number = Decimal(str(value))
+    if number == number.to_integral():
+        return f"{int(number):,}"
+    return f"{number:,.2f}"
+
+
+def _order_matches(order, needle):
+    if not needle:
+        return True
+    hay = [order.get("customer_name") or ""]
+    for item in _loaded_items(order.get("items")):
+        hay.append(str(item.get("product") or ""))
+        for mod in item.get("modifiers") or []:
+            if isinstance(mod, dict):
+                hay.append(str(mod.get("name") or ""))
+    return needle.casefold() in " ".join(hay).casefold()
+
+
+def _top_online_items(order_rows, limit=8):
+    found = {}
+    for order in order_rows:
+        seen = set()
+        for item in _loaded_items(order.get("items")):
+            name = " ".join(str(item.get("product") or "").split())
+            if not name:
+                continue
+            key = name.casefold()
+            bucket = found.setdefault(key, {"name": name, "qty": 0.0, "total": 0.0, "orders": 0})
+            bucket["qty"] += float(item.get("qty") or 0)
+            bucket["total"] += float(item.get("total") or 0)
+            if key not in seen:
+                bucket["orders"] += 1
+                seen.add(key)
+    ranked = sorted(found.values(), key=lambda row: (-row["qty"], -row["total"], row["name"].casefold()))
+    return ranked[:limit]
+
+
+def _top_items_html(order_rows):
+    ranked = _top_online_items(order_rows)
+    if not ranked:
+        body = '<p class="empty">No item lines in this period yet.</p>'
+    else:
+        lines = []
+        for row in ranked:
+            lines.append(
+                f"<tr><td>{h(row['name'])}</td><td class=\"num\">{row['orders']}</td>"
+                f"<td class=\"num\">{_qty_label(row['qty'])}</td><td class=\"num\">{money(row['total'])}</td></tr>"
+            )
+        body = (
+            '<div class="tw"><table><thead><tr><th>Item</th><th>Orders</th><th>Qty</th><th>Item total</th></tr></thead><tbody>'
+            + "".join(lines) + "</tbody></table></div>"
+        )
+    return (
+        '<section class="card" id="online-top-items"><h2>Top online items</h2>'
+        '<p class="help">Products in the selected period, by quantity. Modifiers are listed on the order, not in this ranking.</p>'
+        f"{body}</section>"
+    )
+
+
+def _item_lines_html(raw):
+    items = _loaded_items(raw)
+    if not items:
+        return '<p class="help">No item lines for this order.</p>'
+    lines = []
+    for item in items:
+        mods = []
+        for mod in item.get("modifiers") or []:
+            if not isinstance(mod, dict):
+                continue
+            category = f" · {h(mod.get('category'))}" if mod.get("category") else ""
+            mods.append(
+                f"<li>{h(mod.get('name') or '—')}{category} · {_qty_label(mod.get('qty'))} · {money(mod.get('total'))}</li>"
+            )
+        extra = f"<ul>{''.join(mods)}</ul>" if mods else ""
+        category = f'<div class="mini">{h(item.get("category"))}</div>' if item.get("category") else ""
+        lines.append(
+            f"<li><b>{h(item.get('product') or '—')}</b>{category} · {_qty_label(item.get('qty'))} · {money(item.get('total'))}{extra}</li>"
+        )
+    return f"<ul>{''.join(lines)}</ul>"
+
+
+def _order_card(item, open_it):
+    who = item.get("customer_name") or "No customer name"
+    kind = item.get("order_type") or ""
+    when = item.get("fulfilment_time") or ""
+    bits = [h(item["order_no"]), h(who)]
+    if kind:
+        bits.append(h(kind))
+    if when:
+        bits.append(h(when))
+    bits.append(money(item["total"]))
+    opened = " open" if open_it else ""
+    return (
+        f'<details class="order" id="order-{h(item["order_no"])}"{opened}><summary>{" · ".join(bits)}</summary>'
+        f'<p class="help">{h(item["ordered_at"])} · {h(item["wallet"])} · {h(item["card_brand"] or "—")} · '
+        f'fees {money(item["fees"])} · refunds {money(item["refunds"])} · net {money(item["net"])}</p>'
+        f'{_item_lines_html(item.get("items"))}</details>'
+    )
+
+
 def page_online(c, query):
     meta = meta_get(c, "online-orders")
     anchor = online_anchor(c)
@@ -2054,14 +2296,14 @@ def page_online(c, query):
         )
     else:
         daily_table_html = '<p class="empty" id="online-daily">No online orders in this range.</p>'
-    if day_filter:
-        order_sql = "SELECT * FROM portal_online_orders WHERE trading_date=? ORDER BY order_no"
-        order_rows = rows(c.execute(order_sql, (day_filter,)))
-    else:
-        order_rows = rows(c.execute(
-            "SELECT * FROM portal_online_orders WHERE trading_date>=? AND trading_date<=?",
-            (start.isoformat(), end.isoformat()),
-        ))
+    period_orders = rows(c.execute(
+        "SELECT * FROM portal_online_orders WHERE trading_date>=? AND trading_date<=?",
+        (start.isoformat(), end.isoformat()),
+    ))
+    order_rows = [row for row in period_orders if row["trading_date"] == day_filter] if day_filter else list(period_orders)
+    needle = " ".join((query.get("q") or "").split())[:80]
+    if needle:
+        order_rows = [row for row in order_rows if _order_matches(row, needle)]
     order_rows.sort(key=lambda r: order_time_key(r["ordered_at"], r["trading_date"]), reverse=True)
     grouped = {}
     for order in order_rows:
@@ -2074,32 +2316,29 @@ def page_online(c, query):
     if active == "custom":
         hidden += f'<input type="hidden" name="from" value="{h(start.isoformat())}"><input type="hidden" name="to" value="{h(end.isoformat())}">'
     blocks = []
+    newest_no = order_rows[0]["order_no"] if order_rows else ""
     for trading_date in sorted(grouped, reverse=True):
         items = grouped[trading_date]
         gross = sum(float(item["total"] or 0) for item in items)
         opened = " open" if trading_date == (day_filter or max(grouped)) else ""
-        lines = []
+        cards = []
         for item in items:
-            lines.append(
-                "<tr><td>" + h(item["order_no"]) + "</td><td>" + h(item["ordered_at"]) + "</td><td>"
-                + h(item["wallet"]) + "</td><td>" + h(item["card_brand"] or "—") + "</td><td class=\"num\">"
-                + money(item["total"]) + "</td><td class=\"num\">" + money(item["fees"]) + "</td><td class=\"num\">"
-                + money(item["refunds"]) + "</td><td class=\"num\">" + money(item["net"]) + "</td></tr>"
-            )
+            open_it = item["order_no"] == newest_no or (bool(needle) and len(order_rows) <= 12)
+            cards.append(_order_card(item, open_it))
         blocks.append(
             f'<details class="shift"{opened}><summary>{h(fmt_date(trading_date))} · {len(items)} '
             f'order{"s" if len(items) != 1 else ""} · {money(gross)}</summary>'
-            '<div class="tw"><table><thead><tr><th>Order</th><th>Time</th><th>Wallet</th><th>Card</th>'
-            '<th>Gross</th><th>Bopple fees</th><th>Refunds</th><th>Net</th></tr></thead><tbody>'
-            + "".join(lines) + "</tbody></table></div></details>"
+            + "".join(cards) + "</details>"
         )
     if not blocks:
-        order_html = '<p class="empty">No orders in this range.</p>'
+        order_html = '<p class="empty">No orders match that search.</p>' if needle else '<p class="empty">No orders in this range.</p>'
     else:
         order_html = "".join(blocks)
     clear = ""
     if day_filter:
         clear = f'<a class="chip" href="{_online_query(active, start, end)}">All dates</a>'
+    if needle:
+        clear += f' <a class="chip" href="{_online_query(active, start, end, day_filter)}">Clear search</a>'
     source = meta.get("source") or "Bopple"
     return f"""<div class="ph"><h1>Online orders</h1>{through_line(meta.get("asOf"))}
 <p>Pickup orders paid online through {h(source)}. These are extra sales and are not rung through the till. The gross total is added on top of till sales on the overview. Shop GP stays till GP, because these orders have no cost.</p>
@@ -2110,9 +2349,11 @@ def page_online(c, query):
 <section class="card"><h2>Daily totals</h2>
 <p class="help">Newest day first. Choose a date to list that day’s orders.</p>
 {daily_table_html}</section>
+{_top_items_html(period_orders)}
 <section class="card" id="online-order-list"><h2>Orders</h2>
-<form class="row" method="get" action="/portal/online">{hidden}
+<form class="row" method="get" action="/portal/online" id="online-search">{hidden}
 <label class="f">Date<select name="day">{''.join(options)}</select></label>
+<label class="f">Customer or item<input name="q" value="{h(needle)}" maxlength="80" placeholder="Name or item"></label>
 <button class="btn" type="submit">Show</button></form>
 {clear}
 {order_html}</section>"""
@@ -2255,37 +2496,77 @@ def page_dips(c, query):
 {parity().dips_range(c, active, start, end)}{body}"""
 
 
-def page_invoices(c):
+def _paid_total(paid):
+    known = [row["amount"] for row in paid if row.get("amount") is not None]
+    if not paid:
+        return "—", "no paid invoices"
+    if len(known) == len(paid):
+        return money(sum(known)), f"{len(paid)} paid invoice{'s' if len(paid) != 1 else ''}"
+    if known:
+        missing = len(paid) - len(known)
+        return money(sum(known)), f"{missing} paid invoice{'s' if missing != 1 else ''} ha{'ve' if missing != 1 else 's'} no total in the file"
+    return "—", "paid status is in the file; the amount paid is not"
+
+
+def page_invoices(c, query=None):
+    query = query or {}
+    active = "paid" if query.get("list") == "paid" else "unpaid"
     today_d = today()
-    found = unpaid_invoices(c, today_d)
-    overdue_n = sum(1 for r in found if r["overdue"])
-    overdue_sum = sum(r["amount_due"] or 0 for r in found if r["overdue"])
-    total = sum(r["amount_due"] or 0 for r in found)
-    body = []
-    for row in found:
-        cls = ' class="overdue"' if row["overdue"] else ""
-        pay = ""
-        if row["pay_url"]:
-            pay = f'<a class="btn sm" href="{h(row["pay_url"])}" target="_blank" rel="noopener noreferrer">Pay</a>'
-        due = fmt_date(row["due_date"]) if row["due_date"] else "No due date"
-        flag = '<span class="pill bad">Overdue</span>' if row["overdue"] else '<span class="pill">Unpaid</span>'
-        body.append(
-            f"<tr{cls}><td>{h(row['supplier'])}</td><td>{h(row['invoice_number'])}</td><td>{h(fmt_date(row['invoice_date'])) if row['invoice_date'] else '—'}</td>"
-            f"<td>{h(due)}</td><td class=\"num\">{money(row['amount_due'])}</td><td>{flag}</td><td>{pay}</td></tr>"
+    unpaid, paid = invoice_lists(c, today_d)
+    overdue_n = sum(1 for r in unpaid if r["overdue"])
+    overdue_sum = sum(r["amount_due"] or 0 for r in unpaid if r["overdue"])
+    owing = sum(r["amount_due"] or 0 for r in unpaid)
+    paid_figure, paid_note = _paid_total(paid)
+    tabs = []
+    for key, label in (("unpaid", "Unpaid"), ("paid", "Paid")):
+        cls = " on" if key == active else ""
+        tabs.append(f'<a class="chip{cls}" href="/portal/invoices?list={key}">{label}</a>')
+    if active == "paid":
+        body = []
+        for row in paid:
+            paid_on = fmt_date(row["paid_date"]) if row.get("paid_date") else "—"
+            total = money(row["amount"]) if row.get("amount") is not None else "—"
+            body.append(
+                f"<tr class=\"ok\"><td>{h(row['supplier'])}</td><td>{h(row['invoice_number'])}</td>"
+                f"<td>{h(fmt_date(row['invoice_date'])) if row['invoice_date'] else '—'}</td>"
+                f"<td>{h(fmt_date(row['due_date'])) if row['due_date'] else '—'}</td>"
+                f"<td>{h(paid_on)}</td><td class=\"num\">{total}</td><td><span class=\"pill ok\">Paid</span></td></tr>"
+            )
+        table = '<p class="empty">No paid invoices.</p>' if not body else (
+            '<div class="tw"><table><thead><tr><th>Supplier</th><th>Invoice</th><th>Invoice date</th><th>Due</th>'
+            '<th>Paid</th><th>Invoice total</th><th>Status</th></tr></thead><tbody>'
+            + "".join(body) + "</tbody></table></div>"
         )
-    table = '<p class="empty">No unpaid invoices.</p>' if not body else (
-        '<div class="tw"><table><thead><tr><th>Supplier</th><th>Invoice</th><th>Date</th><th>Due</th><th>Amount due</th><th>Status</th><th></th></tr></thead><tbody>'
-        + "".join(body) + "</tbody></table></div>"
-    )
+        listing = f'<section class="card" id="paid-list"><h2>Paid invoices</h2>{table}</section>'
+    else:
+        body = []
+        for row in unpaid:
+            cls = ' class="overdue"' if row["overdue"] else ""
+            pay = ""
+            if row["pay_url"]:
+                pay = f'<a class="btn sm" href="{h(row["pay_url"])}" target="_blank" rel="noopener noreferrer">Pay</a>'
+            due = fmt_date(row["due_date"]) if row["due_date"] else "No due date"
+            flag = '<span class="pill bad">Overdue</span>' if row["overdue"] else '<span class="pill">Unpaid</span>'
+            body.append(
+                f"<tr{cls}><td>{h(row['supplier'])}</td><td>{h(row['invoice_number'])}</td><td>{h(fmt_date(row['invoice_date'])) if row['invoice_date'] else '—'}</td>"
+                f"<td>{h(due)}</td><td class=\"num\">{money(row['amount_due'])}</td><td>{flag}</td><td>{pay}</td></tr>"
+            )
+        table = '<p class="empty">No unpaid invoices.</p>' if not body else (
+            '<div class="tw"><table><thead><tr><th>Supplier</th><th>Invoice</th><th>Date</th><th>Due</th><th>Amount due</th><th>Status</th><th></th></tr></thead><tbody>'
+            + "".join(body) + "</tbody></table></div>"
+        )
+        listing = f'<section class="card" id="invoice-list"><h2>Unpaid invoices</h2>{table}</section>'
     as_of = meta_get(c, "invoices").get("asOf")
-    return f"""<div class="ph"><h1>Unpaid invoices</h1>{through_line(data_through(c))}
-<p>Pay opens that supplier's own page in a new tab. This portal does not pay anyone, and it does not store card or bank numbers.</p></div>
-<section class="grid g3">
-<div class="card stat"><div class="lbl">Unpaid</div><b>{money(total)}</b><span>{len(found)} invoice{'s' if len(found) != 1 else ''}</span></div>
-<div class="card stat"><div class="lbl">Overdue</div><b>{money(overdue_sum)}</b><span>{overdue_n} past the due date</span></div>
+    return f"""<div class="ph"><h1>Invoices</h1>{through_line(data_through(c))}
+<p>Supplier bills from the nightly invoice list. Unpaid is shown first. Pay opens that supplier's own page in a new tab, and only on an unpaid bill. This portal does not pay anyone, and it does not store card or bank numbers.</p></div>
+<section class="grid g4" id="invoice-totals">
+<div class="card stat" id="unpaid-total"><div class="lbl">Total owing</div><b>{money(owing)}</b><span>{len(unpaid)} unpaid invoice{'s' if len(unpaid) != 1 else ''}</span></div>
+<div class="card stat" id="overdue-total"><div class="lbl">Overdue</div><b>{money(overdue_sum)}</b><span>{overdue_n} past the due date</span></div>
+<div class="card stat" id="paid-total"><div class="lbl">Total paid</div><b>{paid_figure}</b><span>{h(paid_note)}</span></div>
 <div class="card stat"><div class="lbl">Invoice list through</div><b class="date">{h(fmt_date(as_of)) if as_of else '—'}</b><span>from the nightly ingest</span></div>
 </section>
-<section class="card" id="invoice-list">{table}</section>"""
+<div class="chips" id="invoice-tabs">{''.join(tabs)}</div>
+{listing}"""
 
 
 ERR_TEXT = {
@@ -2546,6 +2827,8 @@ def handle_get(handler, parsed):
             html = layout("Sales overview", "overview", page_overview(c, query), user, _srv().now())
         elif path == "/portal/online":
             html = layout("Online orders", "online", page_online(c, query), user, _srv().now())
+        elif path == "/portal/exceptions":
+            html = layout("Till exceptions", "exceptions", exceptions().page(c, query), user, _srv().now())
         elif path == "/portal/products":
             html = layout("Products", "products", parity().page_products(c, query), user, _srv().now())
         elif path == "/portal/stock":
@@ -2571,7 +2854,7 @@ def handle_get(handler, parsed):
         elif path == "/portal/notes":
             html = layout("Data notes", "notes", parity().page_notes(c), user, _srv().now())
         elif path == "/portal/invoices":
-            html = layout("Invoices", "invoices", page_invoices(c), user, _srv().now())
+            html = layout("Invoices", "invoices", page_invoices(c, query), user, _srv().now())
         elif path == "/portal/hours":
             html = layout("Staff hours", "hours", page_hours(c, user, query), user, _srv().now())
         elif path == "/portal/password":
@@ -3066,11 +3349,47 @@ def handle_ingest(handler):
     handler.send(200, {"ok": True, "dataset": dataset, **result})
 
 
+def ensure_online_order_columns(c):
+    """Older databases were created before customer and item lines existed."""
+    wanted = (("customer_name", "TEXT"), ("order_type", "TEXT"), ("fulfilment_time", "TEXT"), ("items", "TEXT"))
+    if _srv().PG:
+        found = {
+            row["column_name"]
+            for row in c.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='portal_online_orders'"
+            ).fetchall()
+        }
+    else:
+        found = {row["name"] for row in c.execute("PRAGMA table_info(portal_online_orders)").fetchall()}
+    for name, kind in wanted:
+        if name not in found:
+            c.execute(f"ALTER TABLE portal_online_orders ADD COLUMN {name} {kind}")
+
+
+def ensure_invoice_columns(c):
+    """Older databases were created before paid_date and amount existed."""
+    wanted = (("paid_date", "TEXT"), ("amount", "REAL"))
+    if _srv().PG:
+        found = {
+            row["column_name"]
+            for row in c.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='portal_invoices'"
+            ).fetchall()
+        }
+    else:
+        found = {row["name"] for row in c.execute("PRAGMA table_info(portal_invoices)").fetchall()}
+    for name, kind in wanted:
+        if name not in found:
+            c.execute(f"ALTER TABLE portal_invoices ADD COLUMN {name} {kind}")
+
+
 def install():
     srv = _srv()
     c = srv.PgConn(direct=True) if srv.PG else srv.db()
     try:
         c.executescript(SCHEMA)
+        ensure_invoice_columns(c)
+        ensure_online_order_columns(c)
         c.commit()
     finally:
         c.close()
