@@ -1,4 +1,4 @@
-"""Owner portal: login, nightly ingest, sales pages, invoices, and staff hours.
+"""Owner portal: login, nightly ingest, sales pages, till exceptions, invoices, and staff hours.
 
 Separate from the staff PIN. Pages and JSON under /portal and /api/portal require a
 session cookie, except the login page and the bearer-key ingest/hours endpoints.
@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 DATASETS = (
     "sales", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices",
     "product-search", "retail-pricing", "till-price-changes", "shifts", "last-year", "cost-overrides",
-    "stock-movements", "online-orders",
+    "stock-movements", "online-orders", "shift-exceptions",
 )
 INGEST_MAX = 8_000_000
 FORM_MAX = 100_000
@@ -66,6 +66,7 @@ PART_HOLIDAYS = {
 NAV = [
     ("/portal", "Overview", "overview"),
     ("/portal/online", "Online orders", "online"),
+    ("/portal/exceptions", "Till exceptions", "exceptions"),
     ("/portal/products", "Products", "products"),
     ("/portal/stock", "Stock on hand", "stock"),
     ("/portal/pricing", "Pricing", "pricing"),
@@ -165,12 +166,24 @@ CREATE TABLE IF NOT EXISTS portal_online_orders(
   wallet TEXT NOT NULL, card_brand TEXT NOT NULL, total REAL NOT NULL, fees REAL NOT NULL,
   refunds REAL NOT NULL, net REAL NOT NULL, source_as_of TEXT);
 CREATE INDEX IF NOT EXISTS ix_portal_online_orders_date ON portal_online_orders(trading_date);
+CREATE TABLE IF NOT EXISTS portal_shift_exceptions(
+  row_key TEXT PRIMARY KEY, trade_date TEXT NOT NULL, till_time TEXT NOT NULL, exc_type TEXT NOT NULL,
+  subtype TEXT, receipt TEXT NOT NULL, staff TEXT NOT NULL, item TEXT NOT NULL, quantity REAL,
+  normal_price REAL, charged_price REAL, difference REAL, amount REAL NOT NULL, customer TEXT,
+  status TEXT, account_type TEXT, outstanding REAL, paid_on_account REAL, status_basis TEXT,
+  plu TEXT, reason TEXT, rego TEXT, lines TEXT, source_as_of TEXT, updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_portal_shift_exceptions_date ON portal_shift_exceptions(trade_date, exc_type);
 """
 
 
 def stock():
     import portal_stock
     return portal_stock
+
+
+def exceptions():
+    import portal_exceptions
+    return portal_exceptions
 
 
 def chat():
@@ -1170,6 +1183,7 @@ APPLIERS = {
     "cost-overrides": lambda c, data: parity().apply_cost_overrides(c, data),
     "stock-movements": lambda c, data: stock().apply_stock_movements(c, data),
     "online-orders": apply_online_orders,
+    "shift-exceptions": lambda c, data: exceptions().apply_shift_exceptions(c, data),
 }
 
 
@@ -1627,6 +1641,7 @@ def _icon(key):
     paths = {
         "overview": '<path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/>',
         "online": '<path d="M6 7h12l-1 13H7L6 7zM9 7a3 3 0 0 1 6 0"/>',
+        "exceptions": '<path d="M7 3h8l4 4v14H7zM15 3v5h5M12 11v4M12 17h.01"/>',
         "products": '<path d="M4 7h16M4 12h16M4 17h10"/>',
         "kitchen": '<path d="M6 3v8a3 3 0 0 0 6 0V3M9 14v7M15 3c2 3 2 6 0 8v10"/>',
         "departments": '<path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/>',
@@ -1648,7 +1663,7 @@ def _icon(key):
 def layout(title, active, body, user, when):
     by_key = {key: (href, label) for href, label, key in NAV}
     groups = (
-        ("Trading", ("overview", "online", "products", "kitchen", "departments")),
+        ("Trading", ("overview", "online", "exceptions", "products", "kitchen", "departments")),
         ("Price and stock", ("pricing", "till", "stock")),
         ("Fuel", ("dips", "commission", "fuel")),
         ("Money", ("purchases", "invoices")),
@@ -1714,19 +1729,24 @@ def through_line(iso):
     return f'<p class="through as-of" id="data-through">As of {h(shown)}, Australia/Brisbane. Data through {h(shown)}</p>'
 
 
-def period_controls(base, active, start, end):
+def period_controls(base, active, start, end, extra=None):
+    extra = {k: v for k, v in (extra or {}).items() if v not in (None, "")}
     labels = [("month", "This month"), ("lastmonth", "Last month"), ("last7", "Last 7 days"), ("last28", "Last 28 days")]
     buttons = []
     for key, label in labels:
         cls = " on" if key == active else ""
-        buttons.append(f'<a class="chip{cls}" href="{base}?period={key}">{label}</a>')
+        href = base + "?" + urlencode({"period": key, **extra}) if extra else f"{base}?period={key}"
+        buttons.append(f'<a class="chip{cls}" href="{href}">{label}</a>')
+    hidden = ""
+    if extra:
+        hidden = "".join(f'<input type="hidden" name="{h(k)}" value="{h(v)}">' for k, v in extra.items()) + "\n"
     return f"""<form class="period" method="get" action="{base}">
 <div class="chips">{''.join(buttons)}</div>
 <div class="row">
 <label class="f">From<input type="date" name="from" value="{h(start.isoformat())}" required></label>
 <label class="f">To<input type="date" name="to" value="{h(end.isoformat())}" required></label>
 <input type="hidden" name="period" value="custom">
-<button class="btn" type="submit">Apply</button>
+{hidden}<button class="btn" type="submit">Apply</button>
 </div></form>"""
 
 
@@ -1980,6 +2000,7 @@ def page_overview(c, query):
 <div class="card stat tone-warn" id="missing-cost"><div class="lbl">Products missing cost</div><b>{h(missing if missing is not None else '—')}</b><span>{h(missing_label)}</span></div>
 <div class="card stat tone-avg" id="shop-average"><div class="lbl">Daily shop average</div><b>{money(shop_avg)}</b><span>shop sales inc GST per loaded day</span></div>
 </section>
+{exceptions().overview_card(c)}
 {insights_box(latest_insight(c))}
 <section class="card"><h2>Fuel vs shop</h2>
 <div class="grid g2">
@@ -2546,6 +2567,8 @@ def handle_get(handler, parsed):
             html = layout("Sales overview", "overview", page_overview(c, query), user, _srv().now())
         elif path == "/portal/online":
             html = layout("Online orders", "online", page_online(c, query), user, _srv().now())
+        elif path == "/portal/exceptions":
+            html = layout("Till exceptions", "exceptions", exceptions().page(c, query), user, _srv().now())
         elif path == "/portal/products":
             html = layout("Products", "products", parity().page_products(c, query), user, _srv().now())
         elif path == "/portal/stock":

@@ -116,7 +116,7 @@ class PortalTest(unittest.TestCase):
     def test_logged_out_pages_redirect_and_staff_routes_stay(self):
         for path in ("/portal", "/portal/invoices", "/portal/hours", "/portal/purchases", "/portal/fuel", "/portal/dips", "/portal/hours.csv",
                      "/portal/products", "/portal/pricing", "/portal/till-prices", "/portal/departments", "/portal/kitchen",
-                     "/portal/shifts", "/portal/commission", "/portal/notes", "/portal/stock"):
+                     "/portal/shifts", "/portal/commission", "/portal/notes", "/portal/stock", "/portal/exceptions"):
             status, hdrs, body, _ = self.request("GET", path, headers={"X-Staff-Pin": "9999"})
             self.assertEqual(status, 302, path)
             self.assertEqual(hdrs.get("Location"), "/portal/login")
@@ -938,6 +938,240 @@ class PortalTest(unittest.TestCase):
         self.assertNotEqual(ctx["onlineOrders"], "not loaded")
         self.assertTrue(ctx["totalSales"].startswith("$"))
         self.assertTrue(ctx["shopGp"].startswith("till GP"))
+
+    def _clear_exceptions(self):
+        c = server.db()
+        c.execute("DELETE FROM portal_shift_exceptions")
+        c.execute("DELETE FROM portal_snapshots WHERE dataset='shift-exceptions'")
+        c.execute("DELETE FROM portal_meta WHERE k='shift-exceptions'")
+        c.commit()
+        c.close()
+
+    def test_shift_exceptions(self):
+        import portal_exceptions
+        portal._ingest_hits.clear()
+        self._clear_exceptions()
+        self.addCleanup(self._clear_exceptions)
+        self.login()
+        status, _, body, _ = self.authed("GET", "/portal/exceptions")
+        self.assertEqual(status, 200)
+        empty = body.decode()
+        self.assertIn("No till exceptions yet", empty)
+        self.assertIn('class="on" href="/portal/exceptions" aria-current="page"', empty)
+        self.assertIn('name="csrf"', empty)
+        self.assertNotIn("Traceback", empty)
+        home = self.authed("GET", "/portal")[2].decode()
+        card = home.split('id="overview-exceptions"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("not loaded yet", card)
+        self.assertIn('href="/portal/exceptions"', card)
+        self.assertIn("Till exceptions", home)
+
+        data = load("shift-exceptions.json")
+        code, _, raw, _ = self.ingest("shift-exceptions", data)
+        self.assertEqual(code, 200, raw[:500])
+        stored = json.loads(raw)
+        self.assertEqual(stored["asOf"], "2026-11-10")
+        self.assertEqual(stored["dates"], 1)
+        self.assertEqual(stored["rows"], 6)
+        self.assertEqual(stored["replaced"], ["2026-11-10"])
+        nov9 = {
+            "date": "2026-11-09",
+            "timezone": "Australia/Brisbane",
+            "rows": [{
+                "type": "account", "account_type": "IOU", "date": "2026-11-09", "time": "16:40:02",
+                "receipt": "362934", "staff": "Silkwood Clerk 1", "item": "RED BULL ENERGY DRINK 473ML x2",
+                "quantity": 2, "amount": 11.98, "outstanding": 11.98, "paid_on_account": 0,
+                "customer": None, "status": "unpaid", "status_basis": "allocated_payments",
+                "lines": [{"item": "RED BULL ENERGY DRINK 473ML", "plu": "45110", "quantity": 2, "amount": 11.98, "adjustment": False}],
+            }],
+        }
+        code, _, raw, _ = self.ingest("shift-exceptions", nov9)
+        self.assertEqual(code, 200, raw[:400])
+        again = json.loads(raw)
+        self.assertEqual(again["asOf"], "2026-11-10")
+        self.assertEqual(again["rows"], 1)
+        self.assertEqual(again["replaced"], ["2026-11-09"])
+
+        self.assertEqual(portal_exceptions._mask_secrets("4242424242424242"), "••••")
+        self.assertNotIn("4242", portal_exceptions._mask_secrets("paid on 4242 4242 4242 4242"))
+
+        page = self.authed("GET", "/portal/exceptions")[2].decode()
+        self.assertIn("Paid status for named accounts is an estimate.", page)
+        self.assertIn("ORANGE &amp; MANGO", page)
+        self.assertNotIn("ORANGE & MANGO", page.split('id="exception-rows"', 1)[1].split("</section>", 1)[0])
+        self.assertIn("Short dated", page)
+        self.assertIn("Silkwood Clerk 1", page)
+        self.assertIn("362100", page)
+        self.assertIn("adjustment", page)
+        self.assertIn("Estimate", page)
+        table = page.split('id="exception-rows"', 1)[1].split("</section>", 1)[0]
+        order = ["361911", "362200", "362150", "362110", "362101", "362100", "362934"]
+        positions = [table.index(number) for number in order]
+        self.assertEqual(positions, sorted(positions))
+        staff = page.split('id="exception-staff"', 1)[1].split("</section>", 1)[0]
+        self.assertLess(staff.index("Silkwood Clerk 1"), staff.index("Alex"))
+        self.assertIn(">2<", staff)
+        self.assertIn(">1<", staff)
+
+        c = server.db()
+        overrides = portal.rows(c.execute("SELECT difference, amount FROM portal_shift_exceptions WHERE exc_type='price_override'"))
+        owed = portal.rows(c.execute(
+            "SELECT exc_type, outstanding FROM portal_shift_exceptions WHERE exc_type IN ('drive_off','account')"
+        ))
+        c.close()
+        difference = sum(row["difference"] or 0 for row in overrides)
+        outstanding = sum(row["outstanding"] or 0 for row in owed)
+        account_owed = sum(row["outstanding"] or 0 for row in owed if row["exc_type"] == "account")
+        drive_owed = sum(row["outstanding"] or 0 for row in owed if row["exc_type"] == "drive_off")
+        self.assertAlmostEqual(difference, sum(row["difference"] for row in data["rows"] if row["type"] == "price_override"), places=2)
+        totals = page.split('id="exception-totals"', 1)[1].split('id="exception-staff"', 1)[0]
+        override_card = totals.split('id="exception-price_override"', 1)[1].split('id="exception-drive_off"', 1)[0]
+        drive_card = totals.split('id="exception-drive_off"', 1)[1].split('id="exception-account"', 1)[0]
+        account_card = totals.split('id="exception-account"', 1)[1]
+        self.assertIn("<b>3</b>", override_card)
+        self.assertIn("Price difference", override_card)
+        self.assertIn(portal.money(difference), override_card)
+        self.assertIn(portal.money(drive_owed), drive_card)
+        self.assertIn("1 unpaid", drive_card)
+        self.assertIn("<b>3</b>", account_card)
+        self.assertIn(portal.money(account_owed), account_card)
+        self.assertIn("1 unpaid", account_card)
+        self.assertIn("1 partial", account_card)
+
+        drives = self.authed("GET", "/portal/exceptions?type=drive_off")[2].decode()
+        drive_table = drives.split('id="exception-rows"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("361911", drive_table)
+        self.assertNotIn("362100", drive_table)
+        self.assertNotIn("SILKWOOD STATE SCHOOL", drive_table)
+        self.assertIn("Paid status for named accounts is an estimate.", drives)
+        self.assertIn("type=drive_off", drives)
+        accounts = self.authed("GET", "/portal/exceptions?type=account")[2].decode()
+        account_table = accounts.split('id="exception-rows"', 1)[1].split("</section>", 1)[0]
+        self.assertEqual(account_table.count('class="pill warn">Estimate'), 1)
+        self.assertIn("SILKWOOD STATE SCHOOL", account_table)
+        self.assertNotIn("DIESEL", account_table)
+        one_day = self.authed("GET", "/portal/exceptions?period=custom&from=2026-11-09&to=2026-11-09")[2].decode()
+        self.assertIn("362934", one_day)
+        self.assertNotIn("362100", one_day)
+        last_month = self.authed("GET", "/portal/exceptions?period=lastmonth")[2].decode()
+        self.assertIn("No till exceptions in this range.", last_month)
+        self.assertNotIn("362100", last_month)
+
+        home = self.authed("GET", "/portal")[2].decode()
+        card = home.split('id="overview-exceptions"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("<b>7</b>", card)
+        self.assertIn("3 price overrides", card)
+        self.assertIn("1 drive-off", card)
+        self.assertIn("3 account charges", card)
+        self.assertIn(portal.money(outstanding), card)
+        self.assertIn("Paid status for named accounts is an estimate.", card)
+        notes = self.authed("GET", "/portal/notes")[2].decode()
+        self.assertIn("Paid status for named on-account customers is an estimate.", notes)
+        self.assertIn("Till exceptions: 2026-11-10", notes)
+
+        replaced = json.loads(json.dumps(data))
+        replaced["rows"] = [row for row in replaced["rows"] if row["staff"] != "Alex"]
+        for row in replaced["rows"]:
+            if row["receipt"] == "361911":
+                row["status"] = "paid"
+                row["outstanding"] = 0
+                row["paid_on_account"] = row["amount"]
+        code, _, raw, _ = self.ingest("shift-exceptions", replaced)
+        self.assertEqual(code, 200, raw[:400])
+        self.assertEqual(json.loads(raw)["rows"], 5)
+        c = server.db()
+        drive = c.execute("SELECT status, outstanding FROM portal_shift_exceptions WHERE receipt='361911'").fetchone()
+        self.assertEqual(drive["status"], "paid")
+        self.assertEqual(drive["outstanding"], 0)
+        self.assertIsNone(c.execute("SELECT 1 FROM portal_shift_exceptions WHERE staff='Alex'").fetchone())
+        self.assertIsNotNone(c.execute("SELECT 1 FROM portal_shift_exceptions WHERE receipt='362934'").fetchone())
+        self.assertIsNotNone(c.execute("SELECT 1 FROM portal_shift_exceptions WHERE receipt='362100'").fetchone())
+        c.close()
+
+        code, _, raw, _ = self.ingest("shift-exceptions", {"date": "2026-11-09", "rows": []})
+        self.assertEqual(code, 200, raw[:300])
+        self.assertEqual(json.loads(raw)["rows"], 0)
+        c = server.db()
+        self.assertIsNone(c.execute("SELECT 1 FROM portal_shift_exceptions WHERE receipt='362934'").fetchone())
+        self.assertIsNotNone(c.execute("SELECT 1 FROM portal_shift_exceptions WHERE receipt='362100'").fetchone())
+        c.close()
+
+        batch = {"days": [
+            {"date": "2026-11-08", "rows": [{
+                "type": "drive_off", "account_type": "Drive Off", "time": "12:00:00", "receipt": 361000,
+                "staff": "Silkwood Clerk 1", "item": "UNLEADED", "quantity": 10, "amount": 20,
+                "outstanding": 20, "paid_on_account": 0, "status": "unpaid", "status_basis": "allocated_payments",
+            }]},
+            {"date": "2026-11-07", "rows": []},
+        ]}
+        code, _, raw, _ = self.ingest("shift-exceptions", batch)
+        self.assertEqual(code, 200, raw[:400])
+        self.assertEqual(json.loads(raw)["replaced"], ["2026-11-08", "2026-11-07"])
+        c = server.db()
+        self.assertEqual(c.execute("SELECT receipt FROM portal_shift_exceptions WHERE trade_date='2026-11-08'").fetchone()["receipt"], "361000")
+        kept = c.execute("SELECT COUNT(*) AS n FROM portal_shift_exceptions WHERE trade_date='2026-11-10'").fetchone()["n"]
+        c.close()
+        self.assertEqual(kept, 5)
+
+        flat = {"dates": ["2026-10-02", "2026-10-03"], "rows": [{
+            "type": "price_override", "subtype": "shop", "date": "2026-10-02", "time": "08:00:00",
+            "receipt": "340001", "staff": "Silkwood Clerk 1", "item": "Chicken chips", "quantity": 1,
+            "normal_price": 5.99, "charged_price": 4, "difference": -1.99, "amount": 4,
+        }]}
+        code, _, raw, _ = self.ingest("shift-exceptions", flat)
+        self.assertEqual(code, 200, raw[:400])
+        self.assertEqual(sorted(json.loads(raw)["replaced"]), ["2026-10-02", "2026-10-03"])
+        c = server.db()
+        self.assertIsNotNone(c.execute("SELECT 1 FROM portal_shift_exceptions WHERE receipt='340001'").fetchone())
+        self.assertIsNone(c.execute("SELECT 1 FROM portal_shift_exceptions WHERE trade_date='2026-10-03'").fetchone())
+        meta = json.loads(c.execute("SELECT v FROM portal_meta WHERE k='shift-exceptions'").fetchone()["v"])
+        self.assertEqual(meta["asOf"], "2026-11-10")
+        c.close()
+
+        dup = {"date": "2026-10-04", "rows": [
+            {"type": "price_override", "subtype": "shop", "time": "09:00:00", "receipt": "340010",
+             "staff": "Silkwood Clerk 1", "item": "Chicken chips", "quantity": 1,
+             "normal_price": 5, "charged_price": 4, "difference": -1, "amount": 4},
+            {"type": "price_override", "subtype": "shop", "time": "09:00:00", "receipt": "340010",
+             "staff": "Silkwood Clerk 1", "item": "Chicken chips", "quantity": 1,
+             "normal_price": 5, "charged_price": 3, "difference": -2, "amount": 3},
+        ]}
+        code, _, raw, _ = self.ingest("shift-exceptions", dup)
+        self.assertEqual(code, 200, raw[:300])
+        self.assertEqual(json.loads(raw)["rows"], 1)
+        c = server.db()
+        self.assertEqual(c.execute("SELECT amount FROM portal_shift_exceptions WHERE receipt='340010'").fetchone()["amount"], 3)
+        c.close()
+
+        def reject(payload):
+            portal._ingest_hits.clear()
+            status, _, body, _ = self.ingest("shift-exceptions", payload)
+            self.assertEqual(status, 400, body[:300])
+            self.assertNotIn(b"4242424242424242", body)
+            self.assertNotIn(b"123456789012", body)
+            c = server.db()
+            still = c.execute("SELECT 1 FROM portal_shift_exceptions WHERE receipt='362100'").fetchone()
+            c.close()
+            self.assertIsNotNone(still)
+
+        poisoned = json.loads(json.dumps(data))
+        poisoned["rows"][0]["customer"] = "4242424242424242"
+        reject(poisoned)
+        poisoned["rows"][0]["customer"] = None
+        poisoned["rows"][0]["card_number"] = "4111"
+        reject(poisoned)
+        poisoned["rows"][0].pop("card_number")
+        poisoned["rows"][0]["bank_account"] = "12345678"
+        reject(poisoned)
+        poisoned["rows"][0].pop("bank_account")
+        poisoned["rows"][0]["item"] = "123456789012"
+        reject(poisoned)
+        poisoned = json.loads(json.dumps(data))
+        poisoned["rows"][0]["date"] = "2026-11-09"
+        reject(poisoned)
+        reject({"date": "2026-11-10", "rows": [{"type": "void", "time": "09:15:00", "receipt": "1", "staff": "A", "item": "B", "amount": 1}]})
+        reject({"rows": []})
+        self.assertNotIn("4242424242424242", self.authed("GET", "/portal/exceptions")[2].decode())
 
 
 if __name__ == "__main__":

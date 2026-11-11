@@ -20,6 +20,7 @@ FIXTURES = (
     ("insights.json", "insights"),
     ("invoices.json", "invoices"),
     ("online-orders.json", "online-orders"),
+    ("shift-exceptions.json", "shift-exceptions"),
 )
 SAMPLE = (
     ("Alex", (
