@@ -385,6 +385,17 @@ def _row_class(on_hand):
     return ""
 
 
+def _paint_class(row):
+    """Row colour only. Filters still use _row_class."""
+    base = _row_class(row["onHand"])
+    if base:
+        return base
+    cover = row.get("daysCover")
+    if cover is not None and Decimal(str(cover)) < Decimal("7"):
+        return "low"
+    return "ok"
+
+
 def page_stock(c, user, query, error=""):
     rows = tracked_rows(c)
     needle = (query.get("q") or "").strip()
@@ -407,11 +418,11 @@ def page_stock(c, user, query, error=""):
         if cls == "negative":
             flag += ' <span class="pill bad">Negative</span>'
         elif cls == "low":
-            flag += ' <span class="pill">Low</span>'
+            flag += ' <span class="pill warn">Low</span>'
         cover = "—" if row["daysCover"] is None else f"{row['daysCover']:.1f}"
         edit = f'<a href="/portal/stock?edit={portal.h(row["code"])}">Edit</a>' if row.get("manual") else ""
         body.append(
-            f'<tr id="stock-{portal.h(row["code"])}" class="{cls}"><td class="nowrap">{portal.h(row["code"])}</td>'
+            f'<tr id="stock-{portal.h(row["code"])}" class="{_paint_class(row)}"><td class="nowrap">{portal.h(row["code"])}</td>'
             f'<td>{portal.h(row["name"])}{flag}</td><td>{portal.h(row["group"] or "—")}</td>'
             f'<td class="num">{qty_text(row["openingQty"])}<div class="mini">end of {portal.h(portal.fmt_date(row["baselineDate"]))}</div></td>'
             f'<td class="num">{qty_text(row["soldSince"])}</td><td class="num">{qty_text(row["receivedSince"])}</td>'
