@@ -2,6 +2,7 @@
 """Silkwood daily ops dashboard: stdlib HTTP server + SQLite. Run: python3 server.py (port 8787).
 
 Public pickup orders (no staff PIN): GET /order, POST /api/order.
+Owner portal (separate username and password): /portal. See README.
 """
 import json, sqlite3, os, re, sys, threading, time, smtplib, ssl, html as H_
 from decimal import Decimal, ROUND_HALF_UP
@@ -11,6 +12,7 @@ from zoneinfo import ZoneInfo
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
+import portal
 
 ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get("SILKWOOD_DB", ROOT / "silkwood.db"))
@@ -182,6 +184,7 @@ def init():
             c.execute("INSERT INTO tasks(tab,title,repeat,weekday,due_time,start_date,example) VALUES(?,?,?,?,?,?,1)",
                       (tab, title, rep, 0 if rep == "weekly" else None, due, "2026-01-01"))
     c.commit(); c.close()
+    portal.install()
 
 def is_bad(typ, v):
     if typ not in RULES or v is None: return 0
@@ -1131,18 +1134,40 @@ def place_order(b, ip, when=None):
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
-    def send(self, code, obj, ctype="application/json", cache=None):
+    def _security_headers(self):
+        self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+        self.send_header("X-Permitted-Cross-Domain-Policies", "none")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+    def send(self, code, obj, ctype="application/json", cache=None, extra=None):
         b = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
         self.send_response(code); self.send_header("Content-Type", ctype); self.send_header("Cache-Control", cache or "no-store")
-        self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-        self.send_header("X-Content-Type-Options", "nosniff"); self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Referrer-Policy", "same-origin")
+        self._security_headers()
+        for k, v in extra or []:
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    def redirect(self, location, extra=None):
+        path = location.split("?", 1)[0]
+        if path not in ("/portal", "/portal/login", "/portal/password", "/portal/hours", "/portal/purchases", "/portal/fuel", "/portal/dips", "/portal/invoices"):
+            location = "/portal"
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self._security_headers()
+        for k, v in extra or []:
+            self.send_header(k, v)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
     def body(self):
         n = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(n) or b"{}")
     def do_GET(self):
         u = urlparse(self.path); q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        if portal.wants(u.path):
+            return portal.handle_get(self, u)
         if u.path in ("/", "/index.html"):
             return self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
         if u.path == "/healthz":
@@ -1177,9 +1202,9 @@ class H(BaseHTTPRequestHandler):
             self.send_header("X-Robots-Tag", "noindex"); self.end_headers(); self.wfile.write(bytes(r["data"])); return
         if u.path == "/sw.js":  # served from root so its scope covers the whole app
             return self.send(200, (ROOT / "static" / "sw.js").read_bytes(), "text/javascript; charset=utf-8")
-        m = re.fullmatch(r"/static/([a-z0-9-]+\.(png|webmanifest|js))", u.path)
+        m = re.fullmatch(r"/static/([a-z0-9-]+\.(png|webmanifest|js|css))", u.path)
         if m and (ROOT / "static" / m.group(1)).is_file():
-            ct = {"png": "image/png", "webmanifest": "application/manifest+json", "js": "text/javascript; charset=utf-8"}[m.group(2)]
+            ct = {"png": "image/png", "webmanifest": "application/manifest+json", "js": "text/javascript; charset=utf-8", "css": "text/css; charset=utf-8"}[m.group(2)]
             return self.send(200, (ROOT / "static" / m.group(1)).read_bytes(), ct)
         if u.path in ("/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/favicon.ico"):
             return self.send(200, (ROOT / "static" / ("icon-192.png" if u.path == "/favicon.ico" else "apple-touch-icon.png")).read_bytes(), "image/png")
@@ -1255,6 +1280,8 @@ class H(BaseHTTPRequestHandler):
             return self.send(500, {"error": "Could not place your order. Please call the shop on (07) 4065 2263."})
         return self.send(code, res)
     def do_POST(self):
+        if portal.wants(urlparse(self.path).path):
+            return portal.handle_post(self)
         if urlparse(self.path).path == "/api/order":
             return self.public_order()
         if not self.authed(): return self.send(401, {"error": "staff PIN required", "pin": True})

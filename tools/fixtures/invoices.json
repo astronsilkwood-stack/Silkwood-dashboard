@@ -1,0 +1,64 @@
+{
+  "date": "2026-11-10",
+  "sync": false,
+  "invoices": [
+    {
+      "supplier": "Bega Dairy",
+      "invoice_number": "577803222",
+      "date": "2026-09-08",
+      "due_date": "2026-09-15",
+      "amount_due": 89.72,
+      "status": "unpaid",
+      "pay_url": "https://example.com/pay/bega/577803222"
+    },
+    {
+      "supplier": "Elgas Limited",
+      "invoice_number": "0560677891",
+      "date": "2026-09-08",
+      "due_date": "2026-09-15",
+      "amount_due": 396.71,
+      "status": "unpaid"
+    },
+    {
+      "supplier": "SMOKESTIX",
+      "invoice_number": "14027",
+      "date": "2026-09-08",
+      "due_date": "2026-09-15",
+      "amount_due": 6683.79,
+      "status": "unpaid",
+      "pay_url": "https://example.com/pay/smokestix/14027"
+    },
+    {
+      "supplier": "Tully Pies",
+      "invoice_number": "TILL8122",
+      "date": "2026-11-10",
+      "due_date": "2026-12-10",
+      "amount_due": 118.50,
+      "status": "unpaid"
+    },
+    {
+      "supplier": "BIDFOOD",
+      "invoice_number": "I71533175.CAI",
+      "date": "2026-09-10",
+      "due_date": "2026-09-17",
+      "amount_due": 586.64,
+      "status": "unpaid"
+    },
+    {
+      "supplier": "The Distributors Queensland",
+      "invoice_number": "510867",
+      "date": "2026-09-09",
+      "due_date": "2026-09-16",
+      "amount_due": 1977.65,
+      "status": "unpaid"
+    },
+    {
+      "supplier": "Telstra",
+      "invoice_number": "K 091 281 371-8",
+      "date": "2026-09-09",
+      "due_date": "2026-09-16",
+      "amount_due": 0,
+      "status": "paid"
+    }
+  ]
+}

@@ -29,3 +29,9 @@ services:
         sync: false
       - key: ORDER_WEBHOOK_KEY
         sync: false
+      - key: PORTAL_ADMIN_USER
+        sync: false
+      - key: PORTAL_ADMIN_PASSWORD_HASH
+        sync: false
+      - key: PORTAL_INGEST_KEY
+        sync: false
