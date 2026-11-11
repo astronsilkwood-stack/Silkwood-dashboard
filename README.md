@@ -158,7 +158,43 @@ GET /api/portal/stock
 Authorization: Bearer <PORTAL_INGEST_KEY>
 ```
 
-The JSON has `timezone`, `baselineRule`, and `products[]` (`code`, `name`, `group`, `department`, `barcode`, `baselineDate`, `baselineAt`, `openingQty`, `soldSince`, `receivedSince`, `onHand`, `daysCover`, `lastUpdated`, `note`). Send movements for those codes, from the day after `baselineDate`.
+The JSON has `timezone`, `baselineRule`, and `products[]` (`code`, `name`, `group`, `department`, `barcode`, `baselineDate`, `baselineAt`, `openingQty`, `soldSince`, `receivedSince`, `onHand`, `daysCover`, `lastUpdated`, `note`, `manual`). `manual` is true when the owner added the product on the portal rather than from the till catalog. If they leave the code blank, the portal assigns a stable id such as `M-0001`. Post `supplier-invoice` movements against that code. Editing the code later keeps the counts and movements. Stop tracking hides the product from this list and leaves the history in place. Send movements for tracked codes from the day after `baselineDate`.
+
+The kitchen page date presets are Today, Yesterday, This week, Last 7 days, This month and Last month, plus From and To. Those dates apply to the kitchen totals, the group list and a single item. The nightly kitchen file is one total per day (`days[]` is `[date, kitchenSalesInc, coveredGp, coveredEx, kitchenSalesEx, shopSalesInc, packedItems]`). There is no hour field in that pack, so the item view says so. If a future day row includes an 8th `hours` list of `[hour, qty]`, that table is shown.
+
+### Help chat
+
+Logged-in pages include a Help panel. The portal does not call a model. Optional env vars, both unset by default:
+
+| Name | Purpose |
+|---|---|
+| `PORTAL_CHAT_WEBHOOK_URL` | Where a new owner message is relayed. |
+| `PORTAL_CHAT_WEBHOOK_KEY` | Bearer token for that POST. Never logged. |
+
+`POST /api/portal/chat` requires the owner session and the CSRF header. Body:
+
+```json
+{"message":"What sold yesterday?","page":"/portal/kitchen","context":{"period":"yesterday"}}
+```
+
+The row is stored. If `PORTAL_CHAT_WEBHOOK_URL` is set, the portal POSTs this payload with `Authorization: Bearer <PORTAL_CHAT_WEBHOOK_KEY>`:
+
+```json
+{"id":1,"message":"What sold yesterday?","page":"/portal/kitchen","context":{"period":"yesterday"},"createdAt":"2026-11-11T15:00:00+10:00"}
+```
+
+The response `status` is `offline` when the URL is unset (the panel says “Assistant offline — your message is saved”), `sent` when the webhook accepted it, or `saved` when the webhook could not be reached. `GET /api/portal/chat` returns `{assistant, messages:[{id, message, page, context, reply, createdAt, repliedAt}]}`. `assistant` is `offline` or `online`. It does not include the webhook address. The panel polls that every 5 seconds while it is open and shows “Thinking…” until a reply when a webhook is configured. `POST /api/portal/chat/clear` wipes the thread.
+
+The assistant answers with the ingest key, not the owner session:
+
+```
+POST /api/portal/chat/reply
+Authorization: Bearer <PORTAL_INGEST_KEY>
+
+{"id":1,"reply":"Yesterday’s kitchen sales were **down** on the day before."}
+```
+
+Replies are shown as plain text with bold markers only. Raw HTML is escaped. `OPENAI_API_KEY` is not read.
 
 ### Staff hours read
 

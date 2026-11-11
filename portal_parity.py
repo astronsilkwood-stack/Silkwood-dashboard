@@ -10,6 +10,7 @@ Do not pre-adjust GP in the sales upload. That would apply the override twice.
 import json
 import re
 from datetime import date, timedelta
+from urllib.parse import quote
 from decimal import Decimal, ROUND_HALF_UP
 
 import portal
@@ -847,6 +848,123 @@ def _selected_archive_span(archive, start, end):
     return [d for d in dates if start.isoformat() <= d <= end.isoformat()]
 
 
+def _qs(pairs):
+    return "&".join(f"{quote(str(key), safe='')}={quote(str(value), safe='')}" for key, value in pairs if value not in (None, ""))
+
+
+def _range_pairs(active, start, end):
+    return [("period", active), ("from", start.isoformat()), ("to", end.isoformat())]
+
+
+def _department_index(archive):
+    refs = archive.get("refs") or []
+    grouped = {}
+    for product in archive.get("products") or []:
+        if not isinstance(product, list) or len(product) < 8:
+            continue
+        ref = product[2]
+        department, group = "Unmapped", ""
+        if isinstance(ref, int) and 0 <= ref < len(refs) and isinstance(refs[ref], list) and refs[ref]:
+            department = str(refs[ref][0])
+            group = str(refs[ref][1]) if len(refs[ref]) > 1 else ""
+        bucket = grouped.setdefault(department, {"groups": set(), "products": []})
+        if group:
+            bucket["groups"].add(group)
+        bucket["products"].append((product, group))
+    return grouped
+
+
+def _department_cards(archive, active, start, end):
+    grouped = _department_index(archive)
+    cards = []
+    for name in sorted(grouped, key=str.casefold):
+        info = grouped[name]
+        groups = ", ".join(sorted(info["groups"], key=str.casefold)[:6])
+        href = "/portal/products?" + _qs(_range_pairs(active, start, end) + [("dept", name)])
+        cards.append(
+            f'<a class="dept-card" href="{portal.h(href)}"><b>{portal.h(name)}</b>'
+            f'<span>{len(info["products"])} products</span><small>{portal.h(groups)}</small></a>'
+        )
+    if not cards:
+        return '<p class="empty">No departments in the product archive yet.</p>'
+    return f'<section class="card" id="product-departments"><h2>Departments</h2><div class="dept-grid">{"".join(cards)}</div></section>'
+
+
+def _department_products(c, archive, dept, active, start, end, query):
+    grouped = _department_index(archive)
+    info = grouped.get(dept)
+    back = "/portal/products?" + _qs(_range_pairs(active, start, end))
+    if not info:
+        return f'<p class="empty">That department is not in the product archive.</p><p><a class="btn ghost" href="{portal.h(back)}">All departments</a></p>'
+    import portal_stock
+    on_hand = {row["code"]: row["onHand"] for row in portal_stock.tracked_rows(c)}
+    table = override_table(c)
+    needle = (query.get("q") or "").strip().casefold()
+    group_filter = query.get("group") or ""
+    built = []
+    for product, group in info["products"]:
+        if group_filter and group != group_filter:
+            continue
+        hay = f"{product[0]} {product[1]} {product[3] or ''} {group}".casefold()
+        if needle and needle not in hay:
+            continue
+        totals = sum_rows(_walk_pack(product, archive["dates"], start.isoformat(), end.isoformat(), table, True))
+        code = str(product[0])
+        built.append({
+            "code": code, "name": str(product[1]), "group": group,
+            "qty": totals["qty"], "sales": totals["sales_inc"] / Decimal(100), "gp": totals["gp"] / Decimal(100),
+            "onhand": on_hand.get(code), "override": totals["override_days"] > 0,
+        })
+    sort = query.get("sort") if query.get("sort") in ("name", "qty", "sales", "gp", "stock") else "name"
+    def sort_key(row):
+        if sort == "qty":
+            return row["qty"]
+        if sort == "sales":
+            return row["sales"]
+        if sort == "gp":
+            return row["gp"]
+        if sort == "stock":
+            return row["onhand"] if row["onhand"] is not None else Decimal("-1e18")
+        return row["name"].casefold()
+    built.sort(key=sort_key, reverse=sort != "name")
+    chips = []
+    for key, label in (("name", "Name"), ("qty", "Qty"), ("sales", "Sales"), ("gp", "GP"), ("stock", "Stock")):
+        cls = " on" if key == sort else ""
+        href = "/portal/products?" + _qs(_range_pairs(active, start, end) + [("dept", dept), ("group", group_filter), ("q", query.get("q") or ""), ("sort", key)])
+        chips.append(f'<a class="chip{cls}" href="{portal.h(href)}">{label}</a>')
+    group_chips = [f'<a class="chip{" on" if not group_filter else ""}" href="' + portal.h("/portal/products?" + _qs(_range_pairs(active, start, end) + [("dept", dept), ("sort", sort)])) + '">All groups</a>']
+    for group in sorted(info["groups"], key=str.casefold):
+        cls = " on" if group == group_filter else ""
+        href = "/portal/products?" + _qs(_range_pairs(active, start, end) + [("dept", dept), ("group", group), ("sort", sort)])
+        group_chips.append(f'<a class="chip{cls}" href="{portal.h(href)}">{portal.h(group)}</a>')
+    body = []
+    for row in built:
+        pill = ' <span class="pill">Cost override</span>' if row["override"] else ""
+        stock = portal_stock.qty_text(row["onhand"]) if row["onhand"] is not None else "—"
+        href = "/portal/products?" + _qs(_range_pairs(active, start, end) + [("dept", dept), ("product", row["code"])])
+        body.append(
+            f'<tr><td><a href="{portal.h(href)}">{portal.h(row["name"])}</a>{pill}<div class="mini">{portal.h(row["code"])}</div></td>'
+            f'<td>{portal.h(row["group"] or "—")}</td><td class="num">{_fmt_qty(row["qty"], dept == "A Fuel")}</td>'
+            f'<td class="num">{portal.money(_dollars(row["sales"]))}</td><td class="num">{portal.money(_dollars(row["gp"]))}</td>'
+            f'<td class="num">{stock}</td></tr>'
+        )
+    table_html = '<p class="empty">No products in this department match.</p>' if not body else (
+        '<div class="tw"><table><thead><tr><th>Product</th><th>Group</th><th class="num">Qty</th><th class="num">Sales</th><th class="num">GP</th><th class="num">On hand</th></tr></thead><tbody>'
+        + "".join(body) + "</tbody></table></div>"
+    )
+    return f'''<p><a class="btn ghost" href="{portal.h(back)}">All departments</a></p>
+<section class="card" id="dept-products"><h2>{portal.h(dept)}</h2>
+<form class="period" method="get" action="/portal/products">
+<input type="hidden" name="period" value="{portal.h(active)}"><input type="hidden" name="from" value="{start.isoformat()}"><input type="hidden" name="to" value="{end.isoformat()}">
+<input type="hidden" name="dept" value="{portal.h(dept)}"><input type="hidden" name="sort" value="{portal.h(sort)}">
+<label class="f">Search in this department<input name="q" value="{portal.h(query.get("q") or "")}"></label>
+<button class="btn" type="submit">Search</button></form>
+<div class="chips">{"".join(group_chips)}</div>
+<div class="chips">{"".join(chips)}</div>
+{table_html}
+<p class="help">Qty and sales are for the selected dates. GP uses a cost override when one is effective, otherwise the till cost. On hand is shown only when the product is tracked.</p></section>'''
+
+
 def page_products(c, query):
     through = portal.data_through(c)
     anchor = portal.anchor_day(c)
@@ -890,10 +1008,18 @@ def page_products(c, query):
 <div class="row"><label class="f">Name, PLU or barcode<input name="q" value="{portal.h(q)}" maxlength="80"></label>
 <button class="btn" type="submit">Search</button></div></form>
 <div class="chips">{''.join(items) or '<p class="empty">No matching product in the archive.</p>'}</div>"""
-        detail = _product_detail(c, archive, chosen, compare, active, start, end, q)
+        detail = _product_detail(c, archive, chosen, compare, active, start, end, q) if chosen else ""
         span = _selected_archive_span(archive, start, end)
         note = f"Archive {portal.h(dates[0])} to {portal.h(dates[-1])}. {len(span)} trading days in this range. Days outside the archive are left out, not filled with zero."
-        body = search + f'<p class="help">{note}</p>' + detail
+        dept = query.get("dept") or ""
+        if chosen:
+            back = "/portal/products?" + _qs(_range_pairs(active, start, end) + ([("dept", dept)] if dept else []))
+            label = "All departments" if not dept else "Back to " + dept
+            body = f'<p><a class="btn ghost" href="{portal.h(back)}">{portal.h(label)}</a></p>' + search + f'<p class="help">{note}</p>' + detail
+        elif dept:
+            body = _department_products(c, archive, dept, active, start, end, query)
+        else:
+            body = _department_cards(archive, active, start, end) + search + f'<p class="help">{note}</p>'
     return f"""<div class="ph"><h1>Products</h1>{portal.through_line(through)}
 <p>Quantity is the sale unit. Fuel quantity is litres. Gross profit uses a cost override when one is effective on that sale date, otherwise the till cost.</p></div>
 {error}{portal.period_controls('/portal/products', active, start, end)}{body}"""
@@ -1056,6 +1182,84 @@ def _retail_rows(data):
     return rows
 
 
+def _pricing_browser(rows, config, query, c, data, through, chosen):
+    if chosen:
+        back = "/portal/pricing" + (("?dept=" + quote(query.get("dept") or "")) if query.get("dept") else "")
+        return f'<p><a class="btn ghost" href="{portal.h(back)}">All departments</a></p>'
+    margins = config.get("department_margins") if isinstance(config.get("department_margins"), dict) else {}
+    default_margin = config.get("default_margin") if isinstance(config.get("default_margin"), (int, float)) else 0.35
+    excluded = config.get("excluded_departments") if isinstance(config.get("excluded_departments"), list) else []
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(str(row.get("department") or "Other"), []).append(row)
+    dept = query.get("dept") or ""
+    if not dept:
+        cards = []
+        for name in sorted(grouped, key=str.casefold):
+            cards.append(f'<a class="dept-card" href="/portal/pricing?dept={quote(name)}"><b>{portal.h(name)}</b><span>{len(grouped[name])} products</span></a>')
+        if not cards:
+            return '<p class="empty">No priced products yet.</p>'
+        return f'<section class="card" id="price-departments"><h2>Departments</h2><div class="dept-grid">{"".join(cards)}</div></section>'
+    found = grouped.get(dept) or []
+    needle = (query.get("q") or "").strip().casefold()
+    sort = query.get("sort") if query.get("sort") in ("name", "cost", "sell", "gp") else "name"
+    as_of = (data or {}).get("_asOf") or (data or {}).get("asOf") or through or portal.today().isoformat()
+    table = override_table(c)
+    built = []
+    margin = margins.get(dept, default_margin)
+    for row in found:
+        hay = f"{row.get('code','')} {row.get('description','')} {row.get('barcodes','')}".casefold()
+        if needle and needle not in hay:
+            continue
+        ov = override_on(table, row.get("code"), as_of)
+        till_cost = row.get("costEx")
+        cost = _money_cents(ov["cost_ex_cents"]) if ov else till_cost
+        sell = row.get("latestObservedSellInc")
+        gp_pct = None
+        if isinstance(sell, (int, float)) and isinstance(cost, (int, float)) and sell:
+            sell_ex = Decimal(str(sell)) / Decimal("1.1")
+            if sell_ex:
+                gp_pct = float((sell_ex - Decimal(str(cost))) / sell_ex)
+        raw, ends = suggest_from_cost(cost, margin, True)
+        built.append({"row": row, "cost": cost, "sell": sell, "gp": gp_pct, "suggested": ends[1] if len(ends) > 1 else (ends[0] if ends else raw), "override": bool(ov)})
+    def sort_key(item):
+        if sort == "cost":
+            return item["cost"] if isinstance(item["cost"], (int, float)) else -1
+        if sort == "sell":
+            return item["sell"] if isinstance(item["sell"], (int, float)) else -1
+        if sort == "gp":
+            return item["gp"] if item["gp"] is not None else -999
+        return str(item["row"].get("description") or "").casefold()
+    built.sort(key=sort_key, reverse=sort != "name")
+    chips = []
+    for key, label in (("name", "Name"), ("cost", "Cost"), ("sell", "Sell"), ("gp", "GP%")):
+        cls = " on" if key == sort else ""
+        chips.append(f'<a class="chip{cls}" href="/portal/pricing?dept={quote(dept)}&sort={key}&q={quote(query.get("q") or "")}">{label}</a>')
+    body = []
+    for item in built:
+        row = item["row"]
+        pill = ' <span class="pill">Cost override</span>' if item["override"] else ""
+        href = f'/portal/pricing?dept={quote(dept)}&product={quote(str(row.get("code")))}'
+        body.append(
+            f'<tr><td><a href="{href}">{portal.h(row.get("description"))}</a>{pill}<div class="mini">{portal.h(row.get("code"))}</div></td>'
+            f'<td class="num">{portal.money(item["cost"])}</td><td class="num">{portal.money(item["sell"])}</td>'
+            f'<td class="num">{portal.pct_ratio(item["gp"])}</td><td class="num">{portal.money(item["suggested"])}</td></tr>'
+        )
+    table_html = '<p class="empty">No products in this department match.</p>' if not body else (
+        '<div class="tw"><table><thead><tr><th>Product</th><th class="num">Cost ex GST</th><th class="num">Sell inc GST</th><th class="num">GP%</th><th class="num">Suggested</th></tr></thead><tbody>'
+        + "".join(body) + "</tbody></table></div>"
+    )
+    note = "" if dept not in excluded else "<p class=\"help\">This department is excluded from the target shop margin.</p>"
+    return f'''<p><a class="btn ghost" href="/portal/pricing">All departments</a></p>
+<section class="card" id="price-dept"><h2>{portal.h(dept)}</h2>
+<form class="period" method="get" action="/portal/pricing"><input type="hidden" name="dept" value="{portal.h(dept)}"><input type="hidden" name="sort" value="{portal.h(sort)}">
+<label class="f">Search in this department<input name="q" value="{portal.h(query.get("q") or "")}"></label>
+<button class="btn" type="submit">Search</button></form>
+<div class="chips">{"".join(chips)}</div>
+{note}{table_html}
+<p class="help">Suggested sell uses the department target margin and a 95-cent ending where one is at or above the raw price. Nothing is written to SwiftPOS.</p></section>'''
+
+
 def page_pricing(c, query):
     through = portal.data_through(c)
     data = load_blob(c, "retail-pricing")
@@ -1146,9 +1350,13 @@ def page_pricing(c, query):
     for name, value in sorted(dept_margins.items()):
         margins.append(f"<tr><td>{portal.h(name)}</td><td class=\"num\">{float(value) * 100:.1f}%</td></tr>")
     margin_table = '<div class="tw"><table><thead><tr><th>Department</th><th>Target margin</th></tr></thead><tbody>' + "".join(margins) + f'<tr><td>Default</td><td class="num">{float(default_margin) * 100:.1f}%</td></tr></tbody></table></div>'
+    dept_name = query.get("dept") or ""
+    pricing_nav = _pricing_browser(rows, config, query, c, data, through, chosen)
     return f"""<div class="ph"><h1>Pricing</h1>{portal.through_line(through)}
 <p>Look up a product, then a suggested sell from cost and target margin. Retail endings are 50, 95 and 99 cents. Nothing is saved to SwiftPOS.</p></div>
+{pricing_nav}
 <form class="period" method="get" action="/portal/pricing"><div class="row">
+<input type="hidden" name="dept" value="{portal.h(dept_name)}">
 <label class="f">Name, PLU or barcode<input name="q" value="{portal.h(q)}"></label>
 <button class="btn" type="submit">Search</button></div></form>
 <div class="chips">{''.join(chips)}</div>
@@ -1599,11 +1807,74 @@ def _kitchen_delta(c, start, end, codes):
     return total, covered, marked
 
 
+def kitchen_bounds(query, today_d, anchor):
+    period = (query.get("period") or "month").strip()
+    if period == "today":
+        return "today", today_d, today_d
+    if period == "yesterday":
+        yesterday = today_d - timedelta(days=1)
+        return "yesterday", yesterday, yesterday
+    if period == "thisweek":
+        monday = today_d - timedelta(days=today_d.weekday())
+        return "thisweek", monday, today_d
+    return portal.period_bounds(period if period else "month", query.get("from"), query.get("to"), anchor)
+
+
+def _kitchen_flags(c):
+    archive = product_archive(c)
+    flags = {}
+    if not archive:
+        return flags
+    for product in archive.get("products") or []:
+        if isinstance(product, list) and len(product) > 6:
+            flags[str(product[0])] = product[6]
+    return flags
+
+
+def _sales_ex_cents(code, sales_cents, flags):
+    amount = Decimal(str(sales_cents or 0))
+    if flags.get(code) == 0:
+        return amount
+    return amount / Decimal("1.1")
+
+
+def _kitchen_controls(active, start, end, extra):
+    presets = (
+        ("today", "Today"), ("yesterday", "Yesterday"), ("thisweek", "This week"),
+        ("last7", "Last 7 days"), ("month", "This month"), ("lastmonth", "Last month"),
+    )
+    chips = []
+    for key, label in presets:
+        cls = " on" if key == active else ""
+        href = "/portal/kitchen?" + _qs([("period", key)] + extra)
+        chips.append(f'<a class="chip{cls}" href="{portal.h(href)}">{label}</a>')
+    hidden = "".join(f'<input type="hidden" name="{portal.h(key)}" value="{portal.h(value)}">' for key, value in extra)
+    return f"""<form class="period" method="get" action="/portal/kitchen">
+<div class="chips">{''.join(chips)}</div>
+<div class="row">
+<label class="f">From<input type="date" name="from" value="{start.isoformat()}" required></label>
+<label class="f">To<input type="date" name="to" value="{end.isoformat()}" required></label>
+<input type="hidden" name="period" value="custom">{hidden}
+<button class="btn" type="submit">Apply</button>
+</div></form>"""
+
+
+def _item_series(days, catalog, code):
+    series = []
+    for day in days:
+        if len(day) < 7:
+            continue
+        for item in _kitchen_items(day[6], catalog):
+            if item["code"] == code:
+                series.append({"date": str(day[0]), "qty": item["qty"], "sales_cents": item["sales_cents"], "hours": day[7] if len(day) > 7 else None})
+    return series
+
+
 def page_kitchen(c, query):
     through = portal.data_through(c)
     anchor = portal.anchor_day(c)
     try:
-        active, start, end = portal.period_bounds(query.get("period"), query.get("from"), query.get("to"), anchor)
+        active, start, end = kitchen_bounds(query, portal.today(), anchor)
         error = ""
     except ValueError as ex:
         active, start, end = portal.period_bounds("month", None, None, anchor)
@@ -1631,11 +1902,17 @@ def page_kitchen(c, query):
         chosen = day_dates[-1] if day_dates else None
     options = "".join(f'<option value="{portal.h(d)}"{" selected" if d == chosen else ""}>{portal.h(portal.fmt_date(d))}</option>' for d in day_dates)
     group_filter = query.get("group") or ""
+    dept = query.get("dept") or ""
+    item_code = (query.get("item") or "").strip()
     q = (query.get("q") or "").strip().casefold()
-    group_links = [f'<a class="chip{" on" if not group_filter else ""}" href="/portal/kitchen?period={portal.h(active)}&day={portal.h(chosen or "")}">All groups</a>']
+    extra = [("from", start.isoformat()), ("to", end.isoformat()), ("dept", dept), ("group", group_filter), ("item", item_code), ("day", chosen or "")]
+    group_links = []
+    base_pairs = [("period", active), ("from", start.isoformat()), ("to", end.isoformat()), ("day", chosen or ""), ("dept", dept)]
+    group_links.append(f'<a class="chip{" on" if not group_filter else ""}" href="{portal.h("/portal/kitchen?" + _qs(base_pairs))}">All groups</a>')
     for i, name in enumerate(groups):
         cls = " on" if str(i) == group_filter else ""
-        group_links.append(f'<a class="chip{cls}" href="/portal/kitchen?period={portal.h(active)}&day={portal.h(chosen or "")}&group={i}">{portal.h(name)}</a>')
+        href = "/portal/kitchen?" + _qs(base_pairs + [("group", i)])
+        group_links.append(f'<a class="chip{cls}" href="{portal.h(href)}">{portal.h(name)}</a>')
     item_rows = []
     day_row = next((row for row in days if str(row[0]) == chosen), None)
     sales_day = portal.one(c.execute("SELECT * FROM portal_sales_days WHERE date=?", (chosen,))) if chosen else None
@@ -1664,27 +1941,142 @@ def page_kitchen(c, query):
             f"coverage {portal.pct_ratio(sales_day.get('coverage'))}.</p>"
         )
     mark_note = override_note(marked)
+    flags = _kitchen_flags(c)
+    browse = _kitchen_browse(days, catalog, groups, flags, active, start, end, dept, group_filter, item_code, q)
+    hidden_range = (
+        f'<input type="hidden" name="period" value="{portal.h(active)}">'
+        f'<input type="hidden" name="from" value="{start.isoformat()}">'
+        f'<input type="hidden" name="to" value="{end.isoformat()}">'
+        f'<input type="hidden" name="dept" value="{portal.h(dept)}">'
+        f'<input type="hidden" name="group" value="{portal.h(group_filter)}">'
+        f'<input type="hidden" name="item" value="{portal.h(item_code)}">'
+    )
+    empty_range = '<p class="empty">No kitchen sales in this range.</p>' if not days else ""
     return f"""<div class="ph"><h1>Kitchen</h1>{portal.through_line(through)}
-<p>{portal.h(kitchen.get('caption') or '')} Kitchen GP for 2026 uses a cost override when one is effective, otherwise the till cost.</p></div>
-{error}{portal.period_controls('/portal/kitchen', active, start, end)}
+<p>{portal.h(kitchen.get('caption') or '')} Kitchen GP for 2026 uses a cost override when one is effective, otherwise the till cost. The dates below apply to every figure on this page.</p></div>
+{error}{_kitchen_controls(active, start, end, [("dept", dept), ("group", group_filter), ("item", item_code), ("day", chosen or "")])}
 {mark_note}
 <section class="card" id="kitchen-period"><h2>This range</h2>
+{empty_range}
 <div class="grid g3">
 <div class="stat"><div class="lbl">Kitchen sales</div><b>{portal.money(sales)}</b><span>{portal.pct_ratio(share)} of shop</span></div>
 <div class="stat"><div class="lbl">Covered kitchen GP</div><b>{portal.money(gp)}</b><span>{portal.pct_ratio(gp_pct)}</span></div>
 <div class="stat"><div class="lbl">Days</div><b>{len(days)}</b></div>
 </div>
 {comp_html}</section>
+{browse}
 <section class="card" id="kitchen-day"><h2>One trading day</h2>
 <form class="period" method="get" action="/portal/kitchen">
-<input type="hidden" name="period" value="{portal.h(active)}">
+{hidden_range}
 <label class="f">Day<select name="day">{options}</select></label>
 <label class="f">Name or code<input name="q" value="{portal.h(query.get('q') or '')}"></label>
 <button class="btn" type="submit">Show</button></form>
 {day_card}
 <div class="chips">{''.join(group_links)}</div>
-<div class="tw"><table><thead><tr><th>Item</th><th>Qty</th><th>Sales</th></tr></thead><tbody>{''.join(item_rows) or '<tr><td colspan="3">No items.</td></tr>'}</tbody></table></div>
+<div class="tw"><table><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Sales</th></tr></thead><tbody>{''.join(item_rows) or '<tr><td colspan="3">No items in this range.</td></tr>'}</tbody></table></div>
 </section>"""
+
+
+def _kitchen_browse(days, catalog, groups, flags, active, start, end, dept, group_filter, item_code, needle):
+    departments = {}
+    for entry in catalog:
+        if not isinstance(entry, list) or not entry:
+            continue
+        code = str(entry[0])
+        name = str(entry[1]) if len(entry) > 1 else code
+        group_i = entry[2] if len(entry) > 2 and isinstance(entry[2], int) else None
+        group_name = groups[group_i] if group_i is not None and 0 <= group_i < len(groups) else "Kitchen"
+        department = group_name
+        departments.setdefault(department, {}).setdefault(group_name, []).append((code, name, group_i))
+    pairs = [("period", active), ("from", start.isoformat()), ("to", end.isoformat())]
+    if item_code:
+        series = _item_series(days, catalog, item_code)
+        qty = sum(row["qty"] for row in series)
+        ex = sum((_sales_ex_cents(item_code, row["sales_cents"], flags) for row in series), Decimal(0))
+        inc = sum((Decimal(row["sales_cents"]) for row in series), Decimal(0)) / Decimal(100)
+        name = next((entry[1] for entry in catalog if str(entry[0]) == item_code), item_code)
+        group_name = ""
+        for entry in catalog:
+            if str(entry[0]) == item_code and len(entry) > 2 and isinstance(entry[2], int) and entry[2] < len(groups):
+                group_name = groups[entry[2]]
+        peak = max((row["qty"] for row in series), default=0) or 1
+        bars = []
+        daily = []
+        hourly = []
+        for row in series:
+            height = max(5, min(100, int(round(row["qty"] / peak * 20)) * 5))
+            bars.append(f'<i class="h{height}" title="{portal.h(row["date"])}"></i>')
+            daily.append(
+                f'<tr><td>{portal.h(portal.fmt_date(row["date"]))}</td><td class="num">{_fmt_qty(row["qty"])}</td>'
+                f'<td class="num">{portal.money(_dollars(_sales_ex_cents(item_code, row["sales_cents"], flags) / Decimal(100)))}</td></tr>'
+            )
+            hours = row.get("hours")
+            if isinstance(hours, list):
+                for hour in hours:
+                    if isinstance(hour, list) and len(hour) >= 2:
+                        hourly.append(f'<tr><td>{portal.h(row["date"])} {portal.h(hour[0])}</td><td class="num">{portal.h(hour[1])}</td></tr>')
+        hour_html = (
+            '<div class="tw"><table><thead><tr><th>Hour</th><th class="num">Qty</th></tr></thead><tbody>' + "".join(hourly) + "</tbody></table></div>"
+            if hourly else '<p class="empty" id="kitchen-hourly">No hourly breakdown in this nightly file. The kitchen pack is one total per trading day.</p>'
+        )
+        back = "/portal/kitchen?" + _qs(pairs + [("dept", group_name or dept), ("group", "")])
+        return f'''<p><a class="btn ghost" href="{portal.h(back)}">All kitchen groups</a></p>
+<section class="card" id="kitchen-item"><h2>{portal.h(name)}</h2>
+<p class="help">PLU {portal.h(item_code)} · {portal.h(group_name or "Kitchen")} · {portal.h(portal.fmt_date(start.isoformat()))} – {portal.h(portal.fmt_date(end.isoformat()))}</p>
+<div class="grid g2">
+<div class="stat"><div class="lbl">Qty</div><b>{_fmt_qty(qty)}</b></div>
+<div class="stat"><div class="lbl">Sales ex GST</div><b>{portal.money(_dollars(ex / Decimal(100)))}</b><span>{portal.money(_dollars(inc))} inc GST</span></div>
+</div>
+<div class="vchart" role="img" aria-label="Quantity by day">{''.join(bars)}</div>
+<div class="tw"><table><thead><tr><th>Date</th><th class="num">Qty</th><th class="num">Sales ex GST</th></tr></thead><tbody>{''.join(daily) or '<tr><td colspan="3">No sales in this range.</td></tr>'}</tbody></table></div>
+{hour_html}</section>'''
+    if not dept and not group_filter:
+        cards = []
+        for name in sorted(departments, key=str.casefold):
+            href = "/portal/kitchen?" + _qs(pairs + [("dept", name)])
+            groups_here = ", ".join(sorted(departments[name], key=str.casefold)[:4])
+            count = sum(len(v) for v in departments[name].values())
+            cards.append(f'<a class="dept-card" href="{portal.h(href)}"><b>{portal.h(name)}</b><span>{count} items</span><small>{portal.h(groups_here)}</small></a>')
+        return f'<section class="card" id="kitchen-departments"><h2>Kitchen groups</h2><div class="dept-grid">{"".join(cards)}</div></section>'
+    chosen_dept = dept or group_filter
+    products = []
+    pool = departments.get(chosen_dept) or {}
+    if not pool and group_filter.isdigit():
+        pool = {groups[int(group_filter)]: departments.get(groups[int(group_filter)], {}).get(groups[int(group_filter)], [])}
+    entries = []
+    for group_name, items in (pool.items() if isinstance(pool, dict) else []):
+        if group_filter.isdigit() and groups[int(group_filter)] != group_name:
+            continue
+        entries.extend((code, name, group_name) for code, name, _gi in items)
+    totals = {}
+    for day in days:
+        if len(day) < 7:
+            continue
+        for item in _kitchen_items(day[6], catalog):
+            bucket = totals.setdefault(item["code"], {"qty": 0, "ex": Decimal(0), "name": item["name"]})
+            bucket["qty"] += item["qty"]
+            bucket["ex"] += _sales_ex_cents(item["code"], item["sales_cents"], flags)
+    rows = []
+    for code, name, group_name in entries:
+        if needle and needle not in f"{code} {name} {group_name}".casefold():
+            continue
+        got = totals.get(code) or {"qty": 0, "ex": Decimal(0)}
+        rows.append((name, code, group_name, got["qty"], got["ex"]))
+    rows.sort(key=lambda row: row[4], reverse=True)
+    body = []
+    for name, code, group_name, qty, ex in rows:
+        href = "/portal/kitchen?" + _qs(pairs + [("dept", chosen_dept), ("item", code)])
+        body.append(
+            f'<tr><td><a href="{portal.h(href)}">{portal.h(name)}</a><div class="mini">{portal.h(code)}</div></td>'
+            f'<td>{portal.h(group_name)}</td><td class="num">{_fmt_qty(qty)}</td><td class="num">{portal.money(_dollars(ex / Decimal(100)))}</td></tr>'
+        )
+    back = "/portal/kitchen?" + _qs(pairs)
+    table = '<p class="empty">No items in this range.</p>' if not body else (
+        '<div class="tw"><table><thead><tr><th>Item</th><th>Group</th><th class="num">Qty</th><th class="num">Sales ex GST</th></tr></thead><tbody>'
+        + "".join(body) + "</tbody></table></div>"
+    )
+    return f'''<p><a class="btn ghost" href="{portal.h(back)}">All kitchen groups</a></p>
+<section class="card" id="kitchen-group"><h2>{portal.h(chosen_dept)}</h2>{table}</section>'''
 
 
 def _kitchen_comparison(c, comparison, codes):

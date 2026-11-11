@@ -104,10 +104,52 @@ def _movements_for(c, codes):
     ))
 
 
-def position(baseline, movements, catalog):
+def _items(c):
+    return {row["code"]: row for row in portal.rows(c.execute("SELECT * FROM portal_stock_items"))}
+
+
+def _audit(c, actor, action, code, detail):
+    c.execute(
+        "INSERT INTO portal_stock_audit(at,actor,action,code,detail) VALUES(?,?,?,?,?)",
+        (portal.stamp(), actor, action, code, json.dumps(detail, ensure_ascii=False) if detail is not None else None),
+    )
+
+
+def next_manual_code(c):
+    meta = portal.meta_get(c, "stock_manual_seq")
+    n = int(meta.get("n") or 0)
+    while True:
+        n += 1
+        code = f"M-{n:04d}"
+        if not portal.one(c.execute("SELECT 1 AS x FROM portal_stock_items WHERE code=?", (code,))):
+            break
+    portal.meta_set(c, "stock_manual_seq", {"n": n})
+    return code
+
+
+def _label(value, label, limit, required=False):
+    text = re.sub(r"\s+", " ", (value or "").strip())
+    if required and (not text or not re.search(r"[A-Za-z]", text)):
+        raise ValueError(f"Enter a {label}.")
+    if len(text) > limit:
+        raise ValueError(f"The {label} is too long.")
+    if text and portal.has_card_number(text):
+        raise ValueError(f"The {label} must not include a card number.")
+    return text
+
+
+def position(baseline, movements, catalog, item=None):
     """SOH and the pieces the page and the bot read."""
     code = baseline["code"]
-    info = catalog.get(code) or {"code": code, "name": code, "group": "", "department": "", "barcode": ""}
+    info = dict(catalog.get(code) or {"code": code, "name": code, "group": "", "department": "", "barcode": ""})
+    manual = bool(item and item["manual"])
+    if item and manual:
+        if item["name"]:
+            info["name"] = item["name"]
+        if item["group_name"]:
+            info["group"] = item["group_name"]
+        if item["barcode"]:
+            info["barcode"] = item["barcode"]
     opening = _dec(baseline["qty"])
     sold = Decimal(0)
     received = Decimal(0)
@@ -151,14 +193,17 @@ def position(baseline, movements, catalog):
         "lastUpdated": updated,
         "note": baseline["note"] or "",
         "countedBy": baseline["created_by"],
+        "manual": manual,
     }
 
 
 def tracked_rows(c):
     catalog = catalog_index(c)
+    items = _items(c)
     baselines = current_baselines(c)
-    movements = _movements_for(c, list(baselines))
-    rows = [position(baselines[code], movements, catalog) for code in baselines]
+    codes = [code for code in baselines if not (items.get(code) and not items[code]["active"])]
+    movements = _movements_for(c, codes)
+    rows = [position(baselines[code], movements, catalog, items.get(code)) for code in codes]
     rows.sort(key=lambda row: (row["name"].casefold(), row["code"]))
     return rows
 
@@ -170,7 +215,7 @@ def tracked_payload(c):
         "products": [
             {key: row[key] for key in (
                 "code", "name", "group", "department", "barcode", "baselineDate", "baselineAt",
-                "openingQty", "soldSince", "receivedSince", "onHand", "daysCover", "lastUpdated", "note",
+                "openingQty", "soldSince", "receivedSince", "onHand", "daysCover", "lastUpdated", "note", "manual",
             )}
             for row in tracked_rows(c)
         ],
@@ -217,8 +262,14 @@ def apply_stock_movements(c, data):
 def save_count(c, user, form):
     code = _clean_code(form.get("code"))
     catalog = catalog_index(c)
-    if catalog and code not in catalog:
+    item = portal.one(c.execute("SELECT * FROM portal_stock_items WHERE code=?", (code,)))
+    if catalog and code not in catalog and not (item and item["manual"]):
         raise ValueError("Choose a product from the catalog.")
+    if item and not item["active"]:
+        c.execute(
+            "UPDATE portal_stock_items SET active=1, updated_at=?, updated_by=? WHERE code=?",
+            (portal.stamp(), user["username"], code),
+        )
     qty = portal.num(form.get("qty"), "count")
     if qty < 0:
         raise ValueError("The count cannot be negative.")
@@ -234,6 +285,88 @@ def save_count(c, user, form):
            VALUES(?,?,?,?,?,?,?)""",
         (code, qty, baseline_date, baseline_at, note, when, user["username"]),
     )
+    _audit(c, user["username"], "count", code, {"qty": qty, "baselineDate": baseline_date})
+    return code
+
+
+def add_manual(c, user, form):
+    name = _label(form.get("name"), "name", 120, required=True)
+    raw_code = (form.get("code") or "").strip()
+    code = _clean_code(raw_code) if raw_code else next_manual_code(c)
+    if portal.one(c.execute("SELECT 1 AS x FROM portal_stock_items WHERE code=? AND active=1", (code,))):
+        raise ValueError("That code is already being tracked.")
+    barcode = _label(form.get("barcode"), "barcode", 32)
+    group = _label(form.get("group"), "group", 80)
+    when = portal.stamp()
+    c.execute(
+        """INSERT INTO portal_stock_items(code,name,barcode,group_name,manual,active,created_at,updated_at,updated_by)
+           VALUES(?,?,?,?,1,1,?,?,?)
+           ON CONFLICT(code) DO UPDATE SET name=excluded.name, barcode=excluded.barcode, group_name=excluded.group_name,
+             manual=1, active=1, updated_at=excluded.updated_at, updated_by=excluded.updated_by""",
+        (code, name, barcode, group, when, when, user["username"]),
+    )
+    _audit(c, user["username"], "add", code, {"name": name, "barcode": barcode, "group": group})
+    form = dict(form)
+    form["code"] = code
+    if not form.get("baseline_time"):
+        form["baseline_time"] = "23:59"
+    save_count(c, user, form)
+    return code
+
+
+def edit_manual(c, user, form):
+    old = _clean_code(form.get("old_code") or form.get("code"))
+    item = portal.one(c.execute("SELECT * FROM portal_stock_items WHERE code=?", (old,)))
+    if not item or not item["manual"]:
+        raise ValueError("That manual product was not found.")
+    name = _label(form.get("name"), "name", 120, required=True)
+    raw_code = (form.get("code") or "").strip()
+    code = _clean_code(raw_code) if raw_code else old
+    barcode = _label(form.get("barcode"), "barcode", 32)
+    group = _label(form.get("group"), "group", 80)
+    if code != old:
+        clash = portal.one(c.execute("SELECT code, active FROM portal_stock_items WHERE code=?", (code,)))
+        if clash and clash["active"]:
+            raise ValueError("That code is already being tracked.")
+        for row in portal.rows(c.execute("SELECT movement_key, move_date, source FROM portal_stock_movements WHERE code=?", (old,))):
+            new_key = code + "\n" + row["move_date"] + "\n" + row["source"]
+            c.execute(
+                "UPDATE portal_stock_movements SET code=?, movement_key=? WHERE movement_key=?",
+                (code, new_key, row["movement_key"]),
+            )
+        c.execute("UPDATE portal_stock_counts SET code=? WHERE code=?", (code, old))
+        c.execute("UPDATE portal_stock_audit SET code=? WHERE code=?", (code, old))
+        c.execute("DELETE FROM portal_stock_items WHERE code=?", (old,))
+    when = portal.stamp()
+    c.execute(
+        """INSERT INTO portal_stock_items(code,name,barcode,group_name,manual,active,created_at,updated_at,updated_by)
+           VALUES(?,?,?,?,1,?,?,?,?)
+           ON CONFLICT(code) DO UPDATE SET name=excluded.name, barcode=excluded.barcode, group_name=excluded.group_name,
+             manual=1, active=excluded.active, updated_at=excluded.updated_at, updated_by=excluded.updated_by""",
+        (code, name, barcode, group, item["active"], item["created_at"], when, user["username"]),
+    )
+    _audit(c, user["username"], "edit", code, {"from": old, "name": name, "barcode": barcode, "group": group})
+    return code
+
+
+def untrack(c, user, form):
+    code = _clean_code(form.get("code"))
+    item = portal.one(c.execute("SELECT * FROM portal_stock_items WHERE code=?", (code,)))
+    catalog = catalog_index(c).get(code) or {}
+    when = portal.stamp()
+    name = (item["name"] if item else "") or catalog.get("name") or code
+    if item:
+        c.execute(
+            "UPDATE portal_stock_items SET active=0, updated_at=?, updated_by=? WHERE code=?",
+            (when, user["username"], code),
+        )
+    else:
+        c.execute(
+            """INSERT INTO portal_stock_items(code,name,barcode,group_name,manual,active,created_at,updated_at,updated_by)
+               VALUES(?,?,?,?,0,0,?,?,?)""",
+            (code, name, catalog.get("barcode") or "", catalog.get("group") or "", when, when, user["username"]),
+        )
+    _audit(c, user["username"], "untrack", code, {"name": name})
     return code
 
 
@@ -269,22 +402,29 @@ def page_stock(c, user, query, error=""):
     for row in shown:
         cls = _row_class(row["onHand"])
         flag = ""
+        if row.get("manual"):
+            flag += ' <span class="pill">Manual</span>'
         if cls == "negative":
-            flag = ' <span class="pill bad">Negative</span>'
+            flag += ' <span class="pill bad">Negative</span>'
         elif cls == "low":
-            flag = ' <span class="pill">Low</span>'
+            flag += ' <span class="pill">Low</span>'
         cover = "—" if row["daysCover"] is None else f"{row['daysCover']:.1f}"
+        edit = f'<a href="/portal/stock?edit={portal.h(row["code"])}">Edit</a>' if row.get("manual") else ""
         body.append(
-            f'<tr id="stock-{portal.h(row["code"])}" class="{cls}"><td>{portal.h(row["code"])}</td>'
+            f'<tr id="stock-{portal.h(row["code"])}" class="{cls}"><td class="nowrap">{portal.h(row["code"])}</td>'
             f'<td>{portal.h(row["name"])}{flag}</td><td>{portal.h(row["group"] or "—")}</td>'
             f'<td class="num">{qty_text(row["openingQty"])}<div class="mini">end of {portal.h(portal.fmt_date(row["baselineDate"]))}</div></td>'
             f'<td class="num">{qty_text(row["soldSince"])}</td><td class="num">{qty_text(row["receivedSince"])}</td>'
             f'<td class="num">{qty_text(row["onHand"])}</td><td class="num">{portal.h(cover)}</td>'
-            f'<td>{portal.h(portal.fmt_stamp(row["lastUpdated"]))}</td></tr>'
+            f'<td>{portal.h(portal.fmt_stamp(row["lastUpdated"]))}</td>'
+            f'<td class="actions">{edit}<form method="post" action="/portal/stock" data-confirm="Stop tracking this product? The count history is kept.">'
+            f'<input type="hidden" name="csrf" value="{portal.h(user["csrf"])}"><input type="hidden" name="action" value="untrack">'
+            f'<input type="hidden" name="code" value="{portal.h(row["code"])}">'
+            f'<button class="btn ghost sm" type="submit">Stop tracking</button></form></td></tr>'
         )
     table = '<p class="empty">No tracked products yet. Set an opening count below. Only those products are updated from till sales and deliveries.</p>' if not rows else (
         '<p class="empty">Nothing in this search.</p>' if not body else
-        '<div class="tw"><table><thead><tr><th>Code</th><th>Name</th><th>Group</th><th>Opening</th><th>Sold since</th><th>Received since</th><th>On hand</th><th>Days of cover</th><th>Last updated</th></tr></thead><tbody>'
+        '<div class="tw"><table><thead><tr><th>Code</th><th>Name</th><th>Group</th><th class="num">Opening</th><th class="num">Sold since</th><th class="num">Received since</th><th class="num">On hand</th><th class="num">Days of cover</th><th>Last updated</th><th></th></tr></thead><tbody>'
         + "".join(body) + "</tbody></table></div>"
     )
     chips = []
@@ -316,14 +456,36 @@ def page_stock(c, user, query, error=""):
     form_label = f'{picked["name"]} · {picked["group"]}' if picked else "Search above, then choose a product."
     alert = f'<p class="alert">{portal.h(error)}</p>' if error else ""
     ok = '<p class="oknote">Opening count saved. Earlier counts stay in the history.</p>' if query.get("ok") == "1" else ""
+    stored = _items(c)
+    editing = stored.get((query.get("edit") or "").strip()) if query.get("edit") else None
+    edit_html = ""
+    if editing and editing["manual"]:
+        edit_html = f"""<section class="card" id="stock-edit"><h2>Edit {portal.h(editing["name"])}</h2>
+<form method="post" action="/portal/stock">
+<input type="hidden" name="csrf" value="{portal.h(user['csrf'])}"><input type="hidden" name="action" value="edit_manual">
+<input type="hidden" name="old_code" value="{portal.h(editing['code'])}">
+<div class="row">
+<label class="f">Name<input name="name" value="{portal.h(editing['name'])}" required maxlength="120"></label>
+<label class="f">Code / PLU<input name="code" value="{portal.h(editing['code'])}" maxlength="40"></label>
+<label class="f">Barcode<input name="barcode" value="{portal.h(editing['barcode'] or '')}" maxlength="32"></label>
+<label class="f">Group<input name="group" value="{portal.h(editing['group_name'] or '')}" maxlength="80"></label>
+</div>
+<button class="btn" type="submit">Save product</button></form>
+<p class="help">Changing the code keeps the opening counts and deliveries already stored.</p></section>"""
     history = []
+    for row in portal.rows(c.execute("SELECT * FROM portal_stock_audit ORDER BY id DESC LIMIT 20")):
+        history.append(
+            f"<li><b>{portal.h(portal.fmt_stamp(row['at']))}</b> · {portal.h(row['actor'])} · {portal.h(row['action'])} · {portal.h(row['code'])}</li>"
+        )
     for row in portal.rows(c.execute(
         "SELECT * FROM portal_stock_counts ORDER BY id DESC LIMIT 40"
     )):
-        info = catalog.get(row["code"]) or {"name": row["code"]}
+        info = catalog.get(row["code"]) or {}
+        item = stored.get(row["code"]) or {}
+        name = (item.get("name") if item else "") or info.get("name") or row["code"]
         history.append(
             f'<li><b>{portal.h(portal.fmt_stamp(row["created_at"]))}</b> · {portal.h(row["created_by"])} set '
-            f'{portal.h(info["name"])} ({portal.h(row["code"])}) to {qty_text(row["qty"])} '
+            f'{portal.h(name)} ({portal.h(row["code"])}) to {qty_text(row["qty"])} '
             f'at the end of {portal.h(portal.fmt_date(row["baseline_date"]))} '
             f'({portal.h(row["baseline_at"][11:16])}). {portal.h(row["note"] or "")}</li>'
         )
@@ -354,5 +516,23 @@ def page_stock(c, user, query, error=""):
 <label class="f">Note<input name="note" maxlength="500"></label>
 <button class="btn" type="submit">Save opening count</button>
 </form></section>
+<section class="card" id="stock-manual"><h2>Add a product not on the till</h2>
+<p class="help">For a new line that is not in the product catalog yet. Leave the code blank and the portal assigns one, such as M-0001, so deliveries can be posted against it.</p>
+<form method="post" action="/portal/stock">
+<input type="hidden" name="csrf" value="{portal.h(user['csrf'])}"><input type="hidden" name="action" value="add_manual">
+<div class="row">
+<label class="f">Name<input name="name" required maxlength="120"></label>
+<label class="f">Code / PLU<input name="code" maxlength="40" placeholder="Optional"></label>
+<label class="f">Barcode<input name="barcode" maxlength="32" placeholder="Optional"></label>
+<label class="f">Group<input name="group" maxlength="80" placeholder="Optional"></label>
+</div>
+<div class="row">
+<label class="f">Opening count<input name="qty" inputmode="decimal" min="0" step="any" required></label>
+<label class="f">Date<input type="date" name="baseline_date" value="{portal.h(default_date)}" required></label>
+<label class="f">Time<input type="time" name="baseline_time" value="23:59" required></label>
+</div>
+<button class="btn" type="submit">Add product</button>
+</form></section>
+{edit_html}
 <section class="card" id="stock-history"><h2>Count history</h2>
 <ul class="history">{''.join(history) or '<li>No counts yet.</li>'}</ul></section>"""

@@ -146,12 +146,27 @@ CREATE TABLE IF NOT EXISTS portal_stock_movements(
   movement_key TEXT PRIMARY KEY, code TEXT NOT NULL, move_date TEXT NOT NULL, source TEXT NOT NULL,
   sold REAL NOT NULL, received REAL NOT NULL, reference TEXT, source_as_of TEXT, updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_portal_stock_movements_code ON portal_stock_movements(code, move_date);
+CREATE TABLE IF NOT EXISTS portal_stock_items(
+  code TEXT PRIMARY KEY, name TEXT NOT NULL, barcode TEXT, group_name TEXT,
+  manual INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS portal_stock_audit(
+  id INTEGER PRIMARY KEY, at TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL,
+  code TEXT NOT NULL, detail TEXT);
+CREATE TABLE IF NOT EXISTS portal_chat(
+  id INTEGER PRIMARY KEY, message TEXT NOT NULL, page TEXT, context TEXT, reply TEXT,
+  created_at TEXT NOT NULL, replied_at TEXT, created_by TEXT NOT NULL);
 """
 
 
 def stock():
     import portal_stock
     return portal_stock
+
+
+def chat():
+    import portal_chat
+    return portal_chat
 
 
 def parity():
@@ -1333,12 +1348,46 @@ def bar_class(percent):
     return f"w{n}"
 
 
+def _icon(key):
+    paths = {
+        "overview": '<path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/>',
+        "products": '<path d="M4 7h16M4 12h16M4 17h10"/>',
+        "kitchen": '<path d="M6 3v8a3 3 0 0 0 6 0V3M9 14v7M15 3c2 3 2 6 0 8v10"/>',
+        "departments": '<path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/>',
+        "pricing": '<path d="M12 3v18M7 7.5c1.5-2 8.5-2 10 0s-8.5 3-10 5-1.5 4 2 5 8.5 1 10 0"/>',
+        "till": '<path d="M4 7h16v10H4zM8 17v3M16 17v3M8 11h2M12 11h4"/>',
+        "stock": '<path d="M4 8h16v11H4zM8 8V5h8v3"/>',
+        "dips": '<path d="M12 3c4 4 6 7 6 10a6 6 0 0 1-12 0c0-3 2-6 6-10z"/>',
+        "commission": '<path d="M5 19V9M12 19V5M19 19v-7"/>',
+        "fuel": '<path d="M6 20V6h8v14M14 9h3l2 2v6a2 2 0 0 1-2 2h-3M8 10h4"/>',
+        "purchases": '<path d="M6 7h12l-1 12H7L6 7zM9 7V5h6v2"/>',
+        "invoices": '<path d="M7 3h8l4 4v14H7zM15 3v5h5M9 13h6M9 17h4"/>',
+        "shifts": '<path d="M8 7V5h8v2M6 7h12v12H6zM12 11v4l2 1"/>',
+        "hours": '<path d="M8 4h8M8 20h8M9 4c0 4 6 4 6 8s-6 4-6 8M15 4c0 4-6 4-6 8s6 4 6 8"/>',
+        "notes": '<path d="M6 4h12v16H6zM9 8h6M9 12h6M9 16h3"/>',
+    }
+    return f'<svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">{paths.get(key, "")}</svg>'
+
+
 def layout(title, active, body, user, when):
-    links = []
-    for href, label, key in NAV:
-        cls = " on" if key == active else ""
-        current = ' aria-current="page"' if key == active else ""
-        links.append(f'<a class="{cls.strip()}" href="{href}"{current}>{h(label)}</a>')
+    by_key = {key: (href, label) for href, label, key in NAV}
+    groups = (
+        ("Trading", ("overview", "products", "kitchen", "departments")),
+        ("Price and stock", ("pricing", "till", "stock")),
+        ("Fuel", ("dips", "commission", "fuel")),
+        ("Money", ("purchases", "invoices")),
+        ("Team", ("shifts", "hours")),
+        ("Reference", ("notes",)),
+    )
+    blocks = []
+    for heading, keys in groups:
+        links = []
+        for key in keys:
+            href, label = by_key[key]
+            cls = " on" if key == active else ""
+            current = ' aria-current="page"' if key == active else ""
+            links.append(f'<a class="{cls.strip()}" href="{href}"{current}>{_icon(key)}<span>{h(label)}</span></a>')
+        blocks.append(f'<div class="nav-group"><div class="nav-label">{heading}</div>{"".join(links)}</div>')
     try:
         clock = when.strftime("%a %-d %b %Y, %-I:%M %p")
     except ValueError:
@@ -1347,30 +1396,46 @@ def layout(title, active, body, user, when):
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#0f172a">
+<meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#1c1917">
+<meta name="csrf-token" content="{h(user['csrf'])}">
 <title>{h(title)} · Silkwood owner</title>
 <link rel="icon" type="image/png" href="/static/icon-192.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <link rel="stylesheet" href="/static/portal.css"></head><body>
 <a class="skip" href="#content">Skip to content</a>
-<div class="app"><aside>
+<div class="app"><aside id="portal-nav">
 <div class="logo"><i></i><div>SILK<span>WOOD</span><small>Owner portal</small></div></div>
-<nav>{''.join(links)}</nav>
+<nav aria-label="Portal">{''.join(blocks)}</nav>
 <div class="side-foot"><div>{h(user['username'])}</div>
 <a href="/portal/password">Change password</a>
 <form method="post" action="/portal/logout"><input type="hidden" name="csrf" value="{h(user['csrf'])}"><button type="submit">Log out</button></form>
 </div></aside>
-<div><header class="top"><div class="mlogo">SILK<span>WOOD</span></div><time id="clock" datetime="{h(when.isoformat())}">{h(clock)}</time><div class="tz">Australia/Brisbane</div>
-<div class="account"><a href="/portal/password">Password</a>
-<form method="post" action="/portal/logout"><input type="hidden" name="csrf" value="{h(user['csrf'])}"><button type="submit">Log out</button></form></div>
+<div class="workspace"><header class="top">
+<button class="nav-toggle" type="button" id="nav-toggle" aria-expanded="false" aria-controls="portal-nav">Menu</button>
+<div class="mlogo">SILK<span>WOOD</span></div>
+<div class="top-title"><b>{h(title)}</b><span class="tz">Australia/Brisbane</span></div>
+<time id="clock" datetime="{h(when.isoformat())}">{h(clock)}</time>
+<div class="account"><span class="who">{h(user['username'])}</span><a href="/portal/password">Password</a>
+<form method="post" action="/portal/logout"><input type="hidden" name="csrf" value="{h(user['csrf'])}"><button type="submit">Log out</button></form>
+<button class="btn ghost sm" type="button" id="help-open" aria-expanded="false" aria-controls="help-panel">Help</button></div>
 </header>
-<main id="content">{body}</main></div></div>
+<main id="content">{body}</main></div>
+<button class="nav-backdrop" type="button" id="nav-backdrop" aria-label="Close menu"></button>
+<aside id="help-panel" class="help-panel" aria-label="Assistant" hidden>
+<div class="help-head"><h2>Assistant</h2><button type="button" class="btn ghost sm" id="help-close">Close</button></div>
+<div id="help-log" class="help-log" aria-live="polite"></div>
+<form id="help-form"><label class="f">Message<textarea name="message" maxlength="2000" required placeholder="Ask about this page"></textarea></label>
+<div class="row"><button class="btn" type="submit">Send</button><button class="btn ghost" type="button" id="help-clear">Clear</button></div>
+<p class="help" id="help-note">Replies show here. The portal does not call a model itself.</p></form>
+</aside></div>
 <script src="/static/portal.js"></script></body></html>"""
 
 
 def through_line(iso):
     if not iso:
-        return '<p class="through" id="data-through">No sales loaded yet</p>'
-    return f'<p class="through" id="data-through">Data through {h(fmt_date(iso))}</p>'
+        return '<p class="through as-of" id="data-through">No sales loaded yet</p>'
+    shown = fmt_date(iso)
+    return f'<p class="through as-of" id="data-through">As of {h(shown)}, Australia/Brisbane. Data through {h(shown)}</p>'
 
 
 def period_controls(base, active, start, end):
@@ -1498,6 +1563,20 @@ def page_overview(c, query):
     latest = through or (max((r["date"] for r in all_sales), default=None))
     proj = project_month(all_sales, all_comm, target_for(latest, meta_get(c, "sales"), meta_get(c, "fuel")), latest) if latest else None
     october = (meta_get(c, "sales").get("commission") or {}).get("october")
+    prev_start, prev_end = parity()._prev_bounds(active, start, end)
+    prev_rows, _prev_delta = parity().adjust_sales_days(c, sales_between(c, prev_start, prev_end))
+    prev_total = sum(r["total"] or 0 for r in prev_rows)
+    if prev_total:
+        move = (total - prev_total) / prev_total * 100
+        trend = f'<span class="trend {"up" if move >= 0 else "down"}">{abs(move):.1f}% vs previous period</span>'
+    else:
+        trend = ""
+    peak = max((r["total"] or 0 for r in days[-14:]), default=0) or 1
+    bars = []
+    for row in days[-14:]:
+        height = max(5, min(100, int(round((row["total"] or 0) / peak * 20)) * 5))
+        bars.append(f'<i class="h{height}"></i>')
+    chart = f'<div class="vchart" role="img" aria-label="Daily sales in this range">{"".join(bars)}</div>' if bars else ""
     caption = f"{len(days)} completed sales day{'s' if len(days) != 1 else ''} in {fmt_date(start.isoformat())} – {fmt_date(end.isoformat())}"
     callout = ""
     if missing:
@@ -1506,10 +1585,10 @@ def page_overview(c, query):
             f'{h(missing)} {missing_label}. This is 2026 only and is not a warning about 2025.</p>'
         )
     return f"""<div class="ph"><h1>Sales overview</h1>{through_line(through)}<p>{h(caption)}. Figures are the loaded trading days, with no zero filled in for a missing day. Australia/Brisbane. Today’s sales wait for the 9:30pm refresh.</p></div>
-{error}{insights_box(latest_insight(c))}{period_controls('/portal', active, start, end)}
+{error}{period_controls('/portal', active, start, end)}
 {parity().override_note(deltas)}{callout}
 <section class="grid g4">
-<div class="card stat"><div class="lbl">Total sales</div><b>{money(total)}</b><span>inc GST</span></div>
+<div class="card stat"><div class="lbl">Total sales</div><b>{money(total)}</b><span>inc GST</span>{trend}</div>
 <div class="card stat"><div class="lbl">Fuel</div><b>{money(fuel)}</b><span>{pct_points(share) if total else '—'}</span></div>
 <div class="card stat"><div class="lbl">Shop</div><b>{money(shop)}</b><span>{pct_points(100 - share) if total else '—'}</span></div>
 <div class="card stat" id="shop-gp"><div class="lbl">Shop GP</div><b>{money(gp)}</b><span>{pct_ratio(gp_pct)} of covered ex-GST sales</span></div>
@@ -1519,7 +1598,9 @@ def page_overview(c, query):
 <div class="card stat" id="missing-cost"><div class="lbl">Products missing cost</div><b>{h(missing if missing is not None else '—')}</b><span>{h(missing_label)}</span></div>
 <div class="card stat" id="shop-average"><div class="lbl">Daily shop average</div><b>{money(shop_avg)}</b><span>shop sales inc GST per loaded day</span></div>
 </section>
+{insights_box(latest_insight(c))}
 <section class="card"><h2>Fuel vs shop</h2>
+{chart}
 <div class="split"><i class="fuel {bar_class(share)}"></i><i class="shop {bar_class(100 - share if total else 0)}"></i></div>
 <p class="help">Fuel and shop are the loaded daysheet split. Shop GP excludes sales with no usable cost. It is not operating profit.</p></section>
 {projection_card(proj, october)}
@@ -1870,12 +1951,15 @@ def login_page(error, csrf, setup_missing=False):
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#0f172a">
+<meta name="robots" content="noindex, nofollow"><meta name="theme-color" content="#1c1917">
 <title>Owner login · Silkwood</title>
 <link rel="icon" type="image/png" href="/static/icon-192.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <link rel="stylesheet" href="/static/portal.css"></head>
-<body class="login-body"><main class="login card">
-<div class="logo"><i></i><div>SILK<span>WOOD</span><small>Owner portal</small></div></div>
+<body class="login-body"><main class="login-wrap"><section class="login-hero">
+<div class="logo"><i></i><div>SILK<span>WOOD</span><small>United Silkwood</small></div></div>
+<p>Sales, kitchen, stock and the pay week. Australia/Brisbane.</p>
+</section><section class="login card">
 <h1>Owner login</h1>
 <p class="help">Private figures for United Silkwood. Staff PIN pages are separate.</p>
 {message}
@@ -1884,7 +1968,7 @@ def login_page(error, csrf, setup_missing=False):
 <label class="f">Username<input name="username" autocomplete="username" autocapitalize="none" required maxlength="63"></label>
 <label class="f">Password<input type="password" name="password" autocomplete="current-password" required></label>
 <button class="btn full" type="submit">Log in</button>
-</form></main></body></html>"""
+</form></section></main></body></html>"""
 
 
 def password_page(user, error="", ok=False):
@@ -1936,6 +2020,8 @@ def handle_get(handler, parsed):
         return handle_hours_api(handler, query)
     if path == "/api/portal/stock":
         return handle_stock_api(handler)
+    if path == "/api/portal/chat":
+        return handle_chat_get(handler)
     user = session_user(handler)
     if not user:
         if path.startswith("/api/"):
@@ -2021,6 +2107,108 @@ def handle_hours_api(handler, query):
     handler.send(200, payload, extra=[("X-Robots-Tag", "noindex, nofollow")])
 
 
+def _chat_user(handler):
+    user = session_user(handler)
+    if not user:
+        handler.send(401, {"error": "login required"})
+        return None
+    return user
+
+
+def handle_chat_get(handler):
+    user = _chat_user(handler)
+    if not user:
+        return
+    c = db()
+    try:
+        payload = {
+            "messages": chat().list_messages(c),
+            "assistant": "online" if os.environ.get("PORTAL_CHAT_WEBHOOK_URL", "").strip() else "offline",
+        }
+    finally:
+        c.close()
+    handler.send(200, payload, extra=[("X-Robots-Tag", "noindex, nofollow")])
+
+
+def handle_chat_post(handler):
+    user = _chat_user(handler)
+    if not user:
+        return
+    try:
+        form = read_form(handler)
+    except (OverflowError, ValueError):
+        handler.send(400, {"error": "bad request"})
+        return
+    if not csrf_ok(handler, form, user):
+        handler.send(403, {"error": "form expired"})
+        return
+    c = db()
+    try:
+        try:
+            message_id, status = chat().add_message(c, user, form.get("message"), form.get("page"), form.get("context") or {})
+        except ValueError as ex:
+            handler.send(400, {"error": str(ex)[:180]})
+            return
+        c.commit()
+    finally:
+        c.close()
+    handler.send(200, {"ok": True, "id": message_id, "status": status})
+
+
+def handle_chat_clear(handler):
+    user = _chat_user(handler)
+    if not user:
+        return
+    try:
+        form = read_form(handler)
+    except (OverflowError, ValueError):
+        form = {}
+    if not csrf_ok(handler, form, user):
+        handler.send(403, {"error": "form expired"})
+        return
+    c = db()
+    try:
+        chat().clear_messages(c)
+        c.commit()
+    finally:
+        c.close()
+    handler.send(200, {"ok": True, "messages": []})
+
+
+def handle_chat_reply(handler):
+    key = ingest_key()
+    if not key:
+        log("chat reply refused; PORTAL_INGEST_KEY is not set")
+        handler.send(503, {"error": "ingest is not configured"})
+        return
+    if not secret_eq(bearer_token(handler), key):
+        handler.send(401, {"error": "unauthorized"})
+        return
+    try:
+        form = read_form(handler)
+    except (OverflowError, ValueError):
+        handler.send(400, {"error": "bad request"})
+        return
+    raw_id = form.get("id")
+    if isinstance(raw_id, bool) or not isinstance(raw_id, int) or raw_id < 1:
+        handler.send(400, {"error": "id is required"})
+        return
+    c = db()
+    try:
+        try:
+            chat().set_reply(c, raw_id, form.get("reply"))
+        except LookupError:
+            handler.send(404, {"error": "not found"})
+            return
+        except ValueError as ex:
+            handler.send(400, {"error": str(ex)[:180]})
+            return
+        c.commit()
+    finally:
+        c.close()
+    handler.send(200, {"ok": True, "id": raw_id})
+
+
 def handle_stock_api(handler):
     key = ingest_key()
     user = session_user(handler)
@@ -2039,6 +2227,12 @@ def handle_post(handler):
     path = urlparse(handler.path).path.rstrip("/") or "/"
     if path == "/api/portal/ingest":
         return handle_ingest(handler)
+    if path == "/api/portal/chat/reply":
+        return handle_chat_reply(handler)
+    if path == "/api/portal/chat":
+        return handle_chat_post(handler)
+    if path == "/api/portal/chat/clear":
+        return handle_chat_clear(handler)
     if path.startswith("/api/"):
         if not session_user(handler):
             handler.send(401, {"error": "login required"})
@@ -2080,11 +2274,19 @@ def handle_post(handler):
 def handle_stock_post(handler, user, form):
     c = db()
     try:
-        if (form.get("action") or "") != "set_count":
-            handler.send(400, {"error": "bad action"})
-            return
+        action = form.get("action") or ""
         try:
-            stock().save_count(c, user, form)
+            if action == "set_count":
+                stock().save_count(c, user, form)
+            elif action == "add_manual":
+                stock().add_manual(c, user, form)
+            elif action == "edit_manual":
+                stock().edit_manual(c, user, form)
+            elif action == "untrack":
+                stock().untrack(c, user, form)
+            else:
+                handler.send(400, {"error": "bad action"})
+                return
         except ValueError as ex:
             html = layout("Stock on hand", "stock", stock().page_stock(c, user, {}, str(ex)), user, _srv().now())
             send_portal(handler, 400, html, user)
