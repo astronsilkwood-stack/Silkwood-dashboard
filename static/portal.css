@@ -65,6 +65,8 @@ th{font:700 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color
 td.num,th.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
 tr.total td{font-weight:800;border-top:2px solid var(--bd)}
 tr.overdue td{background:var(--badl)}
+tr.low td{background:var(--ambl)}
+tr.negative td{background:var(--badl)}
 th.weekend,td.weekend{background:var(--ambl)}
 th.holiday,td.holiday{background:#f5f3ff}
 th small{display:block;text-transform:none;letter-spacing:0;font:600 11px system-ui;color:var(--sl2)}

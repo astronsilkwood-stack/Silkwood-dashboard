@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 DATASETS = (
     "sales", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices",
     "product-search", "retail-pricing", "till-price-changes", "shifts", "last-year", "cost-overrides",
+    "stock-movements",
 )
 INGEST_MAX = 8_000_000
 FORM_MAX = 100_000
@@ -65,6 +66,7 @@ PART_HOLIDAYS = {
 NAV = [
     ("/portal", "Overview", "overview"),
     ("/portal/products", "Products", "products"),
+    ("/portal/stock", "Stock on hand", "stock"),
     ("/portal/pricing", "Pricing", "pricing"),
     ("/portal/till-prices", "Till price changes", "till"),
     ("/portal/departments", "Departments & products", "departments"),
@@ -136,7 +138,20 @@ CREATE TABLE IF NOT EXISTS portal_spend(
   ex_gst REAL, inc_gst REAL, bucket TEXT NOT NULL, source_as_of TEXT);
 CREATE TABLE IF NOT EXISTS portal_shop_days(
   date TEXT PRIMARY KEY, sales_inc REAL NOT NULL, source_as_of TEXT);
+CREATE TABLE IF NOT EXISTS portal_stock_counts(
+  id INTEGER PRIMARY KEY, code TEXT NOT NULL, qty REAL NOT NULL, baseline_date TEXT NOT NULL,
+  baseline_at TEXT NOT NULL, note TEXT, created_at TEXT NOT NULL, created_by TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_portal_stock_counts_code ON portal_stock_counts(code, baseline_date);
+CREATE TABLE IF NOT EXISTS portal_stock_movements(
+  movement_key TEXT PRIMARY KEY, code TEXT NOT NULL, move_date TEXT NOT NULL, source TEXT NOT NULL,
+  sold REAL NOT NULL, received REAL NOT NULL, reference TEXT, source_as_of TEXT, updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_portal_stock_movements_code ON portal_stock_movements(code, move_date);
 """
+
+
+def stock():
+    import portal_stock
+    return portal_stock
 
 
 def parity():
@@ -1003,6 +1018,7 @@ APPLIERS = {
     "shifts": lambda c, data: parity().apply_shifts(c, data),
     "last-year": lambda c, data: parity().apply_last_year(c, data),
     "cost-overrides": lambda c, data: parity().apply_cost_overrides(c, data),
+    "stock-movements": lambda c, data: stock().apply_stock_movements(c, data),
 }
 
 
@@ -1918,6 +1934,8 @@ def handle_get(handler, parsed):
         return
     if path == "/api/portal/staff-hours":
         return handle_hours_api(handler, query)
+    if path == "/api/portal/stock":
+        return handle_stock_api(handler)
     user = session_user(handler)
     if not user:
         if path.startswith("/api/"):
@@ -1931,6 +1949,8 @@ def handle_get(handler, parsed):
             html = layout("Sales overview", "overview", page_overview(c, query), user, _srv().now())
         elif path == "/portal/products":
             html = layout("Products", "products", parity().page_products(c, query), user, _srv().now())
+        elif path == "/portal/stock":
+            html = layout("Stock on hand", "stock", stock().page_stock(c, user, query), user, _srv().now())
         elif path == "/portal/pricing":
             html = layout("Pricing", "pricing", parity().page_pricing(c, query), user, _srv().now())
         elif path == "/portal/till-prices":
@@ -2001,6 +2021,20 @@ def handle_hours_api(handler, query):
     handler.send(200, payload, extra=[("X-Robots-Tag", "noindex, nofollow")])
 
 
+def handle_stock_api(handler):
+    key = ingest_key()
+    user = session_user(handler)
+    if not (key and secret_eq(bearer_token(handler), key)) and not user:
+        handler.send(401, {"error": "login required"})
+        return
+    c = db()
+    try:
+        payload = stock().tracked_payload(c)
+    finally:
+        c.close()
+    handler.send(200, payload, extra=[("X-Robots-Tag", "noindex, nofollow")])
+
+
 def handle_post(handler):
     path = urlparse(handler.path).path.rstrip("/") or "/"
     if path == "/api/portal/ingest":
@@ -2038,7 +2072,27 @@ def handle_post(handler):
         return handle_password(handler, user, form)
     if path == "/portal/hours":
         return handle_hours_post(handler, user, form)
+    if path == "/portal/stock":
+        return handle_stock_post(handler, user, form)
     handler.send(404, {"error": "not found"})
+
+
+def handle_stock_post(handler, user, form):
+    c = db()
+    try:
+        if (form.get("action") or "") != "set_count":
+            handler.send(400, {"error": "bad action"})
+            return
+        try:
+            stock().save_count(c, user, form)
+        except ValueError as ex:
+            html = layout("Stock on hand", "stock", stock().page_stock(c, user, {}, str(ex)), user, _srv().now())
+            send_portal(handler, 400, html, user)
+            return
+        c.commit()
+    finally:
+        c.close()
+    handler.redirect("/portal/stock?ok=1")
 
 
 def handle_login(handler):

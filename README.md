@@ -68,7 +68,7 @@ Content-Type: application/json
 {"dataset": "<name>", "data": { ... }}
 ```
 
-`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept.
+`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept.
 
 No new environment variable is required for these pages.
 
@@ -139,6 +139,26 @@ No new environment variable is required for these pages.
 ```
 
 `fuelLitres` may instead be `{"ULP":0,"DIS":0,"P95":0,"total":0}`. Product tuples `[code, name, group, qty, salesEx]` or `[code, qty, salesEx]` are accepted. Dollars are ex GST. The November 2025 fixture in `tools/fixtures/last-year.json` is that month’s PLU report.
+
+**stock-movements** — units only, for products the owner is tracking. Re-posting the same product, date, and source replaces that row. Other rows are left as they are. `source` is `till-sales` (units sold) or `supplier-invoice` (units received). `sold` and `received` are zero or positive. `reference` is optional (an invoice number). A sample is `tools/fixtures/stock-movements.json`.
+
+```json
+{"dataset":"stock-movements","data":{"asOf":"2026-11-10","movements":[
+  {"code":"804040","date":"2026-11-10","source":"till-sales","sold":23,"received":0},
+  {"code":"804040","date":"2026-11-09","source":"supplier-invoice","sold":0,"received":12,"reference":"TILL8122"}
+]}}
+```
+
+The opening count is the stock at the **end** of its date (Australia/Brisbane). Movements on that date are not applied again. Stock on hand = opening + received on later dates − sold on later dates. A count entered during the day should use yesterday’s date if that night’s sales should still come off it. Only products with an opening count are tracked. A new count does not delete the earlier one.
+
+The box can read the tracked list with the same ingest key:
+
+```
+GET /api/portal/stock
+Authorization: Bearer <PORTAL_INGEST_KEY>
+```
+
+The JSON has `timezone`, `baselineRule`, and `products[]` (`code`, `name`, `group`, `department`, `barcode`, `baselineDate`, `baselineAt`, `openingQty`, `soldSince`, `receivedSince`, `onHand`, `daysCover`, `lastUpdated`, `note`). Send movements for those codes, from the day after `baselineDate`.
 
 ### Staff hours read
 
