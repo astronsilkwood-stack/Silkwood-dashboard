@@ -12,7 +12,7 @@ aside{background:#fff;border-right:1px solid var(--bd);position:sticky;top:0;hei
 .logo i{width:10px;height:10px;border-radius:3px;background:var(--or);display:inline-block}
 .logo span{color:var(--or)}
 .logo small{display:block;font:600 10px var(--mono);letter-spacing:.1em;color:var(--sl);text-transform:uppercase}
-nav{display:grid;gap:4px}
+nav{display:grid;gap:4px;overflow:auto;min-height:0}
 nav a{display:flex;align-items:center;min-height:44px;padding:8px 12px;border-radius:10px;color:var(--sl2);text-decoration:none;font-weight:600}
 nav a:hover{background:#f1f5f9}
 nav a.on{background:var(--ink);color:#fff}
@@ -80,6 +80,8 @@ th small{display:block;text-transform:none;letter-spacing:0;font:600 11px system
 .insight{border-top:4px solid var(--or)}
 .insight ul{margin:8px 0;padding-left:18px}
 .insight li{margin:6px 0}
+.callout{background:var(--ambl);border:1px solid #fed7aa;border-radius:12px;padding:12px 14px;margin:0 0 16px}
+.mini{font-size:13px;color:var(--sl2)}
 .tank.low{border-color:#fecaca}
 .empty{color:var(--sl);padding:12px 0}
 .pre{white-space:pre-wrap}

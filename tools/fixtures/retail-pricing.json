@@ -1,0 +1,17 @@
+{
+  "asOf": "2026-11-10",
+  "columns": ["code", "description", "department", "barcodes", "latestObservedSellInc", "costEx", "verifiedCostInc", "costDate", "sellDate", "firstSeen"],
+  "rows": [
+    ["10000", "ARNOTTS SHAPES BARBECUE 175G", "Grocery", "9310072028866", 6.0, 3.55, null, "2026-10-05", "2026-10-05", "2026-10-03"],
+    ["804040", "BACON EGG MUFFIN", "Roadhouse", "", 7.99, 3.35, null, "2026-11-10", "2026-11-10", "2026-10-01"]
+  ],
+  "config": {
+    "default_margin": 0.35,
+    "department_margins": {"Tobacco": 0.15, "Beverages": 0.4, "Grocery": 0.35, "Roadhouse": 0.55},
+    "excluded_departments": ["A Fuel", "System", "Surcharge"],
+    "retail_endings_cents": [50, 95, 99],
+    "tax_scenario": "Use the cost override when one is effective, otherwise the till cost. Suggested sells are not written to SwiftPOS."
+  },
+  "promos": [],
+  "overrides": []
+}

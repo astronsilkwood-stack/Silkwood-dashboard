@@ -68,7 +68,11 @@ Content-Type: application/json
 {"dataset": "<name>", "data": { ... }}
 ```
 
-`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept.
+`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept.
+
+No new environment variable is required for these pages.
+
+**2026 gross profit.** Leave the GP in `sales` on till cost. Post `cost-overrides` as the full cost table (`items` replaces the table on every upload). The portal applies an override, when `effectiveFrom` is on or before the sale date, anywhere it shows 2026 GP, GP% or cost coverage. Otherwise it uses the till cost. 2025 has no GP. Do not also rebase the sales GP on the box, or the override is counted twice.
 
 `data` shapes:
 
@@ -97,6 +101,44 @@ Content-Type: application/json
 ```
 
 `pay_url` is optional. It must be `http` or `https`, with no username or password in the URL. The Pay button opens that address in a new tab. `status` is `unpaid`, `paid`, `void`, `draft`, or `absent`. A due date before today (Brisbane) is shown as overdue. `"sync": true` marks invoices missing from this upload as `absent` so they leave the unpaid list; the row is kept. Card numbers, and fields named like card, cvv, bsb, or bank account, are rejected and nothing from that upload is stored.
+
+**sales** also keeps `periods[]` `weekdays`, `departments`, `top`, `low`, and `summary`, plus `products` (code to name), `kitchen`, `window`, `olderMonths`, and the commission header (`planDaily`, `neededDaily`, `missingDates`, `october`, …). `searchPack` is ignored. Optional `lastYear` is rejected if it contains cost, GP, coverage, or a missing-cost field.
+
+**purchases** also stores `shop` (`[date, shopSalesInc]`) and `spend` (`[supplierIndex, date, exGst, incGst, bucket]`). Each upload replaces those series.
+
+**cost-overrides** — the full box cost table. Every upload replaces the table.
+
+```json
+{"dataset":"cost-overrides","data":{"asOf":"2026-11-10","items":[
+  {"code":"804040","costExCents":200,"effectiveFrom":"2026-11-01","source":"invoice"}
+]}}
+```
+
+`costExCents` is a non-negative integer. `source` is `invoice` or `owner`. The latest row with `effectiveFrom` on or before the sale date replaces the till unit cost for 2026 GP. A known zero is a real cost, not a missing cost.
+
+**product-search** — `dates` (ISO days), `refs` (`[department, group]`), `products` tuples `[code, name, refIndex, barcode, sellCents, costExCents, flag, packedDaily]`. `flag` 0 is GST-free (sales ex GST equals sales inc GST); `flag` 1 divides by 1.1. Packed daily tokens are `dayIndex:qty,salesDelta[,unused],costDelta`, day index in base 36, deltas in base-36 cents, `_` plus a decimal for litres, and `!` for no till cost that day. An empty qty means 1.
+
+**retail-pricing** — `asOf`, `columns`, `rows`, `config` (`default_margin`, `department_margins`, `excluded_departments`, `retail_endings_cents`), `promos`, `overrides`. Calculator inputs are not stored.
+
+**till-price-changes** — `asOf`, `rows` (objects: `id`, `flagged`, `plu`, `name`, `oldCost`, `newCost`, `currentSell`, `currentGpPct`, `reason`, `status`), `noCost` (`columns`, `rows`), `newItems` (`columns`, `rows`). Status is Pending, Done, or Superseded. A reason containing `COST-ONLY` does not change the board price.
+
+**shifts** — till cash-off, not staff hours. `mediaNames`, `mediaColumns`, `otherTenders`, `differenceBasis`, `days[]` with `date`, `txnNo`, `windowFrom`, `windowTo`, `committed`, and `media` tuples `[mediaIndex, expected, counted, difference, count]`. Counted cash of 0 on a committed day is not a shortage. Optional `olderMonths` tuples `[month, mediaName, status, expected, counted, difference, count, days]`.
+
+**last-year** — one month, or `{months: [...]}`. No cost, GP, coverage, or missing-cost field anywhere in the JSON (the upload is rejected).
+
+```json
+{"dataset":"last-year","data":{
+  "label":"November 2025","year":2025,"month":11,
+  "fromDate":"2025-11-01","toDate":"2025-11-30","days":30,
+  "source":"SwiftPOS PLU Sales, 1 Nov 2025 to 1 Dec 2025, whole month",
+  "fuelLitres":115281.95,"fuelEx":193763.72,
+  "fuelGrades":[{"code":"2","name":"UNLEADED","qty":40269.06,"salesEx":65858.07}],
+  "groups":[{"name":"A1 Fuel","qty":115281.95,"salesEx":193763.72}],
+  "products":[{"code":"2","name":"UNLEADED","group":"A1 Fuel","qty":40269.06,"salesEx":65858.07}]
+}}
+```
+
+`fuelLitres` may instead be `{"ULP":0,"DIS":0,"P95":0,"total":0}`. Product tuples `[code, name, group, qty, salesEx]` or `[code, qty, salesEx]` are accepted. Dollars are ex GST. The November 2025 fixture in `tools/fixtures/last-year.json` is that month’s PLU report.
 
 ### Staff hours read
 

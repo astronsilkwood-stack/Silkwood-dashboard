@@ -1151,7 +1151,7 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def redirect(self, location, extra=None):
         path = location.split("?", 1)[0]
-        if path not in ("/portal", "/portal/login", "/portal/password", "/portal/hours", "/portal/purchases", "/portal/fuel", "/portal/dips", "/portal/invoices"):
+        if path not in portal.REDIRECT_OK:
             location = "/portal"
         self.send_response(302)
         self.send_header("Location", location)

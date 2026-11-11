@@ -1,0 +1,8 @@
+{
+  "asOf": "2026-11-10",
+  "items": [
+    {"code": "804040", "costExCents": 200, "effectiveFrom": "2026-11-01", "source": "invoice"},
+    {"code": "10000", "costExCents": 400, "effectiveFrom": "2026-11-01", "source": "owner"},
+    {"code": "5", "costExCents": 210, "effectiveFrom": "2026-11-11", "source": "owner"}
+  ]
+}
