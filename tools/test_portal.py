@@ -1235,5 +1235,83 @@ class PortalTest(unittest.TestCase):
         self.assertNotIn("4242424242424242", self.authed("GET", "/portal/exceptions")[2].decode())
 
 
+    def test_online_order_items_search_and_top(self):
+        import importlib.util
+        portal._ingest_hits.clear()
+        self.login()
+        self.addCleanup(self._clear_online_fixture)
+        spec = importlib.util.spec_from_file_location(
+            "parse_scheduled_orders", ROOT / "tools" / "parse_scheduled_orders.py",
+        )
+        parser = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(parser)
+        parsed = parser.parse_scheduled_orders(ROOT / "tools" / "fixtures" / "scheduled-orders.csv")
+        orders = []
+        for number, info in parsed.items():
+            gross = 0.0
+            for item in info["items"]:
+                gross += float(item["total"] or 0)
+                for mod in item["modifiers"]:
+                    gross += float(mod["total"] or 0)
+            orders.append({
+                "order_no": number,
+                "time": info["fulfilment_date"] + " 12:00:00 PM (Wed)",
+                "trading_date": info["fulfilment_date"],
+                "wallet": "Card",
+                "card": "Visa",
+                "total": round(gross, 2),
+                "fees": 0,
+                "refunds": 0,
+                "net": round(gross, 2),
+                "customer_name": info["customer_name"],
+                "order_type": info["order_type"],
+                "fulfilment_time": info["fulfilment_time"],
+                "items": info["items"],
+            })
+        code, _, raw, _ = self.ingest("online-orders", {"asOf": "2026-11-11", "orders": orders})
+        self.assertEqual(code, 200, raw[:400])
+        page = self.authed("GET", "/portal/online")[2].decode()
+        self.assertIn("Jess Tabone", page)
+        self.assertIn("Medium Chips", page)
+        self.assertIn("Chicken Salt", page)
+        self.assertIn("Pickup", page)
+        self.assertIn("02:21pm", page)
+        self.assertIn("Top online items", page)
+        self.assertIn('id="online-search"', page)
+        self.assertIn("Visa", page)
+        top = page.split('id="online-top-items"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("Small Chips", top)
+        self.assertNotIn("Chicken Salt", top)
+
+        found = self.authed("GET", "/portal/online?q=Jess+Tabone")[2].decode()
+        listing = found.split('id="online-order-list"', 1)[1]
+        self.assertIn("Jess Tabone", listing)
+        self.assertNotIn("Ben Coutts", listing)
+        self.assertIn("Medium Chips", listing)
+        nuggets = self.authed("GET", "/portal/online?q=nugget")[2].decode()
+        self.assertIn("15 Crunchy Chicken Nuggets", nuggets)
+        self.assertNotIn("Helen Belbin", nuggets.split('id="online-order-list"', 1)[1])
+
+        plain = json.loads(json.dumps(orders[0]))
+        for key in ("customer_name", "order_type", "fulfilment_time", "items"):
+            plain.pop(key)
+        code, _, raw, _ = self.ingest("online-orders", {"orders": [plain]})
+        self.assertEqual(code, 200, raw[:300])
+        c = server.db()
+        kept = c.execute(
+            "SELECT customer_name, items FROM portal_online_orders WHERE order_no=?",
+            (plain["order_no"],),
+        ).fetchone()
+        c.close()
+        self.assertEqual(kept["customer_name"], orders[0]["customer_name"])
+        self.assertIn("Medium Chips", kept["items"])
+
+        poisoned = json.loads(json.dumps(orders[0]))
+        poisoned["customer_name"] = "4242424242424242"
+        rejected = self.ingest("online-orders", {"orders": [poisoned]})
+        self.assertEqual(rejected[0], 400)
+        self.assertNotIn(b"4242424242424242", rejected[2])
+
+
 if __name__ == "__main__":
     unittest.main()

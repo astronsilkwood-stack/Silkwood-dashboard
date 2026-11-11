@@ -165,7 +165,8 @@ CREATE TABLE IF NOT EXISTS portal_online_days(
 CREATE TABLE IF NOT EXISTS portal_online_orders(
   order_no TEXT PRIMARY KEY, ordered_at TEXT NOT NULL, trading_date TEXT NOT NULL,
   wallet TEXT NOT NULL, card_brand TEXT NOT NULL, total REAL NOT NULL, fees REAL NOT NULL,
-  refunds REAL NOT NULL, net REAL NOT NULL, source_as_of TEXT);
+  refunds REAL NOT NULL, net REAL NOT NULL, source_as_of TEXT,
+  customer_name TEXT, order_type TEXT, fulfilment_time TEXT, items TEXT);
 CREATE INDEX IF NOT EXISTS ix_portal_online_orders_date ON portal_online_orders(trading_date);
 CREATE TABLE IF NOT EXISTS portal_shift_exceptions(
   row_key TEXT PRIMARY KEY, trade_date TEXT NOT NULL, till_time TEXT NOT NULL, exc_type TEXT NOT NULL,
@@ -1063,6 +1064,90 @@ def _drop_card_brand(node):
     return node
 
 
+def _order_text(value, label, limit, required=False):
+    if value is None or (isinstance(value, str) and not value.strip()):
+        if required:
+            raise ValueError(f"{label} is required")
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be text")
+    text = " ".join(value.split())
+    if len(text) > limit or has_card_number(text):
+        raise ValueError(f"{label} is too long" if len(text) > limit else f"{label} must not include a card number")
+    return text
+
+
+def _order_qty(value, label):
+    count = num(value, label)
+    if count < 0 or count > 10000:
+        raise ValueError(f"{label} is out of range")
+    if float(count).is_integer():
+        return int(count)
+    return round(count, 2)
+
+
+def _order_items(value, label):
+    """Items from the Scheduled Orders export. None means the key was present but empty."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{label} items must be a list")
+    if len(value) > 80:
+        raise ValueError(f"{label} has too many items")
+    items = []
+    for i, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            raise ValueError(f"{label} items[{i}] must be an object")
+        mods_raw = raw.get("modifiers") if raw.get("modifiers") is not None else []
+        if not isinstance(mods_raw, list) or len(mods_raw) > 40:
+            raise ValueError(f"{label} items[{i}] modifiers must be a list")
+        modifiers = []
+        for j, mod in enumerate(mods_raw):
+            if not isinstance(mod, dict):
+                raise ValueError(f"{label} items[{i}] modifiers[{j}] must be an object")
+            modifiers.append({
+                "category": _order_text(mod.get("category"), f"{label} modifier category", 80) or "",
+                "name": _order_text(mod.get("name"), f"{label} modifier", 120, required=True),
+                "qty": _order_qty(mod.get("qty"), f"{label} modifier qty"),
+                "total": num(mod.get("total"), f"{label} modifier total"),
+            })
+        items.append({
+            "category": _order_text(raw.get("category"), f"{label} category", 80) or "",
+            "product": _order_text(raw.get("product"), f"{label} product", 120, required=True),
+            "qty": _order_qty(raw.get("qty"), f"{label} qty"),
+            "total": num(raw.get("total"), f"{label} item total"),
+            "modifiers": modifiers,
+        })
+    return items
+
+
+def _kept_order_text(row, key, previous, label, limit):
+    if key not in row:
+        return previous
+    return _order_text(row.get(key), label, limit)
+
+
+def _kept_order_items(row, label, previous_json):
+    if "items" not in row:
+        if not previous_json:
+            return []
+        try:
+            previous = json.loads(previous_json)
+        except json.JSONDecodeError:
+            return []
+        return previous if isinstance(previous, list) else []
+    return _order_items(row.get("items"), label)
+
+
+def _fulfilment_time(value, label):
+    if value is None:
+        return None
+    text = _order_text(value, label, 16, required=True)
+    if not re.fullmatch(r"(?i)(?:[01]?\d:[0-5]\d\s?(?:am|pm)|[0-2]\d:[0-5]\d(?::[0-5]\d)?)", text):
+        raise ValueError(f"{label} must be a time such as 02:21pm")
+    return text
+
+
 def _brand(value, label, required=True):
     """A wallet or card brand such as Visa or Apple pay. Not a card number."""
     if value is None or (isinstance(value, str) and not value.strip()):
@@ -1103,6 +1188,11 @@ def apply_online_orders(c, data):
             "refunds": num(row.get("refunds"), f"daily[{i}] refunds"),
             "net": num(row.get("net"), f"daily[{i}] net"),
         }
+    ensure_online_order_columns(c)
+    stored_orders = {
+        row["order_no"]: row
+        for row in rows(c.execute("SELECT order_no, customer_name, order_type, fulfilment_time, items FROM portal_online_orders"))
+    }
     by_no = {}
     for i, row in enumerate(orders):
         if not isinstance(row, dict):
@@ -1115,6 +1205,10 @@ def apply_online_orders(c, data):
             raise ValueError(f"orders[{i}] time is required")
         when = " ".join(when.split())
         reject_sensitive(when, "online-orders")
+        previous = stored_orders.get(number) or {}
+        fulfilment = previous.get("fulfilment_time")
+        if "fulfilment_time" in row:
+            fulfilment = _fulfilment_time(row.get("fulfilment_time"), f"orders[{i}] fulfilment_time") if row.get("fulfilment_time") else None
         by_no[number] = {
             "order_no": number,
             "time": when,
@@ -1125,6 +1219,10 @@ def apply_online_orders(c, data):
             "fees": num(row.get("fees"), f"orders[{i}] fees"),
             "refunds": num(row.get("refunds"), f"orders[{i}] refunds"),
             "net": num(row.get("net"), f"orders[{i}] net"),
+            "customer_name": _kept_order_text(row, "customer_name", previous.get("customer_name"), f"orders[{i}] customer_name", 80),
+            "order_type": _kept_order_text(row, "order_type", previous.get("order_type"), f"orders[{i}] order_type", 24),
+            "fulfilment_time": fulfilment,
+            "items": _kept_order_items(row, f"orders[{i}]", previous.get("items")),
         }
     clean_orders = list(by_no.values())
     if not days and clean_orders:
@@ -1148,13 +1246,17 @@ def apply_online_orders(c, data):
         )
     for item in clean_orders:
         c.execute(
-            """INSERT INTO portal_online_orders(order_no,ordered_at,trading_date,wallet,card_brand,total,fees,refunds,net,source_as_of)
-               VALUES(?,?,?,?,?,?,?,?,?,?)
+            """INSERT INTO portal_online_orders(order_no,ordered_at,trading_date,wallet,card_brand,total,fees,refunds,net,source_as_of,customer_name,order_type,fulfilment_time,items)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(order_no) DO UPDATE SET ordered_at=excluded.ordered_at, trading_date=excluded.trading_date,
                  wallet=excluded.wallet, card_brand=excluded.card_brand, total=excluded.total, fees=excluded.fees,
-                 refunds=excluded.refunds, net=excluded.net, source_as_of=excluded.source_as_of""",
+                 refunds=excluded.refunds, net=excluded.net, source_as_of=excluded.source_as_of,
+                 customer_name=excluded.customer_name, order_type=excluded.order_type,
+                 fulfilment_time=excluded.fulfilment_time, items=excluded.items""",
             (item["order_no"], item["time"], item["trading_date"], item["wallet"], item["cardBrand"],
-             item["total"], item["fees"], item["refunds"], item["net"], as_of),
+             item["total"], item["fees"], item["refunds"], item["net"], as_of,
+             item["customer_name"], item["order_type"], item["fulfilment_time"],
+             json.dumps(item["items"], separators=(",", ":"), ensure_ascii=False) if item["items"] else None),
         )
     meta_set(c, "online-orders", {
         "asOf": as_of,
@@ -2045,6 +2147,119 @@ def _online_stats(title, totals, elem_id):
 {refund}</section>"""
 
 
+def _loaded_items(raw):
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _qty_label(value):
+    if value is None:
+        return "—"
+    number = Decimal(str(value))
+    if number == number.to_integral():
+        return f"{int(number):,}"
+    return f"{number:,.2f}"
+
+
+def _order_matches(order, needle):
+    if not needle:
+        return True
+    hay = [order.get("customer_name") or ""]
+    for item in _loaded_items(order.get("items")):
+        hay.append(str(item.get("product") or ""))
+        for mod in item.get("modifiers") or []:
+            if isinstance(mod, dict):
+                hay.append(str(mod.get("name") or ""))
+    return needle.casefold() in " ".join(hay).casefold()
+
+
+def _top_online_items(order_rows, limit=8):
+    found = {}
+    for order in order_rows:
+        seen = set()
+        for item in _loaded_items(order.get("items")):
+            name = " ".join(str(item.get("product") or "").split())
+            if not name:
+                continue
+            key = name.casefold()
+            bucket = found.setdefault(key, {"name": name, "qty": 0.0, "total": 0.0, "orders": 0})
+            bucket["qty"] += float(item.get("qty") or 0)
+            bucket["total"] += float(item.get("total") or 0)
+            if key not in seen:
+                bucket["orders"] += 1
+                seen.add(key)
+    ranked = sorted(found.values(), key=lambda row: (-row["qty"], -row["total"], row["name"].casefold()))
+    return ranked[:limit]
+
+
+def _top_items_html(order_rows):
+    ranked = _top_online_items(order_rows)
+    if not ranked:
+        body = '<p class="empty">No item lines in this period yet.</p>'
+    else:
+        lines = []
+        for row in ranked:
+            lines.append(
+                f"<tr><td>{h(row['name'])}</td><td class=\"num\">{row['orders']}</td>"
+                f"<td class=\"num\">{_qty_label(row['qty'])}</td><td class=\"num\">{money(row['total'])}</td></tr>"
+            )
+        body = (
+            '<div class="tw"><table><thead><tr><th>Item</th><th>Orders</th><th>Qty</th><th>Item total</th></tr></thead><tbody>'
+            + "".join(lines) + "</tbody></table></div>"
+        )
+    return (
+        '<section class="card" id="online-top-items"><h2>Top online items</h2>'
+        '<p class="help">Products in the selected period, by quantity. Modifiers are listed on the order, not in this ranking.</p>'
+        f"{body}</section>"
+    )
+
+
+def _item_lines_html(raw):
+    items = _loaded_items(raw)
+    if not items:
+        return '<p class="help">No item lines for this order.</p>'
+    lines = []
+    for item in items:
+        mods = []
+        for mod in item.get("modifiers") or []:
+            if not isinstance(mod, dict):
+                continue
+            category = f" · {h(mod.get('category'))}" if mod.get("category") else ""
+            mods.append(
+                f"<li>{h(mod.get('name') or '—')}{category} · {_qty_label(mod.get('qty'))} · {money(mod.get('total'))}</li>"
+            )
+        extra = f"<ul>{''.join(mods)}</ul>" if mods else ""
+        category = f'<div class="mini">{h(item.get("category"))}</div>' if item.get("category") else ""
+        lines.append(
+            f"<li><b>{h(item.get('product') or '—')}</b>{category} · {_qty_label(item.get('qty'))} · {money(item.get('total'))}{extra}</li>"
+        )
+    return f"<ul>{''.join(lines)}</ul>"
+
+
+def _order_card(item, open_it):
+    who = item.get("customer_name") or "No customer name"
+    kind = item.get("order_type") or ""
+    when = item.get("fulfilment_time") or ""
+    bits = [h(item["order_no"]), h(who)]
+    if kind:
+        bits.append(h(kind))
+    if when:
+        bits.append(h(when))
+    bits.append(money(item["total"]))
+    opened = " open" if open_it else ""
+    return (
+        f'<details class="order" id="order-{h(item["order_no"])}"{opened}><summary>{" · ".join(bits)}</summary>'
+        f'<p class="help">{h(item["ordered_at"])} · {h(item["wallet"])} · {h(item["card_brand"] or "—")} · '
+        f'fees {money(item["fees"])} · refunds {money(item["refunds"])} · net {money(item["net"])}</p>'
+        f'{_item_lines_html(item.get("items"))}</details>'
+    )
+
+
 def page_online(c, query):
     meta = meta_get(c, "online-orders")
     anchor = online_anchor(c)
@@ -2081,14 +2296,14 @@ def page_online(c, query):
         )
     else:
         daily_table_html = '<p class="empty" id="online-daily">No online orders in this range.</p>'
-    if day_filter:
-        order_sql = "SELECT * FROM portal_online_orders WHERE trading_date=? ORDER BY order_no"
-        order_rows = rows(c.execute(order_sql, (day_filter,)))
-    else:
-        order_rows = rows(c.execute(
-            "SELECT * FROM portal_online_orders WHERE trading_date>=? AND trading_date<=?",
-            (start.isoformat(), end.isoformat()),
-        ))
+    period_orders = rows(c.execute(
+        "SELECT * FROM portal_online_orders WHERE trading_date>=? AND trading_date<=?",
+        (start.isoformat(), end.isoformat()),
+    ))
+    order_rows = [row for row in period_orders if row["trading_date"] == day_filter] if day_filter else list(period_orders)
+    needle = " ".join((query.get("q") or "").split())[:80]
+    if needle:
+        order_rows = [row for row in order_rows if _order_matches(row, needle)]
     order_rows.sort(key=lambda r: order_time_key(r["ordered_at"], r["trading_date"]), reverse=True)
     grouped = {}
     for order in order_rows:
@@ -2101,32 +2316,29 @@ def page_online(c, query):
     if active == "custom":
         hidden += f'<input type="hidden" name="from" value="{h(start.isoformat())}"><input type="hidden" name="to" value="{h(end.isoformat())}">'
     blocks = []
+    newest_no = order_rows[0]["order_no"] if order_rows else ""
     for trading_date in sorted(grouped, reverse=True):
         items = grouped[trading_date]
         gross = sum(float(item["total"] or 0) for item in items)
         opened = " open" if trading_date == (day_filter or max(grouped)) else ""
-        lines = []
+        cards = []
         for item in items:
-            lines.append(
-                "<tr><td>" + h(item["order_no"]) + "</td><td>" + h(item["ordered_at"]) + "</td><td>"
-                + h(item["wallet"]) + "</td><td>" + h(item["card_brand"] or "—") + "</td><td class=\"num\">"
-                + money(item["total"]) + "</td><td class=\"num\">" + money(item["fees"]) + "</td><td class=\"num\">"
-                + money(item["refunds"]) + "</td><td class=\"num\">" + money(item["net"]) + "</td></tr>"
-            )
+            open_it = item["order_no"] == newest_no or (bool(needle) and len(order_rows) <= 12)
+            cards.append(_order_card(item, open_it))
         blocks.append(
             f'<details class="shift"{opened}><summary>{h(fmt_date(trading_date))} · {len(items)} '
             f'order{"s" if len(items) != 1 else ""} · {money(gross)}</summary>'
-            '<div class="tw"><table><thead><tr><th>Order</th><th>Time</th><th>Wallet</th><th>Card</th>'
-            '<th>Gross</th><th>Bopple fees</th><th>Refunds</th><th>Net</th></tr></thead><tbody>'
-            + "".join(lines) + "</tbody></table></div></details>"
+            + "".join(cards) + "</details>"
         )
     if not blocks:
-        order_html = '<p class="empty">No orders in this range.</p>'
+        order_html = '<p class="empty">No orders match that search.</p>' if needle else '<p class="empty">No orders in this range.</p>'
     else:
         order_html = "".join(blocks)
     clear = ""
     if day_filter:
         clear = f'<a class="chip" href="{_online_query(active, start, end)}">All dates</a>'
+    if needle:
+        clear += f' <a class="chip" href="{_online_query(active, start, end, day_filter)}">Clear search</a>'
     source = meta.get("source") or "Bopple"
     return f"""<div class="ph"><h1>Online orders</h1>{through_line(meta.get("asOf"))}
 <p>Pickup orders paid online through {h(source)}. These are extra sales and are not rung through the till. The gross total is added on top of till sales on the overview. Shop GP stays till GP, because these orders have no cost.</p>
@@ -2137,9 +2349,11 @@ def page_online(c, query):
 <section class="card"><h2>Daily totals</h2>
 <p class="help">Newest day first. Choose a date to list that day’s orders.</p>
 {daily_table_html}</section>
+{_top_items_html(period_orders)}
 <section class="card" id="online-order-list"><h2>Orders</h2>
-<form class="row" method="get" action="/portal/online">{hidden}
+<form class="row" method="get" action="/portal/online" id="online-search">{hidden}
 <label class="f">Date<select name="day">{''.join(options)}</select></label>
+<label class="f">Customer or item<input name="q" value="{h(needle)}" maxlength="80" placeholder="Name or item"></label>
 <button class="btn" type="submit">Show</button></form>
 {clear}
 {order_html}</section>"""
@@ -3135,6 +3349,23 @@ def handle_ingest(handler):
     handler.send(200, {"ok": True, "dataset": dataset, **result})
 
 
+def ensure_online_order_columns(c):
+    """Older databases were created before customer and item lines existed."""
+    wanted = (("customer_name", "TEXT"), ("order_type", "TEXT"), ("fulfilment_time", "TEXT"), ("items", "TEXT"))
+    if _srv().PG:
+        found = {
+            row["column_name"]
+            for row in c.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='portal_online_orders'"
+            ).fetchall()
+        }
+    else:
+        found = {row["name"] for row in c.execute("PRAGMA table_info(portal_online_orders)").fetchall()}
+    for name, kind in wanted:
+        if name not in found:
+            c.execute(f"ALTER TABLE portal_online_orders ADD COLUMN {name} {kind}")
+
+
 def ensure_invoice_columns(c):
     """Older databases were created before paid_date and amount existed."""
     wanted = (("paid_date", "TEXT"), ("amount", "REAL"))
@@ -3158,6 +3389,7 @@ def install():
     try:
         c.executescript(SCHEMA)
         ensure_invoice_columns(c)
+        ensure_online_order_columns(c)
         c.commit()
     finally:
         c.close()
