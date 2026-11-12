@@ -180,6 +180,16 @@ td.nowrap{white-space:nowrap}
 .tone-0{--tile:var(--tone-0)}.tone-1{--tile:var(--tone-1)}.tone-2{--tile:var(--tone-2)}.tone-3{--tile:var(--tone-3)}
 .tone-4{--tile:var(--tone-4)}.tone-5{--tile:var(--tone-5)}.tone-6{--tile:var(--tone-6)}.tone-7{--tile:var(--tone-7)}
 .tone-sales{--tone:#0f2a44}.tone-fuel{--tone:#0e7490}.tone-shop{--tone:#3e5c78}.tone-gp{--tone:#3d6b5a}.tone-online{--tone:#0e7490}
+.tone-food{--tone:#3d6b5a}
+#month-lines{border-top:4px solid var(--nav)}
+.month-lines{display:grid;gap:12px}
+.month-line{border:1px solid var(--bd);border-left:4px solid var(--tone,var(--accent));border-radius:12px;padding:12px 14px;background:#fff;min-width:0}
+.month-line h3{margin:0 0 2px;font-size:16px;color:var(--nav)}
+.month-line .mini{margin:0 0 8px}
+.line-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.line-metrics b{display:block;font:600 22px var(--mono);letter-spacing:-.02em;margin:2px 0;font-variant-numeric:tabular-nums}
+.line-metrics b.ly-missing{font:700 15px/1.35 system-ui,sans-serif;letter-spacing:0;color:var(--sl2)}
+.line-metrics .trend{margin-top:4px}
 .tone-cover{--tone:#5c7386}.tone-warn{--tone:#6b7c8a}.tone-avg{--tone:#1e3a5f}.tone-days{--tone:#4d6d7a}
 .card.stat,.grid>.stat{background:#fff;border-top:3px solid var(--tone,var(--accent))}
 .grid>.stat{border:1px solid var(--bd);border-top:3px solid var(--tone,var(--accent));border-radius:14px;padding:12px 14px}
@@ -227,6 +237,8 @@ body.scanning{overflow:hidden}
  .who{display:none}
  main{padding:16px 14px 48px}
  .g4,.g3,.g2{grid-template-columns:1fr}
+ .line-metrics{grid-template-columns:1fr 1fr}
+ .line-metrics b{font-size:18px}
  .ph h1{font-size:24px}
  .week-table{display:none}
  .week-cards{display:grid;gap:12px}

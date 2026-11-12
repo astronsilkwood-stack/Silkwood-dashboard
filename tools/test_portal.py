@@ -1741,6 +1741,228 @@ class PortalTest(unittest.TestCase):
         self.assertEqual(kept["onHand"], 6)
         self.assertEqual(kept["soldSince"], 0)
 
+    def test_month_lines_projection_and_last_year(self):
+        """Shop, food and fuel-litre month lines, plus last-year-monthly ingest."""
+        nov = date(2026, 11, 1)
+        through = date(2026, 11, 3)
+        weekday = {
+            "2026-11-01": 10, "2026-11-02": 20, "2026-11-03": 30,
+            "2026-10-25": 99, "2026-10-26": 99, "2026-10-27": 99,
+            "2026-10-28": 40, "2026-10-29": 50, "2026-10-30": 60, "2026-10-31": 70,
+        }
+        projected = portal.project_metric(weekday, nov, through)
+        self.assertEqual(projected["method"], "weekday")
+        self.assertEqual(projected["daysTraded"], 3)
+        self.assertEqual(projected["daysInMonth"], 30)
+        self.assertEqual(projected["mtd"], 60)
+        self.assertEqual(projected["projected"], 1150)
+
+        prefer_month = dict(weekday)
+        del prefer_month["2026-11-01"]
+        sunday_from_prior = portal.project_metric(prefer_month, nov, through)
+        self.assertEqual(sunday_from_prior["method"], "weekday")
+        self.assertEqual(sunday_from_prior["mtd"], 50)
+        # No Sunday in November, so the 25 Oct Sunday (99) is used. 4 remaining Sundays.
+        self.assertEqual(sunday_from_prior["projected"], 1496)
+
+        outside_four_weeks = {
+            "2026-11-02": 20, "2026-11-03": 30, "2026-10-04": 8,
+            "2026-10-28": 40, "2026-10-29": 50, "2026-10-30": 60, "2026-10-31": 70,
+        }
+        averaged = portal.project_metric(outside_four_weeks, nov, through)
+        self.assertEqual(averaged["method"], "average")
+        self.assertEqual(averaged["projected"], 750)
+        self.assertEqual(portal.project_metric({"2026-11-01": 0, "2026-11-02": 10}, nov, date(2026, 11, 2))["daysTraded"], 2)
+
+        october = portal.project_metric({"2026-10-01": 5, "2026-10-02": 7}, date(2026, 10, 1), date(2026, 11, 10))
+        self.assertEqual(october["method"], "actual")
+        self.assertEqual(october["status"], "actual")
+        self.assertEqual(october["mtd"], 12)
+        self.assertEqual(october["projected"], 12)
+        self.assertEqual(october["daysTraded"], 2)
+        self.assertEqual(october["daysInMonth"], 31)
+
+        december = portal.project_metric({}, date(2026, 12, 1), date(2026, 11, 10))
+        self.assertEqual(december["status"], "empty")
+        self.assertIsNone(december["mtd"])
+        self.assertIsNone(december["projected"])
+
+        portal._ingest_hits.clear()
+        self.login()
+        c = server.db()
+        c.execute("DELETE FROM portal_ly_monthly")
+        c.execute("DELETE FROM portal_meta WHERE k='last-year-monthly'")
+        c.commit()
+        c.close()
+        self.addCleanup(self._clear_last_year_monthly)
+
+        denied = self.ingest("last-year-monthly", {"month": "2025-11", "shop_sales_inc": 1}, key="nope")
+        self.assertEqual(denied[0], 401)
+        self.assertNotIn(b"nope", denied[2])
+        bad = self.ingest("last-year-monthly", {"months": [{"month": "2025-13", "shop_sales_inc": 1}]})
+        self.assertEqual(bad[0], 400)
+        both = self.ingest("last-year-monthly", {"month": "2025-11", "months": [{"month": "2025-11"}]})
+        self.assertEqual(both[0], 400)
+        pan = "4111111111111111"
+        leaked = self.ingest("last-year-monthly", {"month": "2025-11", "shop_sales_inc": 1, "note": pan})
+        self.assertEqual(leaked[0], 400)
+        self.assertNotIn(pan.encode(), leaked[2])
+
+        code, _, raw, _ = self.ingest("last-year-monthly", {"months": [
+            {"month": "2025-09", "shop_sales_inc": 1, "food_sales_inc": 1, "fuel_litres": 1, "source": "first", "note": "first"},
+            {"month": "2025-09", "shop_sales_inc": 2, "food_sales_inc": None, "fuel_litres": 3, "source": "kept", "note": ""},
+            {"month": "2025-10", "shop_sales_inc": 500, "food_sales_inc": 40, "fuel_litres": 80, "source": "October sheet", "note": "till only"},
+        ]})
+        self.assertEqual(code, 200, raw)
+        body = json.loads(raw)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["dataset"], "last-year-monthly")
+        self.assertEqual(body["months"], 2)
+        self.assertEqual(body["asOf"], "2025-10-31")
+        c = server.db()
+        sept = dict(c.execute("SELECT * FROM portal_ly_monthly WHERE month='2025-09'").fetchone())
+        c.close()
+        self.assertEqual(sept["shop_sales_inc"], 2)
+        self.assertIsNone(sept["food_sales_inc"])
+        self.assertEqual(sept["fuel_litres"], 3)
+        self.assertEqual(sept["source"], "kept")
+
+        code, _, raw, _ = self.ingest("last-year-monthly", {
+            "month": "2025-10", "shop_sales_inc": None, "food_sales_inc": 40, "fuel_litres": 80, "source": "October sheet", "note": "shop missing",
+        })
+        self.assertEqual(code, 200, raw)
+        c = server.db()
+        oct_row = dict(c.execute("SELECT * FROM portal_ly_monthly WHERE month='2025-10'").fetchone())
+        still = c.execute("SELECT shop_sales_inc FROM portal_ly_monthly WHERE month='2025-09'").fetchone()["shop_sales_inc"]
+        c.close()
+        self.assertIsNone(oct_row["shop_sales_inc"])
+        self.assertEqual(oct_row["food_sales_inc"], 40)
+        self.assertEqual(still, 2)
+
+        self.assertEqual(self.ingest("sales", load("sales.json"))[0], 200)
+        self.assertEqual(self.ingest("fuel-commission", load("fuel-commission.json"))[0], 200)
+        c = server.db()
+        through_iso = portal.data_through(c)
+        anchor = date.fromisoformat(through_iso)
+        shop_days = portal.shop_sales_by_date(c)
+        food_days = portal.kitchen_sales_by_date(c)
+        fuel_days = portal.fuel_litres_by_date(c)
+        c.close()
+        shop = portal.project_metric(shop_days, date(anchor.year, anchor.month, 1), anchor)
+        food = portal.project_metric(food_days, date(anchor.year, anchor.month, 1), anchor)
+        fuel = portal.project_metric(fuel_days, date(anchor.year, anchor.month, 1), anchor)
+        self.assertEqual(shop["method"], "weekday")
+        self.assertEqual(food["method"], "weekday")
+        self.assertEqual(fuel["method"], "weekday")
+        self.assertGreater(shop["daysTraded"], 0)
+        self.assertNotEqual(shop["projected"], shop["mtd"])
+
+        home = self.authed("GET", "/portal")[2].decode()
+        self.assertIn("November 2026 · month-end projection", home)
+        card = home.split('id="month-lines"', 1)[1].split("</section>", 1)[0]
+        self.assertIn('data-phase="project"', card)
+        self.assertIn("Shop sales", card)
+        self.assertIn("Food sales", card)
+        self.assertIn("Fuel litres", card)
+        self.assertIn(portal.PROJECTION_NOTES["weekday"], card)
+        self.assertNotIn(portal.PROJECTION_NOTES["average"], card)
+        self.assertIn("Till only", card)
+        self.assertIn("do not include Bopple", card)
+        self.assertIn("already part of shop sales", card)
+        self.assertIn("No last-year figure yet", card)
+        shop_line = card.split('id="line-shop"', 1)[1].split('id="line-food"', 1)[0]
+        food_line = card.split('id="line-food"', 1)[1].split('id="line-fuel"', 1)[0]
+        fuel_line = card.split('id="line-fuel"', 1)[1]
+        self.assertIn(portal.money(shop["mtd"]), shop_line.split('id="line-shop-mtd"', 1)[1].split('id="line-shop-days"', 1)[0])
+        self.assertIn(f"{shop['daysTraded']} of {shop['daysInMonth']}", shop_line)
+        self.assertIn(portal.money(shop["projected"]), shop_line.split('id="line-shop-projected"', 1)[1].split('id="line-shop-ly"', 1)[0])
+        self.assertIn(portal.money(food["mtd"]), food_line.split('id="line-food-mtd"', 1)[1].split('id="line-food-days"', 1)[0])
+        self.assertIn(portal.litres(fuel["mtd"]), fuel_line.split('id="line-fuel-mtd"', 1)[1].split('id="line-fuel-days"', 1)[0])
+        self.assertIn(portal.litres(fuel["projected"]), fuel_line.split('id="line-fuel-projected"', 1)[1].split('id="line-fuel-ly"', 1)[0])
+        self.assertNotIn("$0.00", shop_line.split('id="line-shop-ly"', 1)[1])
+        self.assertNotIn("0.00 L", fuel_line.split('id="line-fuel-ly"', 1)[1])
+        self.assertIn('data-method="weekday"', shop_line)
+
+        one_day = self.authed("GET", "/portal?period=custom&from=2026-11-01&to=2026-11-01")[2].decode()
+        self.assertIn("1 completed sales day", one_day)
+        one_card = one_day.split('id="month-lines"', 1)[1].split("</section>", 1)[0]
+        self.assertIn(f"{shop['daysTraded']} of {shop['daysInMonth']}", one_card)
+        self.assertIn(portal.money(shop["projected"]), one_card)
+
+        last = self.authed("GET", "/portal?period=lastmonth")[2].decode()
+        last_card = last.split('id="month-lines"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("October 2026", last_card)
+        self.assertIn('data-phase="actual"', last_card)
+        self.assertNotIn("Projected month-end", last_card)
+        self.assertIn(portal.PROJECTION_NOTES["actual"], last_card)
+        self.assertIn("shop missing", last_card)
+        oct_shop = portal.project_metric(shop_days, date(2026, 10, 1), anchor)
+        oct_food = portal.project_metric(food_days, date(2026, 10, 1), anchor)
+        self.assertEqual(oct_shop["method"], "actual")
+        self.assertIn(f"{oct_shop['daysTraded']} of {oct_shop['daysInMonth']}", last_card)
+        self.assertIn(portal.money(oct_shop["projected"]), last_card.split('id="line-shop-projected"', 1)[1].split('id="line-shop-ly"', 1)[0])
+        oct_shop_ly = last_card.split('id="line-shop-ly"', 1)[1].split('id="line-food"', 1)[0]
+        oct_food_ly = last_card.split('id="line-food-ly"', 1)[1].split("</article>", 1)[0]
+        self.assertIn("No last-year figure yet", oct_shop_ly)
+        self.assertNotIn("$0.00", oct_shop_ly)
+        self.assertIn(portal.money(40), oct_food_ly)
+        food_change = portal._ly_change(oct_food["projected"], 40)
+        self.assertIsNotNone(food_change)
+        self.assertIn(f"{abs(food_change):.1f}% vs Oct 2025", oct_food_ly)
+
+        code, _, raw, _ = self.ingest("last-year-monthly", {
+            "asOf": "2026-11-12",
+            "months": [{
+                "month": "2025-11",
+                "shop_sales_inc": 123456.78,
+                "food_sales_inc": None,
+                "fuel_litres": 0,
+                "source": "Owner upload",
+                "note": "Food not extracted yet",
+            }],
+        })
+        self.assertEqual(code, 200, raw)
+        self.assertEqual(json.loads(raw)["asOf"], "2026-11-12")
+        compared = self.authed("GET", "/portal")[2].decode()
+        compared_card = compared.split('id="month-lines"', 1)[1].split("</section>", 1)[0]
+        shop_ly = compared_card.split('id="line-shop-ly"', 1)[1].split("</article>", 1)[0]
+        food_ly = compared_card.split('id="line-food-ly"', 1)[1].split("</article>", 1)[0]
+        fuel_ly = compared_card.split('id="line-fuel-ly"', 1)[1].split("</article>", 1)[0]
+        self.assertIn("$123,456.78", shop_ly)
+        self.assertNotIn("No last-year figure yet", shop_ly)
+        shop_change = portal._ly_change(shop["projected"], 123456.78)
+        self.assertIn(f"{abs(shop_change):.1f}% vs Nov 2025", shop_ly)
+        self.assertIn("No last-year figure yet", food_ly)
+        self.assertNotIn("$0.00", food_ly)
+        self.assertIn("0.00 L", fuel_ly)
+        self.assertNotIn("No last-year figure yet", fuel_ly)
+        self.assertNotIn("% vs Nov 2025", fuel_ly)
+        self.assertIn("Food not extracted yet", compared_card)
+        c = server.db()
+        untouched = dict(c.execute("SELECT shop_sales_inc, food_sales_inc FROM portal_ly_monthly WHERE month='2025-10'").fetchone())
+        c.close()
+        self.assertIsNone(untouched["shop_sales_inc"])
+        self.assertEqual(untouched["food_sales_inc"], 40)
+
+        future = self.authed("GET", "/portal?period=custom&from=2026-12-01&to=2026-12-31")[2].decode()
+        future_card = future.split('id="month-lines"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("December 2026", future_card)
+        self.assertIn("No shop sales loaded", future_card)
+        self.assertIn("No kitchen sales loaded", future_card)
+        self.assertIn("No fuel litres loaded", future_card)
+        self.assertNotIn("$0.00", future_card.split('id="line-shop"', 1)[1].split('id="line-food"', 1)[0])
+        self.assertNotIn("0.00 L", future_card.split('id="line-fuel"', 1)[1])
+
+    def _clear_last_year_monthly(self):
+        c = server.db()
+        try:
+            c.execute("DELETE FROM portal_ly_monthly")
+            c.execute("DELETE FROM portal_meta WHERE k='last-year-monthly'")
+            c.execute("DELETE FROM portal_snapshots WHERE dataset='last-year-monthly'")
+            c.commit()
+        finally:
+            c.close()
+
     def tearDown(self):
         # The barcode-map test is the only one that writes this dataset. Clearing it here
         # keeps a failed assertion from leaking barcodes into later cases.
