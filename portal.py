@@ -8,7 +8,7 @@ import csv, hashlib, hmac, io, json, os, re, secrets
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 DATASETS = (
     "sales", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices",
@@ -156,6 +156,9 @@ CREATE TABLE IF NOT EXISTS portal_stock_items(
 CREATE TABLE IF NOT EXISTS portal_stock_audit(
   id INTEGER PRIMARY KEY, at TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL,
   code TEXT NOT NULL, detail TEXT);
+CREATE TABLE IF NOT EXISTS portal_product_barcodes(
+  barcode TEXT PRIMARY KEY, code TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_portal_product_barcodes_code ON portal_product_barcodes(code);
 CREATE TABLE IF NOT EXISTS portal_chat(
   id INTEGER PRIMARY KEY, message TEXT NOT NULL, page TEXT, context TEXT, reply TEXT,
   created_at TEXT NOT NULL, replied_at TEXT, created_by TEXT NOT NULL);
@@ -2779,18 +2782,18 @@ def password_page(user, error="", ok=False):
     return body
 
 
-def send_html(handler, code, html, extra=None):
-    handler.send(code, html.encode(), "text/html; charset=utf-8", extra=extra or [])
+def send_html(handler, code, html, extra=None, camera=False):
+    handler.send(code, html.encode(), "text/html; charset=utf-8", extra=extra or [], camera=camera)
 
 
-def send_portal(handler, code, html, user=None, extra=None):
+def send_portal(handler, code, html, user=None, extra=None, camera=False):
     headers = [("X-Robots-Tag", "noindex, nofollow"), ("Content-Security-Policy", CSP)]
     if user:
         age = int(session_hours() * 3600)
         headers.append(cookie_pair(CSRF_COOKIE, user["csrf"], handler, age, False))
     if extra:
         headers.extend(extra)
-    send_html(handler, code, html, headers)
+    send_html(handler, code, html, headers, camera=camera)
 
 
 def handle_get(handler, parsed):
@@ -2812,6 +2815,8 @@ def handle_get(handler, parsed):
         return handle_hours_api(handler, query)
     if path == "/api/portal/stock":
         return handle_stock_api(handler)
+    if path == "/api/portal/stock/barcode":
+        return handle_barcode_get(handler, query)
     if path == "/api/portal/chat":
         return handle_chat_get(handler)
     user = session_user(handler)
@@ -2878,7 +2883,7 @@ def handle_get(handler, parsed):
             return
     finally:
         c.close()
-    send_portal(handler, 200, html, user)
+    send_portal(handler, 200, html, user, camera=(path == "/portal/stock"))
 
 
 def handle_hours_api(handler, query):
@@ -3019,6 +3024,53 @@ def handle_stock_api(handler):
     handler.send(200, payload, extra=[("X-Robots-Tag", "noindex, nofollow")])
 
 
+def handle_barcode_get(handler, query):
+    """Session only. The ingest key can read stock totals, not barcode links."""
+    if not session_user(handler):
+        handler.send(401, {"error": "login required"})
+        return
+    c = db()
+    try:
+        try:
+            found = stock().find_barcode(c, query.get("barcode") or "")
+        except ValueError as ex:
+            handler.send(400, {"ok": False, "error": str(ex)[:180]})
+            return
+    finally:
+        c.close()
+    extra = [("X-Robots-Tag", "noindex, nofollow")]
+    if not found:
+        handler.send(404, {"ok": False, "error": "Barcode not linked", "barcode": stock().clean_barcode(query.get("barcode") or "")}, extra=extra)
+        return
+    handler.send(200, found, extra=extra)
+
+
+def handle_barcode_post(handler):
+    user = session_user(handler)
+    if not user:
+        handler.send(401, {"error": "login required"})
+        return
+    try:
+        form = read_form(handler)
+    except (OverflowError, ValueError):
+        handler.send(400, {"error": "bad request"})
+        return
+    if not csrf_ok(handler, form, user):
+        handler.send(403, {"error": "form expired"})
+        return
+    c = db()
+    try:
+        try:
+            result = stock().link_barcode(c, user, form.get("barcode"), form.get("code"))
+        except ValueError as ex:
+            handler.send(400, {"ok": False, "error": str(ex)[:180]})
+            return
+        c.commit()
+    finally:
+        c.close()
+    handler.send(200, result)
+
+
 def handle_post(handler):
     path = urlparse(handler.path).path.rstrip("/") or "/"
     if path == "/api/portal/ingest":
@@ -3029,6 +3081,8 @@ def handle_post(handler):
         return handle_chat_post(handler)
     if path == "/api/portal/chat/clear":
         return handle_chat_clear(handler)
+    if path == "/api/portal/stock/barcode":
+        return handle_barcode_post(handler)
     if path.startswith("/api/"):
         if not session_user(handler):
             handler.send(401, {"error": "login required"})
@@ -3071,6 +3125,7 @@ def handle_stock_post(handler, user, form):
     c = db()
     try:
         action = form.get("action") or ""
+        linked = None
         try:
             if action == "set_count":
                 stock().save_count(c, user, form)
@@ -3080,16 +3135,25 @@ def handle_stock_post(handler, user, form):
                 stock().edit_manual(c, user, form)
             elif action == "untrack":
                 stock().untrack(c, user, form)
+            elif action == "link_barcode":
+                linked = stock().link_barcode(c, user, form.get("barcode"), form.get("code"))
             else:
                 handler.send(400, {"error": "bad action"})
                 return
         except ValueError as ex:
-            html = layout("Stock on hand", "stock", stock().page_stock(c, user, {}, str(ex)), user, _srv().now())
-            send_portal(handler, 400, html, user)
+            query = {}
+            if action == "link_barcode":
+                query = {"link": form.get("barcode") or "", "pick": form.get("code") or ""}
+            html = layout("Stock on hand", "stock", stock().page_stock(c, user, query, str(ex)), user, _srv().now())
+            send_portal(handler, 400, html, user, camera=True)
             return
         c.commit()
     finally:
         c.close()
+    if linked:
+        moved = "&moved=1" if linked.get("movedFrom") else ""
+        handler.redirect("/portal/stock?pick=" + quote(linked["code"]) + "&ok=linked" + moved)
+        return
     handler.redirect("/portal/stock?ok=1")
 
 
