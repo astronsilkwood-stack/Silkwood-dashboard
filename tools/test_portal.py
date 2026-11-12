@@ -1312,6 +1312,217 @@ class PortalTest(unittest.TestCase):
         self.assertEqual(rejected[0], 400)
         self.assertNotIn(b"4242424242424242", rejected[2])
 
+    def test_stock_barcode_links(self):
+        import portal_stock
+        portal._ingest_hits.clear()
+        self.assertIn("012345000065", portal_stock.barcode_keys("01234565"))
+        self.assertIn("0012345000065", portal_stock.barcode_keys("01234565"))
+        self.assertNotIn("012345000065", portal_stock.barcode_keys("01234566"))
+
+        self.assertEqual(self.request("GET", "/api/portal/stock/barcode?barcode=9310072028866")[0], 401)
+        self.assertEqual(self.request("POST", "/api/portal/stock/barcode", b"{}", {
+            "Content-Type": "application/json", "Content-Length": "2",
+        })[0], 401)
+        self.assertEqual(self.request(
+            "GET", "/api/portal/stock/barcode?barcode=9310072028866",
+            headers={"Authorization": "Bearer test-ingest-key"},
+        )[0], 401)
+
+        self.login()
+
+        def post_json(payload, token="omit", cookies=None):
+            raw = json.dumps(payload).encode()
+            headers = {"Content-Type": "application/json", "Content-Length": str(len(raw))}
+            if token != "omit":
+                headers["X-CSRF-Token"] = token
+            return self.request(
+                "POST", "/api/portal/stock/barcode", raw, headers,
+                self.jar if cookies is None else cookies,
+            )
+
+        def movement_rows():
+            c = server.db()
+            rows = [tuple(row) for row in c.execute(
+                "SELECT movement_key, code, move_date, source, sold, received FROM portal_stock_movements ORDER BY movement_key"
+            )]
+            c.close()
+            return rows
+
+        try:
+            self.assertEqual(self.ingest("product-search", load("product-search.json"))[0], 200)
+            self.assertEqual(self.ingest("retail-pricing", load("retail-pricing.json"))[0], 200)
+            self.assertEqual(self.ingest("stock-movements", load("stock-movements.json"))[0], 200)
+            before_moves = movement_rows()
+            self.assertTrue(before_moves)
+
+            page = self.authed("GET", "/portal/stock")[2].decode()
+            token = self.csrf_from(page)
+            self.assertIn('id="stock-scan"', page)
+            self.assertIn("Scan barcode", page)
+            self.assertIn("camera=(self)", self.authed("GET", "/portal/stock")[1].get("Permissions-Policy", ""))
+            self.assertIn("camera=(),", self.authed("GET", "/portal")[1].get("Permissions-Policy", ""))
+            self.assertIn("payment=()", self.request("GET", "/healthz")[1].get("Permissions-Policy", ""))
+            self.assertIn('id="stock-scan-mode"', page)
+            self.assertIn("Keep camera open", page)
+            self.assertIn("/static/stock-scan.js", page)
+            self.assertIn('name="q"', page)
+            self.assertNotIn("stock-scan.js", self.authed("GET", "/portal")[2].decode())
+
+            script = self.request("GET", "/static/stock-scan.js")
+            self.assertEqual(script[0], 200)
+            self.assertIn(b"BarcodeDetector", script[2])
+            self.assertIn(b"Camera permission was denied", script[2])
+            self.assertIn(b"/static/zxing.js", script[2])
+            self.assertIn(b"getTracks", script[2])
+            self.assertIn(b".stop()", script[2])
+            self.assertNotIn(b"https://", script[2])
+            self.assertNotIn(b"http://", script[2])
+            zxing = self.request("GET", "/static/zxing.js")
+            self.assertEqual(zxing[0], 200)
+            self.assertIn("javascript", zxing[1].get("Content-Type", ""))
+            self.assertIn(b"BrowserMultiFormatReader", zxing[2])
+            self.assertIn(b"Apache License", zxing[2])
+
+            shapes = json.loads(self.authed("GET", "/api/portal/stock/barcode?barcode=9310072028866")[2])
+            self.assertTrue(shapes["ok"])
+            self.assertEqual(shapes["code"], "10000")
+            self.assertEqual(shapes["source"], "catalog")
+            self.assertIn("ARNOTTS", shapes["name"])
+            short = json.loads(self.authed("GET", "/api/portal/stock/barcode?barcode=2901")[2])
+            self.assertEqual(short["code"], "1010")
+            self.assertEqual(short["source"], "catalog")
+            fuel = self.authed("GET", "/api/portal/stock/barcode?barcode=2")
+            self.assertEqual(fuel[0], 400)
+            self.assertNotIn(b"UNLEADED", fuel[2])
+            missing = self.authed("GET", "/api/portal/stock/barcode?barcode=9900000000099")
+            self.assertEqual(missing[0], 404)
+            self.assertIn(b"Barcode not linked", missing[2])
+            self.assertIn("ARNOTTS", self.authed("GET", "/portal/stock?q=9310072028866")[2].decode())
+
+            self.assertEqual(post_json({"barcode": "9900000000011", "code": "804040"})[0], 403)
+            self.assertEqual(post_json({"barcode": "9900000000011", "code": "804040"}, token="nope")[0], 403)
+            no_cookie = {k: v for k, v in self.jar.items() if k != "silkwood_csrf"}
+            self.assertEqual(post_json({"barcode": "9900000000011", "code": "804040"}, token=token, cookies=no_cookie)[0], 403)
+            unknown = post_json({"barcode": "9900000000011", "code": "NO-SUCH"}, token=token)
+            self.assertEqual(unknown[0], 400, unknown[2])
+            pan = "4111111111111111"
+            card = post_json({"barcode": pan, "code": "804040"}, token=token)
+            self.assertEqual(card[0], 400, card[2])
+            self.assertNotIn(pan.encode(), card[2])
+            self.assertIn(b"card", card[2].lower())
+
+            for barcode in ("9900000000011", "9900000000028"):
+                linked = post_json({"barcode": barcode, "code": "804040"}, token=token)
+                self.assertEqual(linked[0], 200, linked[2])
+                body = json.loads(linked[2])
+                self.assertTrue(body["ok"])
+                self.assertEqual(body["code"], "804040")
+                self.assertIsNone(body["movedFrom"])
+                found = json.loads(self.authed("GET", "/api/portal/stock/barcode?barcode=" + barcode)[2])
+                self.assertEqual(found["code"], "804040")
+                self.assertEqual(found["source"], "link")
+                self.assertIn("BACON", found["name"])
+            again = json.loads(post_json({"barcode": "9900000000011", "code": "804040"}, token=token)[2])
+            self.assertIsNone(again["movedFrom"])
+            moved = json.loads(post_json({"barcode": "9900000000011", "code": "10000"}, token=token)[2])
+            self.assertEqual(moved["movedFrom"], "804040")
+            self.assertEqual(json.loads(self.authed("GET", "/api/portal/stock/barcode?barcode=9900000000011")[2])["code"], "10000")
+            self.assertEqual(json.loads(self.authed("GET", "/api/portal/stock/barcode?barcode=9900000000028")[2])["code"], "804040")
+
+            upc = post_json({"barcode": "012345000065", "code": "10000"}, token=token)
+            self.assertEqual(upc[0], 200, upc[2])
+            for barcode in ("01234565", "0012345000065", "012345000065"):
+                hit = json.loads(self.authed("GET", "/api/portal/stock/barcode?barcode=" + barcode)[2])
+                self.assertEqual(hit["code"], "10000", barcode)
+                self.assertEqual(hit["source"], "link", barcode)
+
+            unlinked = self.authed("GET", "/portal/stock?link=9900000000004&q=muffin")[2].decode()
+            self.assertIn("Barcode not linked", unlinked)
+            self.assertIn("BACON EGG MUFFIN", unlinked)
+            self.assertIn('id="stock-search"', unlinked)
+            choose = self.authed("GET", "/portal/stock?link=9900000000004&pick=804040&q=muffin")[2].decode()
+            self.assertIn('id="barcode-link"', choose)
+            self.assertIn("Link barcode", choose)
+            status, hdrs, _, _ = self.authed("POST", "/portal/stock", urlencode({
+                "csrf": self.csrf_from(choose), "action": "link_barcode",
+                "barcode": "9900000000004", "code": "804040",
+            }))
+            self.assertEqual(status, 302, hdrs)
+            self.assertEqual(hdrs.get("Location"), "/portal/stock?pick=804040&ok=linked")
+            saved = self.authed("GET", hdrs.get("Location"))[2].decode()
+            self.assertIn("Barcode linked", saved)
+            self.assertIn('value="804040"', saved)
+            self.assertEqual(movement_rows(), before_moves)
+
+            c = server.db()
+            stored = c.execute(
+                "SELECT code, created_by FROM portal_product_barcodes WHERE barcode=?",
+                ("9900000000028",),
+            ).fetchone()
+            c.close()
+            self.assertEqual(stored["code"], "804040")
+            self.assertEqual(stored["created_by"], "astron")
+
+            page = self.authed("GET", "/portal/stock")[2].decode()
+            added = self.authed("POST", "/portal/stock", urlencode({
+                "csrf": self.csrf_from(page), "action": "add_manual", "name": "Scan biscuit",
+                "code": "SCAN1", "barcode": "87654321", "group": "Kitchen",
+                "qty": "4", "baseline_date": "2026-11-01", "baseline_time": "23:59",
+            }))
+            self.assertEqual(added[0], 302, added[2][:240])
+            manual = json.loads(self.authed("GET", "/api/portal/stock/barcode?barcode=87654321")[2])
+            self.assertEqual(manual["code"], "SCAN1")
+            self.assertEqual(manual["source"], "manual")
+            self.assertTrue(manual["tracked"])
+            self.assertEqual(manual["onHand"], 4)
+            extra = post_json({"barcode": "87654322", "code": "SCAN1"}, token=token)
+            self.assertEqual(extra[0], 200, extra[2])
+            page = self.authed("GET", "/portal/stock?edit=SCAN1")[2].decode()
+            renamed = self.authed("POST", "/portal/stock", urlencode({
+                "csrf": self.csrf_from(page), "action": "edit_manual", "old_code": "SCAN1",
+                "code": "SCAN2", "name": "Scan biscuit", "barcode": "87654321", "group": "Kitchen",
+            }))
+            self.assertEqual(renamed[0], 302, renamed[2][:240])
+            self.assertEqual(json.loads(self.authed("GET", "/api/portal/stock/barcode?barcode=87654322")[2])["code"], "SCAN2")
+            self.assertEqual(json.loads(self.authed("GET", "/api/portal/stock/barcode?barcode=87654321")[2])["code"], "SCAN2")
+            payload = json.loads(self.request("GET", "/api/portal/stock", headers={"Authorization": "Bearer test-ingest-key"})[2])
+            biscuit = next(row for row in payload["products"] if row["code"] == "SCAN2")
+            self.assertEqual(biscuit["onHand"], 4)
+            self.assertEqual(biscuit["barcode"], "87654321")
+            self.assertEqual(movement_rows(), before_moves)
+
+            twin = load("product-search.json")
+            twin["products"] = list(twin["products"]) + [[
+                "55501", "TWIN BAR TEST", 46, "9310000000011,9310000000028", 100, 50, 1, "",
+            ]]
+            self.assertEqual(self.ingest("product-search", twin)[0], 200)
+            for barcode in ("9310000000011", "9310000000028"):
+                hit = json.loads(self.authed("GET", "/api/portal/stock/barcode?barcode=" + barcode)[2])
+                self.assertEqual(hit["code"], "55501", barcode)
+                self.assertEqual(hit["source"], "catalog", barcode)
+            self.assertEqual(self.ingest("product-search", load("product-search.json"))[0], 200)
+            self.assertEqual(self.authed("GET", "/api/portal/stock/barcode?barcode=9310000000011")[0], 404)
+
+            priced = load("retail-pricing.json")
+            priced["rows"] = [list(row) for row in priced["rows"]]
+            priced["rows"][1][3] = "4006381333931"
+            self.assertEqual(self.ingest("retail-pricing", priced)[0], 200)
+            priced_hit = json.loads(self.authed("GET", "/api/portal/stock/barcode?barcode=4006381333931")[2])
+            self.assertEqual(priced_hit["code"], "804040")
+            self.assertEqual(priced_hit["source"], "pricing")
+            self.assertEqual(json.loads(self.authed("GET", "/api/portal/stock/barcode?barcode=9310072028866")[2])["source"], "catalog")
+        finally:
+            c = server.db()
+            c.execute("DELETE FROM portal_product_barcodes")
+            c.execute("DELETE FROM portal_stock_counts WHERE code IN ('SCAN1', 'SCAN2', '55501')")
+            c.execute("DELETE FROM portal_stock_items WHERE code IN ('SCAN1', 'SCAN2', '55501')")
+            c.execute("DELETE FROM portal_stock_movements WHERE code IN ('SCAN1', 'SCAN2', '55501')")
+            c.commit()
+            c.close()
+            portal._ingest_hits.clear()
+            self.ingest("product-search", load("product-search.json"))
+            self.ingest("retail-pricing", load("retail-pricing.json"))
+
 
 if __name__ == "__main__":
     unittest.main()

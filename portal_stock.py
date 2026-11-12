@@ -4,6 +4,10 @@ The opening count is the shelf at the end of the baseline date (Australia/Brisba
 Movements dated on that day are already in the count. Later days add deliveries and
 subtract till sales. A new count does not delete earlier ones; it becomes the baseline
 when its date is the latest.
+
+Barcodes are read from the till catalog (product-search, then retail-pricing) and from
+portal_product_barcodes, which the owner fills by scanning. A product can have several
+barcodes. Linking a barcode does not change movements or the on-hand figure.
 """
 import json
 import re
@@ -138,7 +142,7 @@ def _label(value, label, limit, required=False):
     return text
 
 
-def position(baseline, movements, catalog, item=None):
+def position(baseline, movements, catalog, item=None, linked=None):
     """SOH and the pieces the page and the bot read."""
     code = baseline["code"]
     info = dict(catalog.get(code) or {"code": code, "name": code, "group": "", "department": "", "barcode": ""})
@@ -194,6 +198,7 @@ def position(baseline, movements, catalog, item=None):
         "note": baseline["note"] or "",
         "countedBy": baseline["created_by"],
         "manual": manual,
+        "linkedBarcodes": list(linked or []),
     }
 
 
@@ -201,9 +206,10 @@ def tracked_rows(c):
     catalog = catalog_index(c)
     items = _items(c)
     baselines = current_baselines(c)
+    links = _links_by_code(c)
     codes = [code for code in baselines if not (items.get(code) and not items[code]["active"])]
     movements = _movements_for(c, codes)
-    rows = [position(baselines[code], movements, catalog, items.get(code)) for code in codes]
+    rows = [position(baselines[code], movements, catalog, items.get(code), links.get(code)) for code in codes]
     rows.sort(key=lambda row: (row["name"].casefold(), row["code"]))
     return rows
 
@@ -336,6 +342,7 @@ def edit_manual(c, user, form):
             )
         c.execute("UPDATE portal_stock_counts SET code=? WHERE code=?", (code, old))
         c.execute("UPDATE portal_stock_audit SET code=? WHERE code=?", (code, old))
+        c.execute("UPDATE portal_product_barcodes SET code=? WHERE code=?", (code, old))
         c.execute("DELETE FROM portal_stock_items WHERE code=?", (old,))
     when = portal.stamp()
     c.execute(
@@ -370,10 +377,289 @@ def untrack(c, user, form):
     return code
 
 
+def clean_barcode(value):
+    """A scanned or typed barcode. 13-digit values are EAN-13, not card numbers."""
+    if isinstance(value, bool) or value is None:
+        raise ValueError("That barcode is not valid.")
+    if isinstance(value, int):
+        value = str(value)
+    if not isinstance(value, str):
+        raise ValueError("That barcode is not valid.")
+    text = value.strip()
+    compact = re.sub(r"[\s-]+", "", text)
+    if compact.isdigit():
+        text = compact
+    else:
+        text = re.sub(r"\s+", "", text)
+    if not re.fullmatch(r"[0-9A-Za-z$%*+\-./]{4,48}", text):
+        raise ValueError("That barcode is not valid.")
+    if text.isdigit() and len(text) <= 13:
+        return text
+    if portal.has_card_number(text):
+        raise ValueError("That barcode must not be a card number.")
+    return text
+
+
+def _ean_check(data):
+    total = 0
+    for i, ch in enumerate(reversed(data)):
+        n = ord(ch) - 48
+        total += n * (3 if i % 2 == 0 else 1)
+    return str((10 - (total % 10)) % 10)
+
+
+def _upc_e_body(number_system, six):
+    """11-digit UPC-A data (no check digit) from a number system and 6 UPC-E digits."""
+    last = six[5]
+    if last in "012":
+        return number_system + six[0] + six[1] + last + "0000" + six[2] + six[3] + six[4]
+    if last == "3":
+        return number_system + six[0] + six[1] + six[2] + "00000" + six[3] + six[4]
+    if last == "4":
+        return number_system + six[0] + six[1] + six[2] + six[3] + "00000" + six[4]
+    return number_system + six[0] + six[1] + six[2] + six[3] + six[4] + "0000" + last
+
+
+def _upc_e_to_upc_a(eight):
+    """Expand an 8-digit UPC-E (number system, 6 digits, check) when the check digit fits."""
+    if len(eight) != 8 or not eight.isdigit() or eight[0] not in "01":
+        return None
+    data = _upc_e_body(eight[0], eight[1:7])
+    if _ean_check(data) != eight[7]:
+        return None
+    return data + eight[7]
+
+
+def barcode_keys(cleaned):
+    """Equivalent spellings for one scan: exact, UPC-A/EAN-13, and a checked UPC-E expansion."""
+    keys = [cleaned]
+    if not cleaned.isdigit():
+        return keys
+    if len(cleaned) == 12:
+        keys.append("0" + cleaned)
+    elif len(cleaned) == 13 and cleaned.startswith("0"):
+        keys.append(cleaned[1:])
+    elif len(cleaned) == 8:
+        expanded = _upc_e_to_upc_a(cleaned)
+        if expanded:
+            keys.append(expanded)
+            keys.append("0" + expanded)
+    elif len(cleaned) == 6:
+        data = _upc_e_body("0", cleaned)
+        check = _ean_check(data)
+        upc = data + check
+        keys.append(upc)
+        keys.append("0" + upc)
+    return list(dict.fromkeys(keys))
+
+
+def _barcode_tokens(value):
+    if value is None or value is False:
+        return []
+    if isinstance(value, bool):
+        return []
+    if isinstance(value, int):
+        value = str(value)
+    elif isinstance(value, float):
+        if not value.is_integer():
+            return []
+        value = str(int(value))
+    elif isinstance(value, list):
+        out = []
+        for item in value:
+            out.extend(_barcode_tokens(item))
+        return out
+    elif not isinstance(value, str):
+        return []
+    text = value.strip()
+    if not text:
+        return []
+    return [part.strip() for part in re.split(r"[,;|]+", text) if part.strip()]
+
+
+def _remember_barcode(found, token, code, source):
+    try:
+        key = clean_barcode(token)
+    except ValueError:
+        return
+    # Fuel rows copy the PLU into the barcode slot ("2", "3", "5"). Those are not shelf barcodes.
+    if len(key) < 8 and key == str(code):
+        return
+    for alias in barcode_keys(key):
+        exact = alias == key
+        current = found.get(alias)
+        if current is None or (exact and not current.get("exact")):
+            found[alias] = {"code": str(code), "source": source, "exact": exact}
+
+
+def _retail_products(c):
+    data = portal.parity().load_blob(c, "retail-pricing")
+    out = {}
+    if not data or not isinstance(data.get("rows"), list):
+        return out
+    cols = data.get("columns") if isinstance(data.get("columns"), list) else []
+    for raw in data["rows"]:
+        if not isinstance(raw, list):
+            continue
+        item = {cols[i]: raw[i] for i in range(min(len(cols), len(raw)))}
+        code = str(item.get("code") or "").strip()
+        if not code:
+            continue
+        out[code] = {
+            "code": code,
+            "name": str(item.get("description") or code),
+            "group": "",
+            "department": str(item.get("department") or ""),
+            "barcode": "" if item.get("barcodes") is None else item.get("barcodes"),
+        }
+    return out
+
+
+def _known_product(c, code, catalog=None):
+    catalog = catalog_index(c) if catalog is None else catalog
+    info = catalog.get(code)
+    if info:
+        return info
+    retail = _retail_products(c).get(code)
+    if retail:
+        return retail
+    item = _items(c).get(code)
+    if item:
+        return {
+            "code": code,
+            "name": item["name"] or code,
+            "group": item["group_name"] or "",
+            "department": "",
+            "barcode": item["barcode"] or "",
+        }
+    return None
+
+
+def barcode_catalog(c):
+    """Till barcodes already on a product. Owner links are applied separately and win."""
+    found = {}
+    for code, info in catalog_index(c).items():
+        for token in _barcode_tokens(info.get("barcode")):
+            _remember_barcode(found, token, code, "catalog")
+    for code, info in _retail_products(c).items():
+        for token in _barcode_tokens(info.get("barcode")):
+            _remember_barcode(found, token, code, "pricing")
+    for code, item in _items(c).items():
+        for token in _barcode_tokens(item["barcode"]):
+            _remember_barcode(found, token, code, "manual")
+    return found
+
+
+def _links_by_code(c):
+    out = {}
+    for row in portal.rows(c.execute("SELECT barcode, code FROM portal_product_barcodes ORDER BY barcode")):
+        out.setdefault(row["code"], []).append(row["barcode"])
+    return out
+
+
+def _is_tracked(c, code):
+    item = portal.one(c.execute("SELECT active FROM portal_stock_items WHERE code=?", (code,)))
+    if item and not item["active"]:
+        return False
+    row = portal.one(c.execute("SELECT 1 AS x FROM portal_stock_counts WHERE code=? LIMIT 1", (code,)))
+    return bool(row)
+
+
+def find_barcode(c, raw):
+    scanned = clean_barcode(raw)
+    keys = barcode_keys(scanned)
+    code = source = matched = None
+    for key in keys:
+        row = portal.one(c.execute("SELECT code, barcode FROM portal_product_barcodes WHERE barcode=?", (key,)))
+        if row:
+            code, source, matched = row["code"], "link", row["barcode"]
+            break
+    if code is None:
+        wanted = set(keys)
+        for row in portal.rows(c.execute("SELECT code, barcode FROM portal_product_barcodes")):
+            try:
+                aliases = set(barcode_keys(row["barcode"]))
+            except ValueError:
+                continue
+            if wanted & aliases:
+                code, source, matched = row["code"], "link", row["barcode"]
+                break
+    if code is None:
+        catalog = barcode_catalog(c)
+        for key in keys:
+            hit = catalog.get(key)
+            if hit:
+                code, source, matched = hit["code"], hit["source"], key
+                break
+    if code is None:
+        return None
+    info = _known_product(c, code) or {
+        "code": code, "name": code, "group": "", "department": "", "barcode": "",
+    }
+    tracked = _is_tracked(c, code)
+    on_hand = None
+    if tracked:
+        for row in tracked_rows(c):
+            if row["code"] == code:
+                on_hand = row["onHand"]
+                break
+    return {
+        "ok": True,
+        "barcode": scanned,
+        "matched": matched,
+        "code": code,
+        "name": info["name"],
+        "group": info.get("group") or "",
+        "department": info.get("department") or "",
+        "source": source,
+        "tracked": tracked,
+        "onHand": on_hand,
+        "onHandText": qty_text(on_hand) if on_hand is not None else "",
+    }
+
+
+def link_barcode(c, user, raw_barcode, raw_code):
+    barcode = clean_barcode(raw_barcode)
+    code = _clean_code(raw_code)
+    info = _known_product(c, code)
+    if not info:
+        raise ValueError("Choose a product from the catalog.")
+    existing = portal.one(c.execute("SELECT code FROM portal_product_barcodes WHERE barcode=?", (barcode,)))
+    moved = None
+    if not existing or existing["code"] != code:
+        moved = existing["code"] if existing else None
+        when = portal.stamp()
+        c.execute(
+            """INSERT INTO portal_product_barcodes(barcode,code,created_at,created_by) VALUES(?,?,?,?)
+               ON CONFLICT(barcode) DO UPDATE SET code=excluded.code, created_at=excluded.created_at,
+                 created_by=excluded.created_by""",
+            (barcode, code, when, user["username"]),
+        )
+        _audit(c, user["username"], "link", code, {"barcode": barcode, "from": moved})
+    return {
+        "ok": True,
+        "barcode": barcode,
+        "code": code,
+        "name": info["name"],
+        "group": info.get("group") or "",
+        "movedFrom": moved,
+    }
+
+
+def _pending_barcode(value):
+    if not value:
+        return ""
+    try:
+        return clean_barcode(value)
+    except ValueError:
+        return ""
+
+
 def _matches(row, needle):
     if not needle:
         return True
-    hay = f"{row['code']} {row['name']} {row['group']} {row['department']}".casefold()
+    extra = " ".join(row.get("linkedBarcodes") or [])
+    hay = f"{row['code']} {row['name']} {row['group']} {row['department']} {row.get('barcode') or ''} {extra}".casefold()
     return needle in hay
 
 
@@ -421,9 +707,13 @@ def page_stock(c, user, query, error=""):
             flag += ' <span class="pill warn">Low</span>'
         cover = "—" if row["daysCover"] is None else f"{row['daysCover']:.1f}"
         edit = f'<a href="/portal/stock?edit={portal.h(row["code"])}">Edit</a>' if row.get("manual") else ""
+        linked_note = ""
+        if row.get("linkedBarcodes"):
+            linked_note = '<div class="mini">' + portal.h(", ".join(row["linkedBarcodes"])) + "</div>"
+        hit = " scan-hit" if (query.get("pick") or "").strip() == row["code"] else ""
         body.append(
-            f'<tr id="stock-{portal.h(row["code"])}" class="{_paint_class(row)}"><td class="nowrap">{portal.h(row["code"])}</td>'
-            f'<td>{portal.h(row["name"])}{flag}</td><td>{portal.h(row["group"] or "—")}</td>'
+            f'<tr id="stock-{portal.h(row["code"])}" class="{_paint_class(row)}{hit}"><td class="nowrap">{portal.h(row["code"])}</td>'
+            f'<td>{portal.h(row["name"])}{flag}{linked_note}</td><td>{portal.h(row["group"] or "—")}</td>'
             f'<td class="num">{qty_text(row["openingQty"])}<div class="mini">end of {portal.h(portal.fmt_date(row["baselineDate"]))}</div></td>'
             f'<td class="num">{qty_text(row["soldSince"])}</td><td class="num">{qty_text(row["receivedSince"])}</td>'
             f'<td class="num">{qty_text(row["onHand"])}</td><td class="num">{portal.h(cover)}</td>'
@@ -438,35 +728,90 @@ def page_stock(c, user, query, error=""):
         '<div class="tw"><table><thead><tr><th>Code</th><th>Name</th><th>Group</th><th class="num">Opening</th><th class="num">Sold since</th><th class="num">Received since</th><th class="num">On hand</th><th class="num">Days of cover</th><th>Last updated</th><th></th></tr></thead><tbody>'
         + "".join(body) + "</tbody></table></div>"
     )
+    pending = _pending_barcode(query.get("link"))
+    link_bit = f"&link={portal.h(pending)}" if pending else ""
+    links = _links_by_code(c)
     chips = []
     for key, label in (("all", "All"), ("low", "Low stock"), ("negative", "Negative")):
         cls = " on" if key == mode else ""
-        chips.append(f'<a class="chip{cls}" href="/portal/stock?filter={key}&q={portal.h(needle)}">{label}</a>')
+        chips.append(f'<a class="chip{cls}" href="/portal/stock?filter={key}&q={portal.h(needle)}{link_bit}">{label}</a>')
     catalog = catalog_index(c)
     matches = []
     if needle and catalog:
         q = needle.casefold()
         for item in catalog.values():
-            hay = f"{item['code']} {item['name']} {item['barcode']} {item['group']}".casefold()
+            extra = " ".join(links.get(item["code"], []))
+            hay = f"{item['code']} {item['name']} {item['barcode']} {item['group']} {extra}".casefold()
             if q in hay:
                 matches.append(item)
             if len(matches) >= 20:
                 break
-        matches.sort(key=lambda item: item["name"].casefold())
+    if needle and len(matches) < 20:
+        q = needle.casefold()
+        seen = {item["code"] for item in matches}
+        for code, item in _items(c).items():
+            if not item["manual"] or not item["active"] or code in seen:
+                continue
+            extra = " ".join(links.get(code, []))
+            hay = f"{code} {item['name']} {item['barcode'] or ''} {item['group_name'] or ''} {extra}".casefold()
+            if q not in hay:
+                continue
+            matches.append({
+                "code": code, "name": item["name"], "barcode": item["barcode"] or "", "group": item["group_name"] or "",
+            })
+            if len(matches) >= 20:
+                break
+    matches.sort(key=lambda item: item["name"].casefold())
     pick = (query.get("pick") or "").strip()
-    picked = catalog.get(pick) if pick else None
+    picked = _known_product(c, pick, catalog) if pick else None
     match_html = []
     for item in matches:
         match_html.append(
-            f'<a class="chip" href="/portal/stock?pick={portal.h(item["code"])}&q={portal.h(needle)}">{portal.h(item["name"])} · {portal.h(item["code"])}</a>'
+            f'<a class="chip" href="/portal/stock?pick={portal.h(item["code"])}&q={portal.h(needle)}{link_bit}">{portal.h(item["name"])} · {portal.h(item["code"])}</a>'
         )
     now = portal._srv().now()
     default_date = now.date().isoformat()
     default_time = now.strftime("%H:%M")
     form_code = picked["code"] if picked else ""
-    form_label = f'{picked["name"]} · {picked["group"]}' if picked else "Search above, then choose a product."
+    if picked and picked.get("group"):
+        form_label = f'{picked["name"]} · {picked["group"]}'
+    elif picked:
+        form_label = picked["name"]
+    else:
+        form_label = "Search above, or scan a barcode, then choose a product."
+    linked_line = ""
+    if form_code and links.get(form_code):
+        linked_line = '<p class="mini" id="linked-barcodes">Linked barcodes: ' + ", ".join(portal.h(b) for b in links[form_code]) + "</p>"
+    qty_auto = " autofocus" if form_code and not pending else ""
     alert = f'<p class="alert">{portal.h(error)}</p>' if error else ""
-    ok = '<p class="oknote">Opening count saved. Earlier counts stay in the history.</p>' if query.get("ok") == "1" else ""
+    if query.get("ok") == "linked" and query.get("moved") == "1":
+        ok = '<p class="oknote">Barcode linked. It moved off the previous product. Enter the opening count and save.</p>'
+    elif query.get("ok") == "linked":
+        ok = '<p class="oknote">Barcode linked. Enter the opening count and save.</p>'
+    elif query.get("ok") == "1":
+        ok = '<p class="oknote">Opening count saved. Earlier counts stay in the history.</p>'
+    else:
+        ok = ""
+    banner = ""
+    link_form = ""
+    if pending:
+        banner = (
+            f'<p class="alert" id="barcode-unlinked">Barcode not linked. '
+            f'<span class="mono">{portal.h(pending)}</span> '
+            f'Choose the product from search, then link it. The link is saved for every device.</p>'
+        )
+        if picked:
+            link_form = (
+                f'<form method="post" action="/portal/stock" id="barcode-link">'
+                f'<input type="hidden" name="csrf" value="{portal.h(user["csrf"])}">'
+                f'<input type="hidden" name="action" value="link_barcode">'
+                f'<input type="hidden" name="barcode" value="{portal.h(pending)}">'
+                f'<input type="hidden" name="code" value="{portal.h(picked["code"])}">'
+                f'<p>Link <span class="mono">{portal.h(pending)}</span> to {portal.h(picked["name"])} '
+                f'({portal.h(picked["code"])}). A product can have several barcodes.</p>'
+                f'<button class="btn" type="submit" autofocus>Link barcode</button></form>'
+            )
+    hidden_link = f'<input type="hidden" name="link" value="{portal.h(pending)}">' if pending else ""
     stored = _items(c)
     editing = stored.get((query.get("edit") or "").strip()) if query.get("edit") else None
     edit_html = ""
@@ -503,24 +848,29 @@ def page_stock(c, user, query, error=""):
     return f"""<div class="ph"><h1>Stock on hand</h1>
 <p>Enter an opening count. After that, till sales reduce it and supplier deliveries increase it. Products without a count are not tracked. Counts and units only. No cost or gross profit on this page.</p>
 <p class="help">{portal.h(BASELINE_RULE)} A count during the day should use yesterday’s date if tonight’s sales should still come off it.</p></div>
-{alert}{ok}
-<form class="period" method="get" action="/portal/stock">
+{alert}{ok}{banner}
+<form class="period" id="stock-search" method="get" action="/portal/stock">
 <div class="chips">{''.join(chips)}</div>
-<div class="row"><label class="f">Search code, name or group<input name="q" value="{portal.h(needle)}" maxlength="80"></label>
+<div class="row"><label class="f">Search code, name, group or barcode<input name="q" value="{portal.h(needle)}" maxlength="80"></label>
 <input type="hidden" name="filter" value="{portal.h(mode)}">
-<button class="btn" type="submit">Search</button></div></form>
+{hidden_link}
+<button class="btn" type="submit">Search</button>
+<button class="btn" type="button" id="stock-scan">Scan barcode</button></div>
+<p class="help">Scan uses the rear camera. Search by name or PLU still works. An unknown barcode can be linked to a product and is remembered on every device.</p></form>
 <section class="card" id="stock-list">{table}
 <p class="help">Low means {qty_text(LOW_AT)} or fewer on hand, and still zero or above. Negative is below zero. Days of cover uses till sales on the recent days after the count.</p></section>
 <section class="card" id="stock-count"><h2>Set or reset an opening count</h2>
 <p class="help">This is a stocktake. It starts a fresh baseline from the end of the date you enter. The previous count stays in the history.</p>
-<div class="chips">{''.join(match_html) or ('<p class="empty">Type a name or PLU to search the product catalog.</p>' if not needle else '<p class="empty">No catalog match.</p>')}</div>
+<div class="chips">{''.join(match_html) or ('<p class="empty">Type a name, PLU or barcode to search the product catalog.</p>' if not needle else '<p class="empty">No catalog match.</p>')}</div>
+{link_form}
 <form method="post" action="/portal/stock">
 <input type="hidden" name="csrf" value="{portal.h(user['csrf'])}">
 <input type="hidden" name="action" value="set_count">
 <input type="hidden" name="code" value="{portal.h(form_code)}">
 <p id="stock-pick">{portal.h(form_label)}</p>
+{linked_line}
 <div class="row">
-<label class="f">Count<input name="qty" inputmode="decimal" min="0" step="any" required></label>
+<label class="f">Count<input name="qty" inputmode="decimal" min="0" step="any" required{qty_auto}></label>
 <label class="f">Date<input type="date" name="baseline_date" value="{portal.h(default_date)}" required></label>
 <label class="f">Time<input type="time" name="baseline_time" value="{portal.h(default_time)}" required></label>
 </div>
@@ -546,4 +896,16 @@ def page_stock(c, user, query, error=""):
 </form></section>
 {edit_html}
 <section class="card" id="stock-history"><h2>Count history</h2>
-<ul class="history">{''.join(history) or '<li>No counts yet.</li>'}</ul></section>"""
+<ul class="history">{''.join(history) or '<li>No counts yet.</li>'}</ul></section>
+<div id="stock-scanner" class="scanner" hidden>
+<button type="button" class="scanner-backdrop" data-scan-backdrop aria-label="Close scanner"></button>
+<div class="scanner-sheet" role="dialog" aria-modal="true" aria-labelledby="stock-scan-title">
+<div class="scanner-bar"><h2 id="stock-scan-title">Scan a barcode</h2>
+<button class="btn ghost" type="button" id="stock-scan-close">Close</button></div>
+<div class="scanner-video"><video id="stock-scan-video" autoplay muted playsinline></video>
+<div class="scanner-reticle" aria-hidden="true"></div></div>
+<label class="check"><input type="checkbox" id="stock-scan-mode"> Keep camera open for the next items</label>
+<p id="stock-scan-status" class="help" aria-live="polite"></p>
+<div id="stock-scan-results"></div>
+</div></div>
+<script src="/static/stock-scan.js"></script>"""

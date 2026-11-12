@@ -1134,18 +1134,20 @@ def place_order(b, ip, when=None):
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
-    def _security_headers(self):
+    def _security_headers(self, camera=False):
         self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "same-origin")
-        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+        # camera=(self) only on the stock page. Every other response keeps the camera off.
+        camera_policy = "camera=(self)" if camera else "camera=()"
+        self.send_header("Permissions-Policy", camera_policy + ", microphone=(), geolocation=(), payment=()")
         self.send_header("X-Permitted-Cross-Domain-Policies", "none")
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
-    def send(self, code, obj, ctype="application/json", cache=None, extra=None):
+    def send(self, code, obj, ctype="application/json", cache=None, extra=None, camera=False):
         b = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
         self.send_response(code); self.send_header("Content-Type", ctype); self.send_header("Cache-Control", cache or "no-store")
-        self._security_headers()
+        self._security_headers(camera=camera)
         for k, v in extra or []:
             self.send_header(k, v)
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
