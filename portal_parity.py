@@ -2276,6 +2276,7 @@ def page_notes(c):
         ("till-price-changes", "Till price changes"),
         ("cost-overrides", "Cost overrides"),
         ("last-year", "November 2025"),
+        ("last-year-monthly", "Last-year monthly totals"),
         ("shifts", "Shift balancing"),
     ):
         info = portal.meta_get(c, key)
@@ -2290,6 +2291,7 @@ def page_notes(c):
 <li>2026 GP, GP% and cost coverage use a cost override when one is effective on the sale date, and the till cost otherwise. The nightly sales file itself stays on till cost. Do not also rebase that file, or the override would be applied twice.</li>
 <li>A product with an override is marked Cost override. A $0 till cost is not warned on 2025, and a 2026 row with an override is not treated as missing a cost.</li>
 <li>November 2025 is quantity, sales ex GST, and fuel litres for the whole month. It has no cost, GP, GP% or coverage.</li>
+<li>The overview month lines are till only: shop sales inc GST, kitchen food sales inc GST, and fuel litres. Bopple is not included. A past month shows its loaded total. The current month projects the month-end from the daily average, or from the same weekday when that sample exists. Same-month last year comes from the last-year-monthly upload. A blank field there is missing, not zero.</li>
 <li>The portal does not pay invoices, set pump prices, or write SwiftPOS prices or costs. Staff hours are not sent to Xero.</li>
 </ul>
 <p>Daily window: {portal.h(window.get('fromDate') or '—')} · {portal.h(window.get('rule') or '')}</p>

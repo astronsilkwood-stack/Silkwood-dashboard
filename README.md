@@ -68,7 +68,7 @@ Content-Type: application/json
 {"dataset": "<name>", "data": { ... }}
 ```
 
-`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`, `shift-exceptions`, `barcode-map`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept.
+`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`, `shift-exceptions`, `barcode-map`, `last-year-monthly`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept.
 
 The body limit is 8,000,000 bytes. Send plain JSON, or gzip it and set `Content-Encoding: gzip`. The limit applies to the bytes on the wire and again to the JSON after gzip is decompressed. A barcode map of about 4,400 PLUs is about 400KB of JSON and fits either way.
 
@@ -143,6 +143,17 @@ No new environment variable is required for these pages.
 ```
 
 `fuelLitres` may instead be `{"ULP":0,"DIS":0,"P95":0,"total":0}`. Product tuples `[code, name, group, qty, salesEx]` or `[code, qty, salesEx]` are accepted. Dollars are ex GST. The November 2025 fixture in `tools/fixtures/last-year.json` is that month’s PLU report.
+
+**last-year-monthly** — whole-month totals for the overview comparison. This is separate from `last-year`. Shop and food are inc GST. Fuel is litres. Any figure may be null. Null means that figure has not been supplied. The overview shows “No last-year figure yet” and does not treat it as zero. A later upload of the same `month` replaces that row, including fields you set back to null. Other months already stored are kept. Send one month, or `months`. Optional `asOf` is `YYYY-MM-DD`. If it is omitted, the portal uses the last day of the latest month in the payload.
+
+```json
+{"dataset":"last-year-monthly","data":{"months":[
+  {"month":"2025-11","shop_sales_inc":182430.50,"food_sales_inc":61220.00,"fuel_litres":115281.95,"source":"SwiftPOS monthly totals","note":"Till only, inc GST. Food is kitchen sales."},
+  {"month":"2025-10","shop_sales_inc":null,"food_sales_inc":null,"fuel_litres":108440.12,"source":"Fuel sheet","note":"Shop and food not extracted yet."}
+]}}
+```
+
+One month can be the data object itself: `{"month":"2025-11","shop_sales_inc":182430.50,"food_sales_inc":null,"fuel_litres":null,"source":"","note":""}`. `month` is `YYYY-MM`. `shop_sales_inc` and `food_sales_inc` are numbers or null (inc GST, till only, not Bopple). `fuel_litres` is a number or null. `source` and `note` are optional text. A `200` body is `{"ok":true,"dataset":"last-year-monthly","asOf":"2025-11-30","months":2}`. `months` is how many rows this upload wrote.
 
 **stock-movements** — units only, for products the owner is tracking. Re-posting the same product, date, and source replaces that row. Other rows are left as they are. `source` is `till-sales` (units sold) or `supplier-invoice` (units received). `sold` and `received` are zero or positive. `reference` is optional (an invoice number). A sample is `tools/fixtures/stock-movements.json`.
 

@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse
 DATASETS = (
     "sales", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices",
     "product-search", "retail-pricing", "till-price-changes", "shifts", "last-year", "cost-overrides",
-    "stock-movements", "online-orders", "shift-exceptions", "barcode-map",
+    "stock-movements", "online-orders", "shift-exceptions", "barcode-map", "last-year-monthly",
 )
 INGEST_MAX = 8_000_000
 FORM_MAX = 100_000
@@ -178,6 +178,9 @@ CREATE TABLE IF NOT EXISTS portal_shift_exceptions(
   status TEXT, account_type TEXT, outstanding REAL, paid_on_account REAL, status_basis TEXT,
   plu TEXT, reason TEXT, rego TEXT, lines TEXT, source_as_of TEXT, updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_portal_shift_exceptions_date ON portal_shift_exceptions(trade_date, exc_type);
+CREATE TABLE IF NOT EXISTS portal_ly_monthly(
+  month TEXT PRIMARY KEY, shop_sales_inc REAL, food_sales_inc REAL, fuel_litres REAL,
+  source TEXT, note TEXT, updated_at TEXT NOT NULL);
 """
 
 
@@ -1289,6 +1292,84 @@ def apply_online_orders(c, data):
     return {"asOf": as_of, "days": len(days), "orders": len(clean_orders)}
 
 
+def _ly_text(value, label, limit):
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be text")
+    return " ".join(value.split())[:limit]
+
+
+def _ly_month_row(row, label):
+    if not isinstance(row, dict):
+        raise ValueError(f"{label} must be an object")
+    month = row.get("month")
+    if not isinstance(month, str) or not re.fullmatch(r"\d{4}-\d{2}", month):
+        raise ValueError(f"{label} month must be YYYY-MM")
+    year, mon = int(month[:4]), int(month[5:])
+    if year < 1990 or year > 2100 or not 1 <= mon <= 12:
+        raise ValueError(f"{label} month must be YYYY-MM")
+
+    def optional_num(key):
+        if key not in row or row.get(key) is None:
+            return None
+        return num(row.get(key), key)
+
+    return {
+        "month": f"{year:04d}-{mon:02d}",
+        "shop_sales_inc": optional_num("shop_sales_inc"),
+        "food_sales_inc": optional_num("food_sales_inc"),
+        "fuel_litres": optional_num("fuel_litres"),
+        "source": _ly_text(row.get("source"), "source", 300),
+        "note": _ly_text(row.get("note"), "note", 500),
+    }
+
+
+def apply_last_year_monthly(c, data):
+    """Upsert same-month-last-year totals. A null field stays missing; it is not stored as zero."""
+    if not isinstance(data, dict):
+        raise ValueError("last-year-monthly must be an object")
+    reject_sensitive(data, "last-year-monthly")
+    has_one = "month" in data
+    has_many = "months" in data
+    if has_one and has_many:
+        raise ValueError("last-year-monthly needs months or one month, not both")
+    if has_many:
+        rows_in = data.get("months")
+        if not isinstance(rows_in, list) or not rows_in:
+            raise ValueError("last-year-monthly needs a months list")
+    elif has_one:
+        rows_in = [data]
+    else:
+        raise ValueError("last-year-monthly needs a month")
+    if len(rows_in) > 240:
+        raise ValueError("last-year-monthly has too many months")
+    ordered = {}
+    for i, row in enumerate(rows_in):
+        clean = _ly_month_row(row, f"months[{i}]")
+        ordered[clean["month"]] = clean
+    if data.get("asOf"):
+        as_of = need_date(data.get("asOf"), "asOf")
+    else:
+        latest = max(ordered)
+        year, mon = (int(latest[:4]), int(latest[5:]))
+        as_of = month_last_day(date(year, mon, 1)).isoformat()
+    for row in ordered.values():
+        c.execute(
+            """INSERT INTO portal_ly_monthly(month,shop_sales_inc,food_sales_inc,fuel_litres,source,note,updated_at)
+               VALUES(?,?,?,?,?,?,?)
+               ON CONFLICT(month) DO UPDATE SET shop_sales_inc=excluded.shop_sales_inc,
+                 food_sales_inc=excluded.food_sales_inc, fuel_litres=excluded.fuel_litres,
+                 source=excluded.source, note=excluded.note, updated_at=excluded.updated_at""",
+            (row["month"], row["shop_sales_inc"], row["food_sales_inc"], row["fuel_litres"],
+             row["source"], row["note"], stamp()),
+        )
+    total = one(c.execute("SELECT COUNT(*) AS n FROM portal_ly_monthly"))["n"]
+    meta_set(c, "last-year-monthly", {"asOf": as_of, "months": total})
+    save_snapshot(c, "last-year-monthly", as_of, {"asOf": as_of, "months": list(ordered.values())})
+    return {"asOf": as_of, "months": len(ordered)}
+
+
 APPLIERS = {
     "sales": apply_sales,
     "purchases": apply_purchases,
@@ -1306,6 +1387,7 @@ APPLIERS = {
     "barcode-map": lambda c, data: stock().apply_barcode_map(c, data),
     "online-orders": apply_online_orders,
     "shift-exceptions": lambda c, data: exceptions().apply_shift_exceptions(c, data),
+    "last-year-monthly": apply_last_year_monthly,
 }
 
 
@@ -2009,6 +2091,275 @@ def daily_table(days):
     )
 
 
+def month_last_day(month_start):
+    return (month_start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+
+
+def viewed_month(start, end):
+    """Calendar month the overview lines describe. A range that crosses months uses the month it ends in."""
+    if start.year == end.year and start.month == end.month:
+        return date(start.year, start.month, 1)
+    return date(end.year, end.month, 1)
+
+
+def project_metric(daily, month_start, data_through):
+    """Project one daily series across a calendar month in Australia/Brisbane.
+
+    Loaded days are never filled with zero. When data_through falls inside the
+    month, each remaining day after the latest loaded day uses the average of
+    that weekday so far this month. If this month has no sample of that
+    weekday, the average comes from the last 4 weeks (28 days ending on that
+    latest day). If any remaining weekday has neither sample, the whole
+    projection falls back to the month-to-date daily average times the days
+    in the month. A finished month returns the loaded total, not a projection.
+    """
+    end = month_last_day(month_start)
+    dim = end.day
+    parsed = []
+    for key, value in (daily or {}).items():
+        if value is None:
+            continue
+        parsed.append((date.fromisoformat(key), float(value)))
+    in_month = [(d, v) for d, v in parsed if d.year == month_start.year and d.month == month_start.month]
+    result = {
+        "monthKey": f"{month_start.year:04d}-{month_start.month:02d}",
+        "month": month_start.strftime("%B %Y"),
+        "daysInMonth": dim,
+        "daysTraded": 0,
+        "mtd": None,
+        "projected": None,
+        "method": "none",
+        "status": "empty",
+        "through": None,
+    }
+    phase_through = data_through
+    if phase_through is None and in_month:
+        phase_through = max(d for d, _ in in_month)
+    if phase_through is None or month_start > phase_through:
+        return result
+    if end <= phase_through:
+        if not in_month:
+            return result
+        total = sum(v for _, v in in_month)
+        latest = max(d for d, _ in in_month)
+        result.update(
+            daysTraded=len(in_month), mtd=total, projected=total,
+            method="actual", status="actual", through=latest.isoformat(),
+        )
+        return result
+    traded = [(d, v) for d, v in in_month if d <= phase_through]
+    if not traded:
+        return result
+    cutoff = max(d for d, _ in traded)
+    mtd = sum(v for _, v in traded)
+    n = len(traded)
+    month_buckets = {i: [] for i in range(7)}
+    for d, v in traded:
+        month_buckets[d.weekday()].append(v)
+    look_start = cutoff - timedelta(days=27)
+    prior_buckets = {i: [] for i in range(7)}
+    for d, v in parsed:
+        if look_start <= d <= cutoff:
+            prior_buckets[d.weekday()].append(v)
+    estimates = []
+    dow_ok = True
+    cur = cutoff + timedelta(days=1)
+    while cur <= end:
+        pool = month_buckets[cur.weekday()] or prior_buckets[cur.weekday()]
+        if not pool:
+            dow_ok = False
+            break
+        estimates.append(sum(pool) / len(pool))
+        cur += timedelta(days=1)
+    result.update(daysTraded=n, mtd=mtd, status="project", through=cutoff.isoformat())
+    if dow_ok:
+        result["projected"] = mtd + sum(estimates)
+        result["method"] = "weekday"
+    else:
+        result["projected"] = mtd / n * dim
+        result["method"] = "average"
+    return result
+
+
+PROJECTION_NOTES = {
+    "weekday": (
+        "Projection: loaded days stay as they are, and a missing day already inside the month is not filled in. "
+        "Each remaining day is the average of that weekday so far this month, or from the last 4 weeks when this month has no sample of that weekday."
+    ),
+    "average": (
+        "Projection: month-to-date daily average times the days in the month. Weekday weighting needs "
+        "a sample of each remaining weekday in this month or the last 4 weeks."
+    ),
+    "actual": (
+        "Finished month. This is the total of the loaded trading days, not a projection. "
+        "Missing days are not filled with zero."
+    ),
+}
+
+
+def shop_sales_by_date(c):
+    found = {}
+    for row in rows(c.execute("SELECT date, shop FROM portal_sales_days")):
+        if row["shop"] is not None:
+            found[row["date"]] = float(row["shop"])
+    return found
+
+
+def kitchen_sales_by_date(c):
+    """Kitchen sales inc GST, the same daily total the Kitchen page sums."""
+    kitchen = meta_get(c, "sales").get("kitchen") or {}
+    found = {}
+    for row in kitchen.get("days") or []:
+        if not isinstance(row, list) or len(row) < 2 or not row[0] or row[1] is None:
+            continue
+        try:
+            day = need_date(str(row[0]), "kitchen day")
+            found[day] = float(row[1])
+        except (TypeError, ValueError):
+            continue
+    return found
+
+
+def fuel_litres_by_date(c):
+    """Sum of fuel qty. Prefer the stored daily total, otherwise add the grade litres."""
+    found = {}
+    for row in rows(c.execute("SELECT date, litres, ulp_l, diesel_l, pulp_l FROM portal_commission_days")):
+        if row["litres"] is not None:
+            found[row["date"]] = float(row["litres"])
+            continue
+        grades = [row["ulp_l"], row["diesel_l"], row["pulp_l"]]
+        if any(value is not None for value in grades):
+            found[row["date"]] = sum(float(value or 0) for value in grades)
+    return found
+
+
+def last_year_month_row(c, month_start):
+    key = f"{month_start.year - 1:04d}-{month_start.month:02d}"
+    return one(c.execute(
+        "SELECT month, shop_sales_inc, food_sales_inc, fuel_litres, source, note FROM portal_ly_monthly WHERE month=?",
+        (key,),
+    ))
+
+
+def _ly_change(projected, baseline):
+    if projected is None or baseline is None or baseline == 0:
+        return None
+    return (float(projected) - float(baseline)) / float(baseline) * 100
+
+
+def _metric_text(amount, kind):
+    if amount is None:
+        return None
+    if kind == "litres":
+        return litres(amount)
+    return money(amount)
+
+
+def _month_line(line_id, title, subtitle, tone_name, metric, kind, empty_label, ly_amount, ly_label, figure_label, mtd_label):
+    if metric["mtd"] is None:
+        mtd_html = f'<b class="ly-missing">{h(empty_label)}</b>'
+    else:
+        mtd_html = f'<b>{_metric_text(metric["mtd"], kind)}</b>'
+    if metric["projected"] is None:
+        projected_html = '<b class="ly-missing">—</b>'
+    else:
+        projected_html = f'<b>{_metric_text(metric["projected"], kind)}</b>'
+    if ly_amount is None:
+        ly_html = '<b class="ly-missing">No last-year figure yet</b>'
+    else:
+        change = _ly_change(metric["projected"], ly_amount)
+        change_html = ""
+        if change is not None:
+            cls = "up" if change >= 0 else "down"
+            change_html = f'<span class="trend {cls}">{h(f"{abs(change):.1f}% vs {ly_label}")}</span>'
+        ly_html = f'<b>{_metric_text(ly_amount, kind)}</b>{change_html}'
+    days = f'{metric["daysTraded"]} of {metric["daysInMonth"]}'
+    return f"""<article class="month-line {tone_name}" id="{line_id}" data-method="{h(metric["method"])}">
+<h3>{h(title)}</h3>
+<p class="mini">{h(subtitle)}</p>
+<div class="line-metrics">
+<div id="{line_id}-mtd"><div class="lbl">{h(mtd_label)}</div>{mtd_html}</div>
+<div id="{line_id}-days"><div class="lbl">Days traded</div><b>{h(days)}</b></div>
+<div id="{line_id}-projected"><div class="lbl">{h(figure_label)}</div>{projected_html}</div>
+<div id="{line_id}-ly"><div class="lbl">{h(ly_label)}</div>{ly_html}</div>
+</div></article>"""
+
+
+def month_lines_section(c, start, end):
+    month_start = viewed_month(start, end)
+    through_iso = data_through(c)
+    through = date.fromisoformat(through_iso) if through_iso else None
+    shop = project_metric(shop_sales_by_date(c), month_start, through)
+    food = project_metric(kitchen_sales_by_date(c), month_start, through)
+    fuel = project_metric(fuel_litres_by_date(c), month_start, through)
+    if through is None:
+        dated = [row["through"] for row in (shop, food, fuel) if row.get("through")]
+        if dated:
+            through = date.fromisoformat(max(dated))
+    end_day = month_last_day(month_start)
+    if through is None or month_start > through:
+        phase = "empty"
+    elif end_day <= through:
+        phase = "actual"
+    else:
+        phase = "project"
+    ly = last_year_month_row(c, month_start) or {}
+    ly_label = date(month_start.year - 1, month_start.month, 1).strftime("%b %Y")
+    figure_label = "Projected month-end" if phase == "project" else "Month total"
+    mtd_label = "Month to date" if phase == "project" else "Loaded total"
+    lines = (
+        ("line-shop", "Shop sales", "Till non-fuel, inc GST", "tone-shop", shop, "money",
+         "No shop sales loaded", ly.get("shop_sales_inc"), "shop"),
+        ("line-food", "Food sales", "Kitchen sales, inc GST", "tone-food", food, "money",
+         "No kitchen sales loaded", ly.get("food_sales_inc"), "food"),
+        ("line-fuel", "Fuel litres", "Sum of fuel qty", "tone-fuel", fuel, "litres",
+         "No fuel litres loaded", ly.get("fuel_litres"), "fuel"),
+    )
+    body = "".join(
+        _month_line(line_id, title, subtitle, tone_name, metric, kind, empty_label, ly_amount, ly_label, figure_label, mtd_label)
+        for line_id, title, subtitle, tone_name, metric, kind, empty_label, ly_amount, _key in lines
+    )
+    notes = []
+    if phase == "empty" and all(item[4]["status"] == "empty" for item in lines):
+        notes.append("No shop, food or fuel figures are loaded for this month yet.")
+    else:
+        for item in lines:
+            text = PROJECTION_NOTES.get(item[4]["method"])
+            if text and text not in notes:
+                notes.append(text)
+    if phase == "project":
+        compare = "The percentage compares this projected month-end with the same month last year."
+    else:
+        compare = "The percentage compares this month total with the same month last year."
+    compare += " A last-year figure that has not been uploaded is left blank. It is not shown as zero."
+    if phase == "project":
+        kicker = "Month-end projection"
+    elif phase == "actual":
+        kicker = "Month total"
+    else:
+        kicker = "Monthly lines"
+    through_bit = ""
+    if through_iso:
+        through_bit = f" Data through {h(fmt_date(through_iso))}."
+    source_bits = []
+    if ly.get("source"):
+        source_bits.append(str(ly["source"]))
+    if ly.get("note"):
+        source_bits.append(str(ly["note"]))
+    source_html = ""
+    if source_bits:
+        source_html = f'<p class="help" id="month-lines-source">{h(" ".join(source_bits))}</p>'
+    return f"""<section class="card" id="month-lines" data-phase="{h(phase)}">
+<div class="lbl">{h(kicker)}</div>
+<h2>{h(month_start.strftime("%B %Y"))}</h2>
+<p class="help">Australia/Brisbane. Shop sales, food sales and fuel litres for this calendar month. The date range above filters the other cards on this page.{through_bit}</p>
+<div class="month-lines">{body}</div>
+<p class="help" id="month-lines-method">{h(" ".join(notes))}</p>
+<p class="help" id="month-lines-compare">{h(compare)}</p>
+<p class="help" id="month-lines-footnote">Till only. Shop sales are the till daysheet shop total, inc GST, and do not include Bopple. Food sales are the kitchen total from the Kitchen page, inc GST, and are already part of shop sales. Fuel litres are the sum of unleaded, diesel and premium. Bopple online sales stay on Online orders.</p>
+{source_html}</section>"""
+
+
 def page_overview(c, query):
     through = data_through(c)
     anchor = anchor_day(c)
@@ -2124,6 +2475,7 @@ def page_overview(c, query):
 <div class="card stat tone-warn" id="missing-cost"><div class="lbl">Products missing cost</div><b>{h(missing if missing is not None else '—')}</b><span>{h(missing_label)}</span></div>
 <div class="card stat tone-avg" id="shop-average"><div class="lbl">Daily shop average</div><b>{money(shop_avg)}</b><span>shop sales inc GST per loaded day</span></div>
 </section>
+{month_lines_section(c, start, end)}
 {exceptions().overview_card(c)}
 {insights_box(latest_insight(c))}
 <section class="card"><h2>Fuel vs shop</h2>
