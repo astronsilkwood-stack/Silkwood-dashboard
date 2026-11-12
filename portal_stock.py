@@ -5,9 +5,10 @@ Movements dated on that day are already in the count. Later days add deliveries 
 subtract till sales. A new count does not delete earlier ones; it becomes the baseline
 when its date is the latest.
 
-Barcodes are read from the till catalog (product-search, then retail-pricing) and from
-portal_product_barcodes, which the owner fills by scanning. A product can have several
-barcodes. Linking a barcode does not change movements or the on-hand figure.
+Barcodes are read from a saved owner link, then the till catalog (product-search,
+then retail-pricing), then a manual product, then the barcode-map upload. That map
+is the full PLU list, including products that have not sold recently. A product can
+have several barcodes. Linking a barcode does not change movements or the on-hand figure.
 """
 import json
 import re
@@ -17,6 +18,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import portal
 
 SOURCES = {"till-sales", "supplier-invoice"}
+BARCODE_MAP_LIMIT = 20000
 LOW_AT = Decimal(5)
 BASELINE_RULE = (
     "The opening count is the stock at the end of baselineDate, Australia/Brisbane. "
@@ -203,7 +205,8 @@ def position(baseline, movements, catalog, item=None, linked=None):
 
 
 def tracked_rows(c):
-    catalog = catalog_index(c)
+    catalog = dict(_barcode_map_products(c))
+    catalog.update(catalog_index(c))
     items = _items(c)
     baselines = current_baselines(c)
     links = _links_by_code(c)
@@ -265,11 +268,88 @@ def apply_stock_movements(c, data):
     return {"asOf": as_of, "movements": n}
 
 
+def _clean_map_barcodes(value, where):
+    """A barcode cell: comma-separated text, or a list of EAN/UPC strings."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value.strip()
+    elif isinstance(value, list):
+        if len(value) > 64:
+            raise ValueError(f"{where} has too many barcodes")
+        parts = []
+        for item in value:
+            if isinstance(item, bool) or item is None:
+                raise ValueError(f"{where} barcodes must be strings")
+            if isinstance(item, int):
+                item = str(item)
+            if not isinstance(item, str):
+                raise ValueError(f"{where} barcodes must be strings")
+            item = item.strip()
+            if item:
+                parts.append(item)
+        text = ",".join(parts)
+    else:
+        raise ValueError(f"{where} barcodes must be a string or a list")
+    if len(text) > 2000:
+        raise ValueError(f"{where} barcodes are too long")
+    for token in _barcode_tokens(text):
+        digits = re.sub(r"\D", "", token)
+        # 13-digit values are EAN-13. Longer Luhn numbers are card numbers.
+        if len(digits) > 13 and portal.has_card_number(token):
+            raise ValueError("barcode-map must not include a card number")
+    return text
+
+
+def apply_barcode_map(c, data):
+    """Replace the full PLU barcode map. The previous upload is not kept."""
+    if not isinstance(data, dict) or not isinstance(data.get("products"), list):
+        raise ValueError("barcode-map needs a products list")
+    products = data["products"]
+    if len(products) > BARCODE_MAP_LIMIT:
+        raise ValueError("barcode-map has too many products")
+    chosen = {}
+    order = []
+    for i, row in enumerate(products):
+        if not isinstance(row, list) or len(row) < 3:
+            raise ValueError(f"products[{i}] must be [code, description, barcodes]")
+        code = row[0]
+        if isinstance(code, bool):
+            raise ValueError(f"products[{i}] needs a PLU code")
+        if isinstance(code, int):
+            code = str(code)
+        if not isinstance(code, str) or not code.strip() or len(code.strip()) > 40:
+            raise ValueError(f"products[{i}] needs a PLU code")
+        code = code.strip()
+        if portal.has_card_number(code):
+            raise ValueError("barcode-map must not include a card number")
+        description = row[1]
+        if not isinstance(description, str):
+            raise ValueError(f"products[{i}] description must be a string")
+        description = description.strip()
+        if len(description) > 500:
+            raise ValueError(f"products[{i}] description is too long")
+        if description and portal.has_card_number(description):
+            raise ValueError("barcode-map must not include a card number")
+        barcodes = _clean_map_barcodes(row[2], f"products[{i}]")
+        if code not in chosen:
+            order.append(code)
+        chosen[code] = [code, description, barcodes]
+    clean = [chosen[code] for code in order]
+    barcode_count = 0
+    for row in clean:
+        barcode_count += len(_barcode_tokens(row[2]))
+    as_of = portal.need_date(data.get("asOf") or portal.today().isoformat(), "asOf")
+    portal.parity().save_blob(c, "barcode-map", as_of, {"asOf": as_of, "products": clean})
+    portal.meta_set(c, "barcode-map", {"asOf": as_of, "products": len(clean), "barcodes": barcode_count})
+    return {"asOf": as_of, "products": len(clean), "barcodes": barcode_count}
+
+
 def save_count(c, user, form):
     code = _clean_code(form.get("code"))
     catalog = catalog_index(c)
     item = portal.one(c.execute("SELECT * FROM portal_stock_items WHERE code=?", (code,)))
-    if catalog and code not in catalog and not (item and item["manual"]):
+    if catalog and code not in catalog and not (item and item["manual"]) and code not in _barcode_map_products(c):
         raise ValueError("Choose a product from the catalog.")
     if item and not item["active"]:
         c.execute(
@@ -359,7 +439,7 @@ def edit_manual(c, user, form):
 def untrack(c, user, form):
     code = _clean_code(form.get("code"))
     item = portal.one(c.execute("SELECT * FROM portal_stock_items WHERE code=?", (code,)))
-    catalog = catalog_index(c).get(code) or {}
+    catalog = catalog_index(c).get(code) or _barcode_map_products(c).get(code) or {}
     when = portal.stamp()
     name = (item["name"] if item else "") or catalog.get("name") or code
     if item:
@@ -474,7 +554,7 @@ def _barcode_tokens(value):
     text = value.strip()
     if not text:
         return []
-    return [part.strip() for part in re.split(r"[,;|]+", text) if part.strip()]
+    return [part.strip() for part in re.split(r"[\s,;|]+", text) if part.strip()]
 
 
 def _remember_barcode(found, token, code, source):
@@ -515,6 +595,47 @@ def _retail_products(c):
     return out
 
 
+def _barcode_field(value):
+    if isinstance(value, list):
+        return ",".join(_barcode_tokens(value))
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _barcode_map_products(c):
+    """Full PLU list from the barcode-map upload. Empty when that dataset has not arrived."""
+    data = portal.parity().load_blob(c, "barcode-map")
+    out = {}
+    if not data or not isinstance(data.get("products"), list):
+        return out
+    for raw in data["products"]:
+        if not isinstance(raw, list) or len(raw) < 2:
+            continue
+        code = raw[0]
+        if isinstance(code, bool) or code is None:
+            continue
+        if isinstance(code, int):
+            code = str(code)
+        elif isinstance(code, str):
+            code = code.strip()
+        else:
+            continue
+        if not code:
+            continue
+        description = raw[1] if isinstance(raw[1], str) else ""
+        description = description.strip()
+        barcodes = _barcode_field(raw[2] if len(raw) > 2 else "")
+        out[code] = {
+            "code": code,
+            "name": description or code,
+            "group": "",
+            "department": "",
+            "barcode": barcodes,
+        }
+    return out
+
+
 def _known_product(c, code, catalog=None):
     catalog = catalog_index(c) if catalog is None else catalog
     info = catalog.get(code)
@@ -532,11 +653,14 @@ def _known_product(c, code, catalog=None):
             "department": "",
             "barcode": item["barcode"] or "",
         }
+    mapped = _barcode_map_products(c).get(code)
+    if mapped:
+        return mapped
     return None
 
 
 def barcode_catalog(c):
-    """Till barcodes already on a product. Owner links are applied separately and win."""
+    """Till barcodes already on a product. The full barcode map is last. Owner links win."""
     found = {}
     for code, info in catalog_index(c).items():
         for token in _barcode_tokens(info.get("barcode")):
@@ -547,6 +671,9 @@ def barcode_catalog(c):
     for code, item in _items(c).items():
         for token in _barcode_tokens(item["barcode"]):
             _remember_barcode(found, token, code, "manual")
+    for code, info in _barcode_map_products(c).items():
+        for token in _barcode_tokens(info.get("barcode")):
+            _remember_barcode(found, token, code, "barcode-map")
     return found
 
 
@@ -813,6 +940,7 @@ def page_stock(c, user, query, error=""):
             )
     hidden_link = f'<input type="hidden" name="link" value="{portal.h(pending)}">' if pending else ""
     stored = _items(c)
+    mapped = _barcode_map_products(c)
     editing = stored.get((query.get("edit") or "").strip()) if query.get("edit") else None
     edit_html = ""
     if editing and editing["manual"]:
@@ -836,7 +964,7 @@ def page_stock(c, user, query, error=""):
     for row in portal.rows(c.execute(
         "SELECT * FROM portal_stock_counts ORDER BY id DESC LIMIT 40"
     )):
-        info = catalog.get(row["code"]) or {}
+        info = catalog.get(row["code"]) or mapped.get(row["code"]) or {}
         item = stored.get(row["code"]) or {}
         name = (item.get("name") if item else "") or info.get("name") or row["code"]
         history.append(

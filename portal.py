@@ -4,7 +4,7 @@ Separate from the staff PIN. Pages and JSON under /portal and /api/portal requir
 session cookie, except the login page and the bearer-key ingest/hours endpoints.
 The portal never takes payment and never posts payroll.
 """
-import csv, hashlib, hmac, io, json, os, re, secrets
+import csv, gzip, hashlib, hmac, io, json, os, re, secrets, zlib
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse
 DATASETS = (
     "sales", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices",
     "product-search", "retail-pricing", "till-price-changes", "shifts", "last-year", "cost-overrides",
-    "stock-movements", "online-orders", "shift-exceptions",
+    "stock-movements", "online-orders", "shift-exceptions", "barcode-map",
 )
 INGEST_MAX = 8_000_000
 FORM_MAX = 100_000
@@ -707,6 +707,18 @@ def read_limited(handler, limit):
     return handler.rfile.read(n) if n else b""
 
 
+def _gunzip_limited(raw, limit):
+    """Decompress one gzip body, stopping once it would pass the ingest limit."""
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(raw)) as gz:
+            out = gz.read(limit + 1)
+    except (OSError, EOFError, zlib.error):
+        raise ValueError("bad gzip")
+    if len(out) > limit:
+        raise OverflowError("too large")
+    return out
+
+
 def read_form(handler, limit=FORM_MAX):
     raw = read_limited(handler, limit)
     ctype = (handler.headers.get("Content-Type") or "").split(";")[0].strip().lower()
@@ -1291,6 +1303,7 @@ APPLIERS = {
     "last-year": lambda c, data: parity().apply_last_year(c, data),
     "cost-overrides": lambda c, data: parity().apply_cost_overrides(c, data),
     "stock-movements": lambda c, data: stock().apply_stock_movements(c, data),
+    "barcode-map": lambda c, data: stock().apply_barcode_map(c, data),
     "online-orders": apply_online_orders,
     "shift-exceptions": lambda c, data: exceptions().apply_shift_exceptions(c, data),
 }
@@ -3382,10 +3395,29 @@ def handle_ingest(handler):
     _ingest_hits[ip] = hits
     try:
         raw = read_limited(handler, INGEST_MAX)
-        body = json.loads(raw.decode("utf-8") or "{}")
     except OverflowError:
         handler.send(413, {"error": "payload too large"})
         return
+    except ValueError:
+        log("ingest rejected: bad json")
+        handler.send(400, {"error": "body must be JSON"})
+        return
+    encoding = (handler.headers.get("Content-Encoding") or "").strip().lower()
+    if encoding == "gzip":
+        try:
+            raw = _gunzip_limited(raw, INGEST_MAX)
+        except OverflowError:
+            handler.send(413, {"error": "payload too large"})
+            return
+        except ValueError:
+            log("ingest rejected: bad gzip")
+            handler.send(400, {"error": "body must be gzip-compressed JSON"})
+            return
+    elif encoding and encoding != "identity":
+        handler.send(400, {"error": "content encoding must be gzip or identity"})
+        return
+    try:
+        body = json.loads(raw.decode("utf-8") or "{}")
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
         log("ingest rejected: bad json")
         handler.send(400, {"error": "body must be JSON"})

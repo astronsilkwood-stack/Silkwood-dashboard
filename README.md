@@ -68,7 +68,9 @@ Content-Type: application/json
 {"dataset": "<name>", "data": { ... }}
 ```
 
-`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`, `shift-exceptions`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept.
+`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`, `shift-exceptions`, `barcode-map`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept.
+
+The body limit is 8,000,000 bytes. Send plain JSON, or gzip it and set `Content-Encoding: gzip`. The limit applies to the bytes on the wire and again to the JSON after gzip is decompressed. A barcode map of about 4,400 PLUs is about 400KB of JSON and fits either way.
 
 No new environment variable is required for these pages.
 
@@ -164,11 +166,25 @@ The JSON has `timezone`, `baselineRule`, and `products[]` (`code`, `name`, `grou
 
 **Barcodes.** Stock on hand has a Scan button. Chrome uses the browser BarcodeDetector API. Safari loads `/static/zxing.js` (ZXing, vendored, no CDN). A match opens that product so the count can be typed and saved. Search by name, PLU or barcode is unchanged. Keep camera open counts several items without closing the camera. The camera stops when the scanner is closed.
 
-A barcode is matched in this order: a link saved in the portal (`portal_product_barcodes`, many per product), then the till catalog. Catalog barcodes come from `product-search` product tuples `[code, name, refIndex, barcode, sellCents, costExCents, flag, packedDaily]` and, if that field is empty, the `barcodes` column on `retail-pricing`. Several barcodes can be comma, semicolon or pipe separated in that same field. A manual product's single barcode field is used as well. A value shorter than 4 characters is ignored. A value shorter than 8 characters that is the same as the PLU is ignored, so fuel rows that copy `"2"`, `"3"` or `"5"` into the barcode slot do not scan as unleaded. UPC-A and the same code with a leading zero (EAN-13) match each other. A checked UPC-E expands to UPC-A.
+A barcode is matched in this order: a link saved in the portal (`portal_product_barcodes`, many per product), then `product-search`, then the `barcodes` column on `retail-pricing`, then a manual product's barcode, then `barcode-map`. The earlier source wins when the same barcode is in more than one place. Catalog barcodes come from `product-search` product tuples `[code, name, refIndex, barcode, sellCents, costExCents, flag, packedDaily]`. Several barcodes can be separated by whitespace, commas, semicolons or pipes in that same field. A value shorter than 4 characters is ignored. A value shorter than 8 characters that is the same as the PLU is ignored, so fuel rows that copy `"2"`, `"3"` or `"5"` into the barcode slot do not scan as unleaded. UPC-A and the same code with a leading zero (EAN-13) match each other. A checked UPC-E expands to UPC-A. The same rules apply to barcodes in `barcode-map`.
 
 In the current sample, Arnott's Shapes is EAN-13 `9310072028866`, the bacon muffin barcode is empty, and miscellaneous uses a short code `2901`. An unknown scan shows "Barcode not linked". The owner picks the product and the portal stores the link. The next scan works on any device. Linking does not change stock movements or on-hand.
 
-Nightly push: put the SwiftPOS shelf barcode in the existing `barcode` field (and `barcodes` on retail-pricing), not a copy of the PLU. Join extra barcodes for the same product with commas. Leave the field empty when SwiftPOS has none; the owner links it once on the phone. No new dataset and no new environment variable. Do not send card numbers. A 13-digit value is treated as EAN-13.
+`product-search` and `retail-pricing` only carry products that have sold recently. A scan of anything else needs the full list:
+
+**barcode-map** — every PLU and its shelf barcodes. Each upload replaces the whole map. No new environment variable. A product that appears only here can still take an opening count.
+
+```json
+{"dataset":"barcode-map","data":{"asOf":"2026-11-12","products":[
+  ["10000","ARNOTTS SHAPES BARBECUE 175G","9310072028866"],
+  ["77001","SHELF ONLY SOAP","9305555555551,9305555555558"],
+  ["77002","LIST JOINED CHIPS",["9305555555572","9305555555589"]]
+]}}
+```
+
+`asOf` is optional (`YYYY-MM-DD`). If it is omitted, the portal uses today's date in Australia/Brisbane. `products` is a list of `[code, description, barcodes]`. `code` is the PLU. Send it as a string so a leading zero is kept; a JSON number is accepted and stored as text. `description` is a string. `barcodes` is a comma-separated string or a list of EAN/UPC barcodes. Spaces, commas, semicolons and pipes all separate barcodes in a string. Send each barcode as a string so a leading zero is kept. A 13-digit value is EAN-13, not a card number. An empty `products` list clears the map. A `200` body is `{"ok":true,"dataset":"barcode-map","asOf":"2026-11-12","products":4400,"barcodes":5100}`. `products` is the number of PLUs stored after a repeated code keeps the last row. `barcodes` is how many barcode tokens were stored.
+
+Nightly push: put the SwiftPOS shelf barcode on `barcode-map` for the whole catalog, and also in the existing `barcode` field (and `barcodes` on retail-pricing) for products that have sold. Do not copy the PLU into the barcode slot. Join extra barcodes for the same product with commas. Do not send card numbers.
 
 **online-orders** — Bopple pickup orders paid online (Stripe via Bopple). These are extra sales. They are not rung through the till. The portal adds `daily[].total` (gross) on top of till sales for day, month-to-date, and overview totals, and still shows Till, Online (Bopple), and Total separately. Shop GP is till GP only; online orders have no cost. A sample is `tools/fixtures/online-orders.json`.
 

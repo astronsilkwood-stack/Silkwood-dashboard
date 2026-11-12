@@ -1,5 +1,5 @@
 """Owner portal: login, ingest, pages, invoices, and staff hours. Uses a temp SQLite file."""
-import http.client, http.server, json, os, re, sys, tempfile, threading, unittest
+import gzip, http.client, http.server, json, os, re, sys, tempfile, threading, unittest
 from datetime import datetime, date
 from pathlib import Path
 from urllib.parse import urlencode
@@ -1522,6 +1522,243 @@ class PortalTest(unittest.TestCase):
             portal._ingest_hits.clear()
             self.ingest("product-search", load("product-search.json"))
             self.ingest("retail-pricing", load("retail-pricing.json"))
+
+    def test_barcode_map_ingest_and_scan(self):
+        import portal_stock
+        portal._ingest_hits.clear()
+        self.assertEqual(
+            portal_stock._barcode_tokens("9305555555558 9305555555565"),
+            ["9305555555558", "9305555555565"],
+        )
+        self.assertEqual(portal_stock._barcode_tokens("111, 222\t333|444"), ["111", "222", "333", "444"])
+
+        denied = self.ingest("barcode-map", {
+            "products": [["77001", "SHELF ONLY SOAP", "9305555555551"]],
+        }, key="nope")
+        self.assertEqual(denied[0], 401)
+
+        self.login()
+        archive = load("product-search.json")
+        self.assertFalse(any(str(row[0]) == "77001" for row in archive["products"]))
+        self.assertEqual(self.ingest("product-search", archive)[0], 200)
+        self.assertEqual(self.authed("GET", "/api/portal/stock/barcode?barcode=9305555555551")[0], 404)
+
+        shaped = self.ingest("barcode-map", {"rows": []})
+        self.assertEqual(shaped[0], 400)
+        self.assertIn(b"products", shaped[2])
+
+        products = [
+            ["77001", "FIRST", "9305555555551"],
+            ["77001", "SHELF ONLY SOAP", "9305555555551"],
+            ["77003", "SPACE JOINED BISCUIT", "9305555555558 9305555555565"],
+            ["77004", "LIST JOINED CHIPS", ["9305555555572", "9305555555589"]],
+            ["77005", "UPC MAP CHOCOLATE", "012345000065"],
+            ["77099", "SHOULD NOT WIN", "9310072028866"],
+            ["77006", "LINK LOSER", "9900000000082"],
+            ["77008", "COMMA JOINED MINT", "9305555555626,9305555555633"],
+            [88001, "NUMBER PLU", "9305555555640"],
+        ]
+        code, _, raw, _ = self.ingest("barcode-map", {"products": products})
+        self.assertEqual(code, 200, raw[:300])
+        body = json.loads(raw)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["dataset"], "barcode-map")
+        self.assertEqual(body["asOf"], "2026-11-11")
+        self.assertEqual(body["products"], 8)
+        self.assertEqual(body["barcodes"], 11)
+        notes = self.authed("GET", "/portal/notes")[2].decode()
+        self.assertIn("Barcode map: 2026-11-11", notes)
+
+        def lookup(barcode):
+            status, _, payload, _ = self.authed("GET", "/api/portal/stock/barcode?barcode=" + barcode)
+            return status, json.loads(payload)
+
+        status, hit = lookup("9305555555551")
+        self.assertEqual(status, 200, hit)
+        self.assertTrue(hit["ok"])
+        self.assertEqual(hit["code"], "77001")
+        self.assertEqual(hit["name"], "SHELF ONLY SOAP")
+        self.assertEqual(hit["source"], "barcode-map")
+        self.assertFalse(hit["tracked"])
+        self.assertIsNone(hit["onHand"])
+
+        for barcode in ("9305555555558", "9305555555565"):
+            status, hit = lookup(barcode)
+            self.assertEqual(status, 200, hit)
+            self.assertEqual(hit["code"], "77003", barcode)
+            self.assertEqual(hit["source"], "barcode-map", barcode)
+        for barcode in ("9305555555572", "9305555555589"):
+            status, hit = lookup(barcode)
+            self.assertEqual(hit["code"], "77004", barcode)
+            self.assertEqual(hit["source"], "barcode-map", barcode)
+        for barcode in ("9305555555626", "9305555555633"):
+            status, hit = lookup(barcode)
+            self.assertEqual(hit["code"], "77008", barcode)
+        status, numbered = lookup("9305555555640")
+        self.assertEqual(status, 200, numbered)
+        self.assertEqual(numbered["code"], "88001")
+        self.assertEqual(numbered["name"], "NUMBER PLU")
+
+        c = server.db()
+        c.execute(
+            "DELETE FROM portal_product_barcodes WHERE barcode IN ('012345000065','0012345000065','01234565')"
+        )
+        c.commit()
+        c.close()
+        for barcode in ("01234565", "0012345000065", "012345000065"):
+            status, hit = lookup(barcode)
+            self.assertEqual(status, 200, hit)
+            self.assertEqual(hit["code"], "77005", barcode)
+            self.assertEqual(hit["source"], "barcode-map", barcode)
+            self.assertEqual(hit["name"], "UPC MAP CHOCOLATE", barcode)
+
+        status, catalog_hit = lookup("9310072028866")
+        self.assertEqual(status, 200, catalog_hit)
+        self.assertEqual(catalog_hit["code"], "10000")
+        self.assertEqual(catalog_hit["source"], "catalog")
+        self.assertIn("ARNOTTS", catalog_hit["name"])
+
+        page = self.authed("GET", "/portal/stock")[2].decode()
+        token = self.csrf_from(page)
+        raw_link = json.dumps({"barcode": "9900000000082", "code": "804040"}).encode()
+        linked = self.request("POST", "/api/portal/stock/barcode", raw_link, {
+            "Content-Type": "application/json",
+            "Content-Length": str(len(raw_link)),
+            "X-CSRF-Token": token,
+        }, self.jar)
+        self.assertEqual(linked[0], 200, linked[2])
+        status, link_hit = lookup("9900000000082")
+        self.assertEqual(status, 200, link_hit)
+        self.assertEqual(link_hit["code"], "804040")
+        self.assertEqual(link_hit["source"], "link")
+        self.assertIn("BACON", link_hit["name"])
+        self.assertEqual(lookup("9305555555551")[1]["source"], "barcode-map")
+
+        pick = self.authed("GET", "/portal/stock?pick=77001")[2].decode()
+        self.assertIn('id="stock-pick">SHELF ONLY SOAP', pick)
+        self.assertIn('name="code" value="77001"', pick)
+        missing = self.authed("POST", "/portal/stock", urlencode({
+            "csrf": self.csrf_from(pick), "action": "set_count", "code": "NO-SUCH",
+            "qty": "1", "baseline_date": "2026-11-10", "baseline_time": "18:30",
+        }))
+        self.assertEqual(missing[0], 400)
+        self.assertIn("Choose a product from the catalog.", missing[2].decode())
+        saved = self.authed("POST", "/portal/stock", urlencode({
+            "csrf": self.csrf_from(pick), "action": "set_count", "code": "77001",
+            "qty": "6", "baseline_date": "2026-11-10", "baseline_time": "18:30", "note": "scanned",
+        }))
+        self.assertEqual(saved[0], 302, saved[1])
+        self.assertEqual(saved[1].get("Location"), "/portal/stock?ok=1")
+        page = self.authed("GET", "/portal/stock")[2].decode()
+        row = page.split('id="stock-77001"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("SHELF ONLY SOAP", row)
+        self.assertIn(">6<", row)
+        self.assertIn("SHELF ONLY SOAP", page.split('id="stock-history"', 1)[1])
+        status, counted = lookup("9305555555551")
+        self.assertEqual(counted["tracked"], True)
+        self.assertEqual(counted["onHand"], 6)
+        payload = json.loads(self.request(
+            "GET", "/api/portal/stock", headers={"Authorization": "Bearer test-ingest-key"},
+        )[2])
+        item = next(row for row in payload["products"] if row["code"] == "77001")
+        self.assertEqual(item["name"], "SHELF ONLY SOAP")
+        self.assertEqual(item["onHand"], 6)
+        self.assertEqual(item["openingQty"], 6)
+        self.assertEqual(item["soldSince"], 0)
+        self.assertEqual(item["receivedSince"], 0)
+        self.assertFalse(item["manual"])
+        c = server.db()
+        moves = c.execute("SELECT COUNT(*) AS n FROM portal_stock_movements WHERE code='77001'").fetchone()["n"]
+        c.close()
+        self.assertEqual(moves, 0)
+
+        rejected = self.ingest("barcode-map", {"products": [["77001", 5, "9305555555551"]]})
+        self.assertEqual(rejected[0], 400)
+        pan = "4111111111111111"
+        rejected = self.ingest("barcode-map", {"products": [["77001", pan + " soap", "9305555555551"]]})
+        self.assertEqual(rejected[0], 400)
+        self.assertNotIn(pan.encode(), rejected[2])
+        rejected = self.ingest("barcode-map", {"products": [["77001", "SHELF ONLY SOAP", pan]]})
+        self.assertEqual(rejected[0], 400)
+        self.assertNotIn(pan.encode(), rejected[2])
+        self.assertEqual(lookup("9305555555551")[1]["code"], "77001")
+
+        plain = json.dumps({"dataset": "barcode-map", "data": {"products": products}}).encode()
+        bad_gzip = self.request("POST", "/api/portal/ingest", b"not-gzip", {
+            "Content-Type": "application/json",
+            "Content-Encoding": "gzip",
+            "Authorization": "Bearer test-ingest-key",
+            "Content-Length": "8",
+        })
+        self.assertEqual(bad_gzip[0], 400)
+        self.assertIn(b"gzip", bad_gzip[2])
+        deflate = self.request("POST", "/api/portal/ingest", plain, {
+            "Content-Type": "application/json",
+            "Content-Encoding": "deflate",
+            "Authorization": "Bearer test-ingest-key",
+            "Content-Length": str(len(plain)),
+        })
+        self.assertEqual(deflate[0], 400)
+        self.assertIn(b"gzip", deflate[2])
+        self.assertEqual(lookup("9305555555551")[1]["name"], "SHELF ONLY SOAP")
+
+        bulk = []
+        for i in range(4400):
+            bulk.append([f"9{i:05d}", f"BULK ITEM {i}", f"98{i:011d}"])
+        packed = json.dumps({
+            "dataset": "barcode-map",
+            "data": {"asOf": "2026-11-12", "products": bulk},
+        }).encode()
+        self.assertGreater(len(packed), 100_000)
+        self.assertLess(len(packed), portal.INGEST_MAX)
+        wire = gzip.compress(packed)
+        self.assertLess(len(wire), len(packed))
+        status, _, raw, _ = self.request("POST", "/api/portal/ingest", wire, {
+            "Content-Type": "application/json",
+            "Content-Encoding": "gzip",
+            "Authorization": "Bearer test-ingest-key",
+            "Content-Length": str(len(wire)),
+        })
+        self.assertEqual(status, 200, raw[:300])
+        replaced = json.loads(raw)
+        self.assertEqual(replaced["products"], 4400)
+        self.assertEqual(replaced["barcodes"], 4400)
+        self.assertEqual(replaced["asOf"], "2026-11-12")
+        self.assertEqual(lookup("9305555555551")[0], 404)
+        status, first = lookup("9800000000000")
+        self.assertEqual(status, 200, first)
+        self.assertEqual(first["code"], "900000")
+        self.assertEqual(first["name"], "BULK ITEM 0")
+        self.assertEqual(first["source"], "barcode-map")
+        status, last = lookup(f"98{4399:011d}")
+        self.assertEqual(status, 200, last)
+        self.assertEqual(last["code"], "904399")
+        self.assertEqual(lookup("9310072028866")[1]["source"], "catalog")
+        payload = json.loads(self.request(
+            "GET", "/api/portal/stock", headers={"Authorization": "Bearer test-ingest-key"},
+        )[2])
+        kept = next(row for row in payload["products"] if row["code"] == "77001")
+        self.assertEqual(kept["onHand"], 6)
+        self.assertEqual(kept["soldSince"], 0)
+
+    def tearDown(self):
+        # The barcode-map test is the only one that writes this dataset. Clearing it here
+        # keeps a failed assertion from leaking barcodes into later cases.
+        c = server.db()
+        try:
+            codes = ("77001", "77003", "77004", "77005", "77006", "77008", "77099", "88001")
+            marks = ",".join("?" for _ in codes)
+            c.execute("DELETE FROM portal_blobs WHERE dataset='barcode-map'")
+            c.execute("DELETE FROM portal_meta WHERE k='barcode-map'")
+            c.execute(f"DELETE FROM portal_stock_counts WHERE code IN ({marks})", codes)
+            c.execute(f"DELETE FROM portal_stock_audit WHERE code IN ({marks})", codes)
+            c.execute(f"DELETE FROM portal_stock_items WHERE code IN ({marks})", codes)
+            c.execute(
+                "DELETE FROM portal_product_barcodes WHERE barcode IN ('9900000000082','012345000065','0012345000065','01234565')"
+            )
+            c.commit()
+        finally:
+            c.close()
 
 
 if __name__ == "__main__":
