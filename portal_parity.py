@@ -2270,6 +2270,7 @@ def page_notes(c):
     for key, label in (
         ("online-orders", "Online orders"),
         ("shift-exceptions", "Till exceptions"),
+        ("barcode-map", "Barcode map"),
         ("product-search", "Product archive"),
         ("retail-pricing", "Retail pricing"),
         ("till-price-changes", "Till price changes"),
