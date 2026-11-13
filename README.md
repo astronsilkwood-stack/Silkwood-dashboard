@@ -68,7 +68,7 @@ Content-Type: application/json
 {"dataset": "<name>", "data": { ... }}
 ```
 
-`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`, `shift-exceptions`, `barcode-map`, `last-year-monthly`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept.
+`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`, `shift-exceptions`, `barcode-map`, `last-year-monthly`, `pay-rates`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept. `pay-rates` is the exception: re-posting replaces the whole list.
 
 The body limit is 8,000,000 bytes. Send plain JSON, or gzip it and set `Content-Encoding: gzip`. The limit applies to the bytes on the wire and again to the JSON after gzip is decompressed. A barcode map of about 4,400 PLUs is about 400KB of JSON and fits either way.
 
@@ -301,6 +301,18 @@ Authorization: Bearer <PORTAL_INGEST_KEY>
 
 Replies are shown as plain text with bold markers only. Raw HTML is escaped. `OPENAI_API_KEY` is not read.
 
+**pay-rates** — hourly rates for employees on Staff hours. Owner-only. The logged-in Staff hours and Overview pages use them. They are not in `GET /api/portal/staff-hours`, the hours CSV, or any page that does not require the owner session. Re-posting replaces the whole list. An employee left out of the new list no longer has a rate. Names match the Staff hours names with case and extra spaces ignored.
+
+Example only, not a real pay rate:
+
+```json
+{"dataset":"pay-rates","data":{"asOf":"2026-11-11","employees":[
+  {"name":"Alex","ordinary":32.00,"saturday":48.00,"sunday":64.00,"publicHoliday":80.00,"superRate":0.12}
+]}}
+```
+
+`asOf` is optional (`YYYY-MM-DD`). If it is omitted, the portal uses today in Australia/Brisbane. `employees` may be empty, which clears every rate. Each employee needs `name`, `ordinary` (Mon–Fri, when the day is not a public holiday), `saturday`, `sunday`, `publicHoliday`, and `superRate`. Rates are dollars per hour, from 0 to 1000. `superRate` is a fraction from 0 to 1. `0.12` is the 12% super guarantee. Do not send `12` for 12%. The rate follows the day the shift started. A Queensland public holiday uses `publicHoliday`, including when it falls on a weekend. Christmas Eve uses `publicHoliday` only when the shift starts at or after 6pm. Anyone with hours and no matching name is shown as “No rate yet” and left out of the wage totals. A `200` body is `{"ok":true,"dataset":"pay-rates","asOf":"2026-11-11","employees":1}`.
+
 ### Staff hours read
 
 The portal page is `/portal/hours` (Monday–Sunday week, Brisbane). The box can read the same week without a browser session:
@@ -310,7 +322,7 @@ GET /api/portal/staff-hours?week=2026-11-09
 Authorization: Bearer <PORTAL_INGEST_KEY>
 ```
 
-`week` is any date in the week; the response uses that week's Monday. The JSON has `timezone`, `week`, `weekEnding`, `days` (weekend and Queensland public holiday flags), `people` (daily hours, shift start/finish/break/notes), `grandTotal`, and a note that nothing is sent to Xero. CSV for the pay run is downloaded from the page while logged in. The portal does not create or post a pay run.
+`week` is any date in the week; the response uses that week's Monday. The JSON has `timezone`, `week`, `weekEnding`, `days` (weekend and Queensland public holiday flags), `people` (daily hours, shift start/finish/break/notes), `grandTotal`, and a note that nothing is sent to Xero. It does not include pay rates, wage costs, or contract entries. CSV for the pay run is downloaded from the page while logged in and is the same employee hours only. Contract hours are entered on the page (a name, a date, hours and an hourly rate, or a flat amount). The hourly rate is saved for that contractor. Contract costs have no super. They are in the on-screen wage bill and in wages vs sales, and they are not in this feed or the CSV. The portal does not create or post a pay run.
 
 ### Local look at the attached data
 

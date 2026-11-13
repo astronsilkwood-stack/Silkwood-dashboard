@@ -2,7 +2,8 @@
 
 Separate from the staff PIN. Pages and JSON under /portal and /api/portal require a
 session cookie, except the login page and the bearer-key ingest/hours endpoints.
-The portal never takes payment and never posts payroll.
+The portal never takes payment and never posts payroll. Pay rates and contract
+costs are shown only on the logged-in pages. They are not in the staff-hours feed.
 """
 import csv, gzip, hashlib, hmac, io, json, os, re, secrets, zlib
 from datetime import date, datetime, timedelta
@@ -14,6 +15,7 @@ DATASETS = (
     "sales", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices",
     "product-search", "retail-pricing", "till-price-changes", "shifts", "last-year", "cost-overrides",
     "stock-movements", "online-orders", "shift-exceptions", "barcode-map", "last-year-monthly",
+    "pay-rates",
 )
 INGEST_MAX = 8_000_000
 FORM_MAX = 100_000
@@ -181,6 +183,14 @@ CREATE INDEX IF NOT EXISTS ix_portal_shift_exceptions_date ON portal_shift_excep
 CREATE TABLE IF NOT EXISTS portal_ly_monthly(
   month TEXT PRIMARY KEY, shop_sales_inc REAL, food_sales_inc REAL, fuel_litres REAL,
   source TEXT, note TEXT, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS portal_contractors(
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, hourly_rate REAL,
+  active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS portal_contract_entries(
+  id INTEGER PRIMARY KEY, contractor_id INTEGER NOT NULL, work_date TEXT NOT NULL,
+  hours REAL, hourly_rate REAL, flat_amount REAL, cost REAL NOT NULL, notes TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, created_by TEXT NOT NULL, updated_by TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_portal_contract_date ON portal_contract_entries(work_date);
 """
 
 
@@ -1370,6 +1380,59 @@ def apply_last_year_monthly(c, data):
     return {"asOf": as_of, "months": len(ordered)}
 
 
+def apply_pay_rates(c, data):
+    """Replace the owner pay-rate list. Re-posting replaces every employee."""
+    if not isinstance(data, dict):
+        raise ValueError("pay-rates data must be an object")
+    reject_sensitive(data, "pay-rates")
+    employees = data.get("employees")
+    if not isinstance(employees, list):
+        raise ValueError("pay-rates data needs an employees list")
+    if len(employees) > 200:
+        raise ValueError("pay-rates has too many employees")
+    as_of = need_date(data.get("asOf") or today().isoformat(), "asOf")
+    clean = []
+    seen = set()
+    fields = (
+        ("ordinary", "ordinary"),
+        ("saturday", "saturday"),
+        ("sunday", "sunday"),
+        ("publicHoliday", "publicHoliday"),
+    )
+    for i, row in enumerate(employees):
+        if not isinstance(row, dict):
+            raise ValueError(f"employees[{i}] must be an object")
+        raw_name = row.get("name")
+        try:
+            name = clean_name(raw_name if isinstance(raw_name, str) else "")
+        except ValueError:
+            raise ValueError(f"employees[{i}] needs a name")
+        reject_sensitive(name, "pay-rates")
+        key = rate_key(name)
+        if key in seen:
+            raise ValueError(f"employees[{i}] repeats a name")
+        seen.add(key)
+        rates = {"name": name}
+        for field, label in fields:
+            amount = num(row.get(field), label)
+            q = _cents(amount)
+            if q < 0 or q > 1000:
+                raise ValueError(f"{label} must be from 0 to 1000")
+            rates[field] = format(q, "f")
+        if "superRate" not in row or row.get("superRate") in (None, ""):
+            raise ValueError("superRate is required, as a fraction such as 0.12 for 12% super")
+        super_rate = Decimal(str(num(row.get("superRate"), "superRate"))).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        if super_rate < 0 or super_rate > 1:
+            raise ValueError("superRate is a fraction from 0 to 1, such as 0.12 for 12% super")
+        rates["superRate"] = format(super_rate, "f")
+        clean.append(rates)
+    payload = {"asOf": as_of, "employees": clean}
+    parity().save_blob(c, "pay-rates", as_of, payload)
+    meta_set(c, "pay-rates", {"asOf": as_of, "employees": len(clean)})
+    save_snapshot(c, "pay-rates", as_of, payload)
+    return {"asOf": as_of, "employees": len(clean)}
+
+
 APPLIERS = {
     "sales": apply_sales,
     "purchases": apply_purchases,
@@ -1388,6 +1451,7 @@ APPLIERS = {
     "online-orders": apply_online_orders,
     "shift-exceptions": lambda c, data: exceptions().apply_shift_exceptions(c, data),
     "last-year-monthly": apply_last_year_monthly,
+    "pay-rates": apply_pay_rates,
 }
 
 
@@ -1836,6 +1900,297 @@ def hours_csv(payload):
                 "yes" if info.get("weekend") else "no", csv_cell(info.get("publicHoliday") or ""),
             ])
     return buf.getvalue().encode("utf-8")
+
+
+GST_DIVISOR = Decimal("1.1")
+PAY_KIND_LABEL = {
+    "ordinary": "Weekday",
+    "saturday": "Saturday",
+    "sunday": "Sunday",
+    "publicHoliday": "Public holiday",
+}
+
+
+def rate_key(name):
+    return " ".join(str(name or "").split()).casefold()
+
+
+def pay_kind(iso_date, start_time):
+    """Rate band for the day a shift started. A full public holiday wins over the weekend.
+
+    Christmas Eve is listed from 6pm only. A shift that starts at or after 18:00 uses the
+    public holiday rate for the whole shift. An earlier start stays on the weekday rate.
+    """
+    if iso_date in HOLIDAYS:
+        return "publicHoliday"
+    if iso_date in PART_HOLIDAYS and (start_time or "") >= "18:00":
+        return "publicHoliday"
+    weekday = date.fromisoformat(iso_date).weekday()
+    if weekday == 5:
+        return "saturday"
+    if weekday == 6:
+        return "sunday"
+    return "ordinary"
+
+
+def _cents(amount):
+    return Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def shift_wage(hours, rate_row, kind):
+    """Cost of one shift, excl and incl that employee's super rate. Already rounded to cents."""
+    rate = Decimal(str(rate_row[kind]))
+    super_rate = Decimal(str(rate_row["superRate"]))
+    excl = _cents(Decimal(str(hours)) * rate)
+    incl = _cents(excl * (Decimal(1) + super_rate))
+    return {
+        "kind": kind,
+        "kindLabel": PAY_KIND_LABEL[kind],
+        "rate": rate,
+        "superRate": super_rate,
+        "excl": excl,
+        "incl": incl,
+    }
+
+
+def load_rate_index(c):
+    """Name key to rate row, or None when pay-rates has never been stored."""
+    data = parity().load_blob(c, "pay-rates")
+    if not isinstance(data, dict):
+        return None
+    index = {}
+    for row in data.get("employees") or []:
+        if isinstance(row, dict) and row.get("name"):
+            index[rate_key(row["name"])] = row
+    return index
+
+
+def build_wage_view(people, rate_index):
+    """Cost employee shifts. People with hours and no rate are flagged and left out of sums.
+
+    `people` matches week_payload: id, name, and shifts with id, date, start, hours.
+    The staff-hours feed keeps using week_payload and never receives this view.
+    """
+    view_people = []
+    for person in people:
+        rate_row = None if rate_index is None else rate_index.get(rate_key(person["name"]))
+        days = {}
+        shift_costs = {}
+        any_hours = False
+        hours_total = Decimal("0.00")
+        excl = Decimal("0.00")
+        incl = Decimal("0.00")
+        for shift in person.get("shifts") or []:
+            any_hours = True
+            hours = Decimal(str(shift["hours"]))
+            hours_total += hours
+            day = days.setdefault(shift["date"], {
+                "excl": Decimal("0.00"), "incl": Decimal("0.00"), "kinds": set(),
+            })
+            if rate_row is None:
+                shift_costs[shift["id"]] = None
+                day["missing"] = True
+                continue
+            cost = shift_wage(hours, rate_row, pay_kind(shift["date"], shift.get("start") or ""))
+            shift_costs[shift["id"]] = cost
+            day["excl"] += cost["excl"]
+            day["incl"] += cost["incl"]
+            day["kinds"].add(cost["kindLabel"])
+            day["missing"] = False
+            excl += cost["excl"]
+            incl += cost["incl"]
+        missing = any_hours and rate_row is None
+        view_people.append({
+            "id": person["id"],
+            "name": person["name"],
+            "days": days,
+            "shifts": shift_costs,
+            "hours": hours_total,
+            "excl": None if missing or not any_hours else excl,
+            "incl": None if missing or not any_hours else incl,
+            "missing": missing,
+            "superRate": None if rate_row is None else Decimal(str(rate_row["superRate"])),
+        })
+    rated_excl = [p["excl"] for p in view_people if p["excl"] is not None]
+    rated_incl = [p["incl"] for p in view_people if p["incl"] is not None]
+    return {
+        "people": view_people,
+        "rates_loaded": rate_index is not None,
+        "employee_excl": sum(rated_excl, Decimal("0.00")) if rated_excl else None,
+        "employee_incl": sum(rated_incl, Decimal("0.00")) if rated_incl else None,
+        "missing": [p for p in view_people if p["missing"]],
+    }
+
+
+def contract_between(c, start, end):
+    return rows(c.execute(
+        """SELECT e.*, k.name, k.hourly_rate AS saved_rate FROM portal_contract_entries e
+           JOIN portal_contractors k ON k.id=e.contractor_id
+           WHERE e.work_date>=? AND e.work_date<=?
+           ORDER BY lower(k.name), e.work_date, e.id""",
+        (start.isoformat(), end.isoformat()),
+    ))
+
+
+def contractor_directory(c):
+    return rows(c.execute(
+        "SELECT * FROM portal_contractors WHERE active=1 ORDER BY lower(name), id"
+    ))
+
+
+def contractor_by_name(c, name):
+    return one(c.execute(
+        "SELECT * FROM portal_contractors WHERE lower(name)=lower(?) ORDER BY active DESC, id LIMIT 1",
+        (name,),
+    ))
+
+
+def _money_sum(values):
+    if not values:
+        return None
+    return sum(values, Decimal("0.00"))
+
+
+def wage_bill(view, contracts):
+    """Employee totals omit anyone without a rate. Combined adds contract costs, which have no super."""
+    contract_costs = [_cents(row["cost"]) for row in contracts]
+    contract = _money_sum(contract_costs)
+    employee_excl = view["employee_excl"]
+    employee_incl = view["employee_incl"]
+
+    def add(left, right):
+        if left is None and right is None:
+            return None
+        return (left or Decimal("0.00")) + (right or Decimal("0.00"))
+
+    return {
+        "employee_excl": employee_excl,
+        "employee_incl": employee_incl,
+        "contract": contract,
+        "combined_excl": add(employee_excl, contract),
+        "combined_incl": add(employee_incl, contract),
+        "missing": view["missing"],
+        "rates_loaded": view["rates_loaded"],
+        "complete": not view["missing"] and (employee_incl is not None or contract is not None),
+    }
+
+
+def super_pct(rate):
+    pct = (Decimal(str(rate)) * Decimal(100)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return format(pct, "f").rstrip("0").rstrip(".") + "%"
+
+
+def employee_super_label(view):
+    rates = {p["superRate"] for p in view["people"] if p["superRate"] is not None}
+    if len(rates) == 1:
+        return f"incl. {super_pct(rates.pop())} super"
+    return "incl. super"
+
+
+def missing_rate_note(view):
+    if view["missing"] and not view["rates_loaded"]:
+        return "No pay rates yet. Employee hours are shown without a cost. Those hours are not in the wage totals."
+    if not view["missing"]:
+        return ""
+    bits = [f"{person['name']} ({hours_text(person['hours'])} h)" for person in view["missing"]]
+    return f"No rate yet for {', '.join(bits)}. Those hours are not in the employee or combined totals."
+
+
+def till_sales_ex_gst(day_rows):
+    """Estimate ex-GST till sales. Shop and fuel on the daysheet are inc GST, so each is divided by 1.1."""
+    if not day_rows:
+        return None
+    shop = sum((Decimal(str(row["shop"] or 0)) for row in day_rows), Decimal("0"))
+    fuel = sum((Decimal(str(row["fuel"] or 0)) for row in day_rows), Decimal("0"))
+    total = sum((Decimal(str(row["total"] or 0)) for row in day_rows), Decimal("0"))
+    shop_ex = _cents(shop / GST_DIVISOR)
+    fuel_ex = _cents(fuel / GST_DIVISOR)
+    if shop + fuel == 0 and total > 0:
+        total_ex = _cents(total / GST_DIVISOR)
+    else:
+        total_ex = shop_ex + fuel_ex
+    return {
+        "shop_inc": _cents(shop),
+        "fuel_inc": _cents(fuel),
+        "total_inc": _cents(total),
+        "shop_ex": shop_ex,
+        "fuel_ex": fuel_ex,
+        "total_ex": total_ex,
+        "days": len(day_rows),
+    }
+
+
+def wage_ratio(part, whole):
+    if part is None or whole is None or whole <= 0:
+        return None
+    return (Decimal(part) / Decimal(whole) * Decimal(100)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+
+
+def pct_text(value):
+    if value is None:
+        return "—"
+    return f"{format(value, 'f')}%"
+
+
+def _range_people(c, start, end):
+    grouped = {}
+    for shift in roster_between(c, start, end):
+        bucket = grouped.setdefault(shift["person_id"], {
+            "id": shift["person_id"], "name": shift["name"], "shifts": [],
+        })
+        bucket["shifts"].append({
+            "id": shift["id"], "date": shift["work_date"], "start": shift["start_time"], "hours": shift["hours"],
+        })
+    return list(grouped.values())
+
+
+def wages_for_range(c, start, end):
+    contracts = contract_between(c, start, end)
+    view = build_wage_view(_range_people(c, start, end), load_rate_index(c))
+    bill = wage_bill(view, contracts)
+    sales = till_sales_ex_gst(sales_between(c, start, end))
+    wages_incl = bill["combined_incl"] if bill["complete"] else None
+    ratio = wage_ratio(wages_incl, sales["total_ex"] if sales else None)
+    return {"bill": bill, "view": view, "sales": sales, "ratio": ratio, "wages_incl": wages_incl}
+
+
+def _hours_cost_html(hours, count, excl, incl, missing, kind_label=""):
+    if not hours:
+        return "—"
+    shown = hours_text(hours)
+    if count and count > 1:
+        shown += f" ({count})"
+    if missing:
+        extra = '<small class="wage norate">No rate yet</small>'
+    elif excl is None:
+        extra = ""
+    else:
+        kind = f'<small class="wage">{h(kind_label)}</small>' if kind_label else ""
+        extra = (
+            f"{kind}<small class=\"wage\">{money(excl)} excl</small>"
+            f"<small class=\"wage\">{money(incl)} incl</small>"
+        )
+    return f"{h(shown)}{extra}"
+
+
+def _day_kind_label(day_cost):
+    if not day_cost or day_cost.get("missing"):
+        return ""
+    kinds = day_cost.get("kinds") or set()
+    if len(kinds) == 1:
+        return next(iter(kinds))
+    if len(kinds) > 1:
+        return "Mixed"
+    return ""
+
+
+def _shift_cost_text(cost):
+    if cost is None:
+        return "No rate yet"
+    return (
+        f"{cost['kindLabel']} {money(cost['rate'])}/h · "
+        f"{money(cost['excl'])} excl · {money(cost['incl'])} incl super"
+    )
 
 
 def bar_class(percent):
@@ -2360,6 +2715,56 @@ def month_lines_section(c, start, end):
 {source_html}</section>"""
 
 
+def _wage_ratio_card(figure_id, label, window_label, start, end, figure):
+    bill = figure["bill"]
+    sales = figure["sales"]
+    if figure["ratio"] is None:
+        if bill["missing"]:
+            reason = missing_rate_note(bill) or "A pay rate is missing, so this percentage is not shown."
+        elif not bill["complete"]:
+            reason = "No staff hours or contract entries in this period."
+        elif not sales or sales["total_ex"] <= 0:
+            reason = "No till sales loaded for this period."
+        else:
+            reason = "This percentage is not shown."
+        sales_bit = ""
+        if sales and sales["total_ex"] > 0:
+            sales_bit = (
+                f'<p class="mini">Till sales {money(sales["total_inc"])} inc GST, '
+                f'{money(sales["total_ex"])} excl GST. The percentage is left blank.</p>'
+            )
+        return (
+            f'<div class="card stat" id="{figure_id}"><div class="lbl">{h(label)}</div>'
+            f'<b>—</b><span>{h(reason)}</span>'
+            f'<p class="mini">{h(window_label)} · {h(fmt_date(start.isoformat()))} – {h(fmt_date(end.isoformat()))}</p>'
+            f"{sales_bit}</div>"
+        )
+    excl = bill["combined_excl"]
+    return (
+        f'<div class="card stat" id="{figure_id}"><div class="lbl">{h(label)}</div>'
+        f'<b>{pct_text(figure["ratio"])}</b>'
+        f'<span>wages incl. super as % of till sales excl. GST</span>'
+        f'<p class="mini">{h(window_label)} · {h(fmt_date(start.isoformat()))} – {h(fmt_date(end.isoformat()))}. '
+        f'Wages {money(figure["wages_incl"])} incl. super ({money(excl)} excl. super). '
+        f'Till sales {money(sales["total_inc"])} inc GST, {money(sales["total_ex"])} excl GST '
+        f'({sales["days"]} till day{"s" if sales["days"] != 1 else ""}).</p></div>'
+    )
+
+
+def wages_vs_sales_section(c):
+    """Current Brisbane week (Monday through today) and calendar month to date. Ignores the period chips."""
+    end = today()
+    week_start = week_monday(end)
+    month_start = end.replace(day=1)
+    week = wages_for_range(c, week_start, end)
+    month = wages_for_range(c, month_start, end)
+    week_card = _wage_ratio_card("wages-week", "This week", "Monday through today", week_start, end, week)
+    month_card = _wage_ratio_card("wages-month", "Month to date", "First of the month through today", month_start, end, month)
+    return f"""<section class="card" id="wages-vs-sales"><h2>Wages vs sales</h2>
+<p class="help" id="wages-basis">These two figures ignore the date range above. They use the current week and this calendar month, through today, Australia/Brisbane. The percentage is employee wages including super, plus contract costs with no super, divided by till sales excluding GST. Till shop and fuel amounts are stored including GST, so each is divided by 1.1. The portal does not store an ex-GST till total. Online orders are not included. A dash means hours, a pay rate, or till sales are missing. Contractors are included. Nothing here is sent to Xero.</p>
+<div class="grid g2">{week_card}{month_card}</div></section>"""
+
+
 def page_overview(c, query):
     through = data_through(c)
     anchor = anchor_day(c)
@@ -2475,6 +2880,7 @@ def page_overview(c, query):
 <div class="card stat tone-warn" id="missing-cost"><div class="lbl">Products missing cost</div><b>{h(missing if missing is not None else '—')}</b><span>{h(missing_label)}</span></div>
 <div class="card stat tone-avg" id="shop-average"><div class="lbl">Daily shop average</div><b>{money(shop_avg)}</b><span>shop sales inc GST per loaded day</span></div>
 </section>
+{wages_vs_sales_section(c)}
 {month_lines_section(c, start, end)}
 {exceptions().overview_card(c)}
 {insights_box(latest_insight(c))}
@@ -2950,6 +3356,270 @@ ERR_TEXT = {
 }
 
 
+def _amount_value(value):
+    if value is None or value == "":
+        return ""
+    return format(_cents(value), "f")
+
+
+def _stat_pair(element_id, label, primary, primary_note, secondary=None, secondary_note=""):
+    second = ""
+    if secondary is not None or secondary_note:
+        second = f'<b class="substat" id="{element_id}-incl">{money(secondary)}</b><span>{h(secondary_note)}</span>'
+    return (
+        f'<div class="card stat" id="{element_id}"><div class="lbl">{h(label)}</div>'
+        f'<b id="{element_id}-excl">{money(primary)}</b><span>{h(primary_note)}</span>{second}</div>'
+    )
+
+
+def wage_summary_html(view, bill):
+    note = missing_rate_note(view)
+    note_html = f'<p class="callout" id="missing-rates">{h(note)}</p>' if note else ""
+    super_label = employee_super_label(view)
+    employees = _stat_pair(
+        "employee-wages", "Employees", bill["employee_excl"], "excl. super",
+        bill["employee_incl"], super_label,
+    )
+    contractors = (
+        f'<div class="card stat" id="contractor-wages"><div class="lbl">Contractors</div>'
+        f'<b id="contractor-wages-cost">{money(bill["contract"])}</b>'
+        f'<span>no super · <span class="pill">Contract</span></span></div>'
+    )
+    combined = _stat_pair(
+        "combined-wages", "Combined", bill["combined_excl"], "excl. super",
+        bill["combined_incl"], "incl. super on employees only",
+    )
+    return f"""<section class="card" id="wage-bill"><h2>Wage bill</h2>
+<p class="help">Employee costs use the pay-rates upload and the rate for the day the shift started. Saturday, Sunday, and Queensland public holidays use their own rates. A public holiday on a weekend uses the public holiday rate. Christmas Eve uses that rate when the shift starts at or after 6pm. Super is each employee's super rate. Contractors are typed on this page, are not in the pay-rates list, and have no super.</p>
+<div class="grid g3">{employees}{contractors}{combined}</div>
+{note_html}</section>"""
+
+
+def _contract_basis(row):
+    if row["flat_amount"] is not None:
+        recorded = ""
+        if row["hours"] is not None:
+            recorded = f"{hours_text(row['hours'])} h recorded · "
+        return recorded + f"Flat {money(row['flat_amount'])}"
+    return f"{hours_text(row['hours'])} h × {money(row['hourly_rate'])}/h"
+
+
+def contract_section_html(c, user, monday, contracts):
+    directory = contractor_directory(c)
+    rates = {}
+    saved = []
+    for person in directory:
+        if person["hourly_rate"] is None:
+            saved.append(h(person["name"]))
+            continue
+        shown = _amount_value(person["hourly_rate"])
+        rates[rate_key(person["name"])] = shown
+        saved.append(f"{h(person['name'])} {money(person['hourly_rate'])}/h")
+    saved_line = ""
+    if saved:
+        saved_line = f'<p class="help" id="saved-contract-rates">Saved rates: {"; ".join(saved)}. Leave the hourly rate blank to reuse the saved rate. Type a new rate to replace it.</p>'
+    rate_attr = h(json.dumps(rates, ensure_ascii=False))
+    names = "".join(f'<option value="{h(person["name"])}"></option>' for person in directory)
+    rows_html = []
+    for row in contracts:
+        hourly_selected = "" if row["flat_amount"] is not None else " selected"
+        flat_selected = " selected" if row["flat_amount"] is not None else ""
+        rows_html.append(f"""<details class="shift" id="contract-{row['id']}"><summary><span class="pill">Contract</span> {h(row['name'])} · {h(fmt_date(row['work_date']))} · {h(_contract_basis(row))} · {money(row['cost'])} · no super</summary>
+<form method="post" action="/portal/hours">
+<input type="hidden" name="csrf" value="{h(user['csrf'])}"><input type="hidden" name="week" value="{h(monday.isoformat())}">
+<input type="hidden" name="action" value="save_contract"><input type="hidden" name="contract_id" value="{row['id']}">
+<div class="row">
+<label class="f">Contractor<input name="name" maxlength="60" required value="{h(row['name'])}"></label>
+<label class="f">Date<input type="date" name="work_date" value="{h(row['work_date'])}" required></label>
+<label class="f">Cost<select name="pay_style"><option value="hourly"{hourly_selected}>Hours × hourly rate</option><option value="flat"{flat_selected}>Flat amount</option></select></label>
+<label class="f">Hours<input name="hours" inputmode="decimal" value="{h(_amount_value(row['hours']))}"></label>
+<label class="f">Hourly rate<input name="hourly_rate" inputmode="decimal" value="{h(_amount_value(row['hourly_rate'] if row['hourly_rate'] is not None else row['saved_rate']))}"></label>
+<label class="f">Flat amount<input name="flat_amount" inputmode="decimal" value="{h(_amount_value(row['flat_amount']))}"></label>
+</div>
+<label class="f">Notes<input name="notes" maxlength="500" value="{h(row['notes'] or '')}"></label>
+<button class="btn" type="submit">Save changes</button>
+</form>
+<form method="post" action="/portal/hours" data-confirm="Delete this contract entry?">
+<input type="hidden" name="csrf" value="{h(user['csrf'])}"><input type="hidden" name="week" value="{h(monday.isoformat())}">
+<input type="hidden" name="action" value="delete_contract"><input type="hidden" name="contract_id" value="{row['id']}">
+<button class="btn danger" type="submit">Delete</button></form></details>""")
+    listing = "".join(rows_html) or '<p class="empty">No contract entries this week.</p>'
+    return f"""<section class="card" id="contract-hours"><h2>Contract hours</h2>
+<p class="help">For contractors paid outside Xero payroll. No super. These entries are not in the hours CSV or the staff-hours feed, so they are not part of the pay run. They are included in the wage bill on this page and in wages vs sales.</p>
+{saved_line}
+{listing}
+<h3>Add contract hours</h3>
+<form method="post" action="/portal/hours" id="contract-form" data-rates="{rate_attr}">
+<input type="hidden" name="csrf" value="{h(user['csrf'])}"><input type="hidden" name="week" value="{h(monday.isoformat())}"><input type="hidden" name="action" value="save_contract">
+<div class="row">
+<label class="f">Contractor<input name="name" id="contract-name" maxlength="60" required placeholder="e.g. Pat" list="contract-names" autocomplete="off"></label>
+<datalist id="contract-names">{names}</datalist>
+<label class="f">Date<input type="date" name="work_date" value="{h(monday.isoformat())}" required></label>
+<label class="f">Cost<select name="pay_style" id="contract-style"><option value="hourly">Hours × hourly rate</option><option value="flat">Flat amount</option></select></label>
+<label class="f">Hours<input name="hours" id="contract-hours-input" inputmode="decimal" placeholder="e.g. 4"></label>
+<label class="f">Hourly rate<input name="hourly_rate" id="contract-rate" inputmode="decimal" placeholder="Saved rate if blank"></label>
+<label class="f">Flat amount<input name="flat_amount" id="contract-flat" inputmode="decimal" placeholder="Used instead of hours × rate"></label>
+</div>
+<label class="f">Notes<input name="notes" maxlength="500"></label>
+<button class="btn" type="submit">Add contract hours</button>
+</form></section>"""
+
+
+def _work_date_in_range(raw):
+    work_date = need_date(raw, "date")
+    d = date.fromisoformat(work_date)
+    if d < date(2024, 1, 1) or d > today() + timedelta(days=400):
+        raise ValueError("Check the date.")
+    return work_date
+
+
+def _money_input(raw, label, required, lo, hi):
+    text = (raw or "").strip().replace("$", "").replace(",", "")
+    if text == "":
+        if required:
+            raise ValueError(f"Enter the {label}.")
+        return None
+    amount = _cents(num(text, label))
+    if amount < lo or amount > hi:
+        raise ValueError(f"The {label} must be between {lo} and {hi}.")
+    return amount
+
+
+def _hours_input(raw, required):
+    text = (raw or "").strip()
+    if text == "":
+        if required:
+            raise ValueError("Enter the hours.")
+        return None
+    amount = _cents(num(text, "hours"))
+    if amount <= 0 or amount > 24:
+        raise ValueError("Hours must be more than 0 and at most 24 for one date.")
+    return amount
+
+
+def _upsert_contractor(c, name, saved_rate, existing, current):
+    now_s = stamp()
+    rate_f = float(saved_rate) if saved_rate is not None else None
+    if existing and (not current or existing["id"] != current["contractor_id"]):
+        if rate_f is not None:
+            c.execute(
+                "UPDATE portal_contractors SET name=?, hourly_rate=?, active=1, updated_at=? WHERE id=?",
+                (name, rate_f, now_s, existing["id"]),
+            )
+        else:
+            c.execute(
+                "UPDATE portal_contractors SET name=?, active=1, updated_at=? WHERE id=?",
+                (name, now_s, existing["id"]),
+            )
+        return one(c.execute("SELECT * FROM portal_contractors WHERE id=?", (existing["id"],)))
+    if current:
+        if rate_f is not None:
+            c.execute(
+                "UPDATE portal_contractors SET name=?, hourly_rate=?, active=1, updated_at=? WHERE id=?",
+                (name, rate_f, now_s, current["contractor_id"]),
+            )
+        else:
+            c.execute(
+                "UPDATE portal_contractors SET name=?, active=1, updated_at=? WHERE id=?",
+                (name, now_s, current["contractor_id"]),
+            )
+        return one(c.execute("SELECT * FROM portal_contractors WHERE id=?", (current["contractor_id"],)))
+    new_id = one(c.execute(
+        "INSERT INTO portal_contractors(name,hourly_rate,active,created_at,updated_at) VALUES(?,?,1,?,?) RETURNING id",
+        (name, rate_f, now_s, now_s),
+    ))["id"]
+    return one(c.execute("SELECT * FROM portal_contractors WHERE id=?", (new_id,)))
+
+
+def _contract_snapshot(name, work_date, hours, rate, flat, cost):
+    return {
+        "name": name, "date": work_date, "kind": "contract",
+        "hours": float(hours) if hours is not None else None,
+        "rate": float(rate) if rate is not None else None,
+        "flat": float(flat) if flat is not None else None,
+        "cost": float(cost),
+    }
+
+
+def save_contract(c, actor, form):
+    try:
+        name = clean_name(form.get("name") if isinstance(form.get("name"), str) else "")
+    except ValueError:
+        raise ValueError("Enter a contractor name.")
+    reject_sensitive(name, "name")
+    work_date = _work_date_in_range(form.get("work_date"))
+    style = (form.get("pay_style") or "hourly").strip()
+    if style not in ("hourly", "flat"):
+        raise ValueError("Choose hours × rate or a flat amount.")
+    notes = (form.get("notes") or "").strip()[:500]
+    reject_sensitive(notes, "notes")
+    existing = contractor_by_name(c, name)
+    typed_rate = _money_input(form.get("hourly_rate"), "hourly rate", False, Decimal("0.01"), Decimal("1000"))
+    current = None
+    if form.get("contract_id"):
+        current = one(c.execute(
+            """SELECT e.*, k.name FROM portal_contract_entries e
+               JOIN portal_contractors k ON k.id=e.contractor_id WHERE e.id=?""",
+            (form_id(form.get("contract_id")),),
+        ))
+        if not current:
+            raise ValueError("That contract entry was not found.")
+    if style == "hourly":
+        hours = _hours_input(form.get("hours"), True)
+        rate = typed_rate
+        if rate is None and existing and existing["hourly_rate"] is not None:
+            rate = _cents(existing["hourly_rate"])
+        if rate is None and current and current["hourly_rate"] is not None and rate_key(current["name"]) == rate_key(name):
+            rate = _cents(current["hourly_rate"])
+        if rate is None:
+            raise ValueError("Enter an hourly rate. It is saved for this contractor.")
+        cost = _cents(hours * rate)
+        flat = None
+        saved_rate = rate
+    else:
+        hours = _hours_input(form.get("hours"), False)
+        flat = _money_input(form.get("flat_amount"), "flat amount", True, Decimal("0.01"), Decimal("100000"))
+        cost = flat
+        rate = None
+        saved_rate = typed_rate
+        if saved_rate is None and existing and existing["hourly_rate"] is not None:
+            saved_rate = _cents(existing["hourly_rate"])
+    contractor = _upsert_contractor(c, name, saved_rate, existing, current)
+    now_s = stamp()
+    hours_f = float(hours) if hours is not None else None
+    rate_f = float(rate) if rate is not None else None
+    flat_f = float(flat) if flat is not None else None
+    cost_f = float(cost)
+    after = _contract_snapshot(contractor["name"], work_date, hours, rate, flat, cost)
+    if current:
+        before = _contract_snapshot(current["name"], current["work_date"], current["hours"], current["hourly_rate"], current["flat_amount"], current["cost"])
+        c.execute(
+            """UPDATE portal_contract_entries SET contractor_id=?, work_date=?, hours=?, hourly_rate=?, flat_amount=?, cost=?, notes=?, updated_at=?, updated_by=? WHERE id=?""",
+            (contractor["id"], work_date, hours_f, rate_f, flat_f, cost_f, notes, now_s, actor, current["id"]),
+        )
+        audit(c, actor, "edit_contract", None, current["id"], before, after)
+        return
+    new_id = one(c.execute(
+        """INSERT INTO portal_contract_entries(contractor_id,work_date,hours,hourly_rate,flat_amount,cost,notes,created_at,updated_at,created_by,updated_by)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id""",
+        (contractor["id"], work_date, hours_f, rate_f, flat_f, cost_f, notes, now_s, now_s, actor, actor),
+    ))["id"]
+    audit(c, actor, "add_contract", None, new_id, None, after)
+
+
+def delete_contract(c, actor, form):
+    current = one(c.execute(
+        """SELECT e.*, k.name FROM portal_contract_entries e
+           JOIN portal_contractors k ON k.id=e.contractor_id WHERE e.id=?""",
+        (form_id(form.get("contract_id")),),
+    ))
+    if not current:
+        raise ValueError("That contract entry was not found.")
+    before = _contract_snapshot(current["name"], current["work_date"], current["hours"], current["hourly_rate"], current["flat_amount"], current["cost"])
+    c.execute("DELETE FROM portal_contract_entries WHERE id=?", (current["id"],))
+    audit(c, actor, "delete_contract", None, current["id"], before, None)
+
+
 def page_hours(c, user, query, error=""):
     try:
         anchor = date.fromisoformat(query.get("week")) if query.get("week") else today()
@@ -2973,9 +3643,15 @@ def page_hours(c, user, query, error=""):
         elif day["weekend"]:
             extra = "<small>Weekend</small>"
         head_cells.append(f'<th class="{cls}">{label}{extra}</th>')
+    week_end = monday + timedelta(days=6)
+    contracts = contract_between(c, monday, week_end)
+    wage_view = build_wage_view(payload["people"], load_rate_index(c))
+    wage_by_id = {person["id"]: person for person in wage_view["people"]}
+    bill = wage_bill(wage_view, contracts)
     body_rows = []
     cards = []
     for person in payload["people"]:
+        person_view = wage_by_id[person["id"]]
         cells = []
         lines = []
         for day in payload["days"]:
@@ -2983,19 +3659,29 @@ def page_hours(c, user, query, error=""):
             cls = "weekend" if day["weekend"] else ""
             if day["publicHoliday"]:
                 cls = (cls + " holiday").strip()
-            shown = hours_text(hours) if hours else "—"
+            day_cost = person_view["days"].get(day["date"])
             n = sum(1 for s in person["shifts"] if s["date"] == day["date"])
-            if n > 1:
-                shown += f" ({n})"
-            cells.append(f'<td class="num {cls}">{h(shown)}</td>')
+            if hours:
+                shown = _hours_cost_html(
+                    hours, n,
+                    None if person_view["missing"] else (day_cost or {}).get("excl"),
+                    None if person_view["missing"] else (day_cost or {}).get("incl"),
+                    person_view["missing"], _day_kind_label(day_cost),
+                )
+            else:
+                shown = "—"
+            cells.append(f'<td class="num {cls}">{shown}</td>')
             flag = ""
             if day["publicHoliday"]:
                 flag = " · " + day["publicHoliday"]
             elif day["weekend"]:
                 flag = " · Weekend"
-            lines.append(f"<li><span>{h(day['weekday'])} {h(str(date.fromisoformat(day['date']).day))}{h(flag)}</span><b>{h(shown)}</b></li>")
-        body_rows.append(f"<tr><th scope=\"row\">{h(person['name'])}</th>{''.join(cells)}<td class=\"num total\">{h(hours_text(person['totalHours']))}</td></tr>")
-        cards.append(f'<article class="card person"><h3>{h(person["name"])}</h3><ul class="days">{"".join(lines)}</ul><p>Week <b>{h(hours_text(person["totalHours"]))}</b></p></article>')
+            lines.append(f"<li><span>{h(day['weekday'])} {h(str(date.fromisoformat(day['date']).day))}{h(flag)}</span><b>{shown}</b></li>")
+        week_shown = _hours_cost_html(
+            person["totalHours"], 0, person_view["excl"], person_view["incl"], person_view["missing"], "",
+        )
+        body_rows.append(f"<tr id=\"wage-person-{person['id']}\"><th scope=\"row\">{h(person['name'])}</th>{''.join(cells)}<td class=\"num total\">{week_shown}</td></tr>")
+        cards.append(f'<article class="card person"><h3>{h(person["name"])}</h3><ul class="days">{"".join(lines)}</ul><p>Week <b>{week_shown}</b></p></article>')
     table = '<p class="empty">No staff yet. Add someone below, then add a shift.</p>' if not payload["people"] else f"""
 <div class="week-table tw"><table><thead><tr><th>Staff</th>{''.join(head_cells)}<th>Week</th></tr></thead><tbody>{''.join(body_rows)}</tbody></table></div>
 <div class="week-cards">{''.join(cards)}</div>"""
@@ -3004,7 +3690,8 @@ def page_hours(c, user, query, error=""):
     shift_forms = []
     for person in payload["people"]:
         for shift in person["shifts"]:
-            shift_forms.append(f"""<details class="shift"><summary>{h(person['name'])} · {h(fmt_date(shift['date']))} · {h(shift['start'])}–{h(shift['finish'])} · {h(hours_text(shift['hours']))} h</summary>
+            cost_text = _shift_cost_text(wage_by_id[person["id"]]["shifts"].get(shift["id"]))
+            shift_forms.append(f"""<details class="shift"><summary>{h(person['name'])} · {h(fmt_date(shift['date']))} · {h(shift['start'])}–{h(shift['finish'])} · {h(hours_text(shift['hours']))} h · {h(cost_text)}</summary>
 <form method="post" action="/portal/hours">
 <input type="hidden" name="csrf" value="{h(user['csrf'])}"><input type="hidden" name="week" value="{h(monday.isoformat())}">
 <input type="hidden" name="action" value="save_shift"><input type="hidden" name="shift_id" value="{shift['id']}">
@@ -3042,14 +3729,17 @@ def page_hours(c, user, query, error=""):
     ok = ERR_TEXT.get(query.get("ok") or "", "")
     ok_html = f'<p class="oknote">{h(ok)}</p>' if ok else ""
     return f"""<div class="ph"><h1>Staff hours</h1>
-<p>Week of Monday {h(fmt_date(monday.isoformat()))} to Sunday {h(fmt_date((monday + timedelta(days=6)).isoformat()))}, Australia/Brisbane. A shift that finishes after midnight counts on the day it started. Weekend days and Queensland public holidays are marked. The Brisbane show holiday is not included.</p>
-<p class="help">For the pay run. This page does not send hours to Xero or pay anyone. Astron still approves and posts every pay run.</p></div>
+<p>Week of Monday {h(fmt_date(monday.isoformat()))} to Sunday {h(fmt_date(week_end.isoformat()))}, Australia/Brisbane. A shift that finishes after midnight counts on the day it started, and the pay rate follows that day. Weekend days and Queensland public holidays are marked. The Brisbane show holiday is not included.</p>
+<p class="help">Employee hours are for the pay run. The CSV download and the staff-hours feed include those hours only. Contract entries and pay rates are not in them. This page does not send hours to Xero or pay anyone. Astron still approves and posts every pay run.</p></div>
 {alert}{ok_html}
 <div class="weekbar"><a class="btn ghost sm" href="/portal/hours?week={prev_w}">Previous week</a>
 <form method="get" action="/portal/hours"><label class="f">Week of<input type="date" name="week" value="{h(monday.isoformat())}"></label><button class="btn sm" type="submit">Show</button></form>
 <a class="btn ghost sm" href="/portal/hours?week={next_w}">Next week</a>
 <a class="btn sm" href="/portal/hours.csv?week={h(monday.isoformat())}">Download CSV</a></div>
-<section class="card"><div class="lbl">Grand total</div><b class="stat" id="grand-total">{h(hours_text(payload['grandTotal']))} h</b>{table}</section>
+{wage_summary_html(wage_view, bill)}
+<section class="card" id="hours-week"><div class="lbl">Grand total</div><b class="stat" id="grand-total">{h(hours_text(payload['grandTotal']))} h</b>
+<p class="help">Employee hours only. Contract hours are not in this total.</p>{table}</section>
+{contract_section_html(c, user, monday, contracts)}
 <section class="card"><h2>Add a shift</h2>
 <form method="post" action="/portal/hours"><input type="hidden" name="csrf" value="{h(user['csrf'])}"><input type="hidden" name="week" value="{h(monday.isoformat())}"><input type="hidden" name="action" value="save_shift">
 <div class="row"><label class="f">Staff<select name="person_id" required>{options or '<option value="">Add staff first</option>'}</select></label>
@@ -3085,6 +3775,16 @@ def describe_audit(row):
     if row["action"] == "delete_shift":
         b = before or {}
         return f"deleted {b.get('staff', '')} {b.get('date', '')} {b.get('start', '')}–{b.get('finish', '')}"
+    if row["action"] in ("add_contract", "edit_contract", "delete_contract"):
+        snap = after or before or {}
+        if snap.get("flat") is not None:
+            basis = f"flat {money(snap.get('cost'))}"
+        elif snap.get("hours") is not None:
+            basis = f"{hours_text(snap.get('hours'))} h, {money(snap.get('cost'))}"
+        else:
+            basis = money(snap.get("cost"))
+        verb = {"add_contract": "added", "edit_contract": "edited", "delete_contract": "deleted"}[row["action"]]
+        return f"{verb} contract {snap.get('name', '')} {snap.get('date', '')} ({basis})"
     if before is None:
         a = after or {}
         return f"added {a.get('staff', '')} {a.get('date', '')} {a.get('start', '')}–{a.get('finish', '')} ({hours_text(a.get('hours'))} h)"
@@ -3708,6 +4408,15 @@ def handle_hours_post(handler, user, form):
             before = shift_snapshot(current, current["name"])
             c.execute("DELETE FROM portal_roster WHERE id=?", (current["id"],))
             audit(c, actor, "delete_shift", current["person_id"], current["id"], before, None)
+        elif action in ("save_contract", "delete_contract"):
+            try:
+                if action == "delete_contract":
+                    delete_contract(c, actor, form)
+                else:
+                    save_contract(c, actor, form)
+            except ValueError as ex:
+                _hours_error(handler, c, user, week, str(ex)[:180])
+                return
         else:
             handler.send(400, {"error": "bad action"})
             return
