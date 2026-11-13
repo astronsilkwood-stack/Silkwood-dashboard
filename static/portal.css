@@ -78,7 +78,8 @@ input:focus,select:focus,button:focus,a:focus{outline:2px solid var(--ink);outli
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
 .row>*{flex:1;min-width:140px}
 .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
-.chip{min-height:44px;display:inline-flex;align-items:center;padding:0 12px;border-radius:999px;border:1px solid var(--bd);background:#fff;text-decoration:none;font-weight:700;color:var(--ink)}
+.chip{min-height:44px;display:inline-flex;align-items:center;padding:0 12px;border-radius:999px;border:1px solid var(--bd);background:#fff;text-decoration:none;font-weight:700;color:var(--ink);cursor:pointer}
+button.chip{font:inherit}
 .chip.on{background:var(--accent);color:#fff;border-color:var(--accent)}
 .period{margin-bottom:16px}
 .alert{background:var(--badl);border:1px solid #fecaca;color:#991b1b;border-radius:12px;padding:12px 14px;font-weight:700}
@@ -124,6 +125,34 @@ th small{display:block;text-transform:none;letter-spacing:0;font:600 11px system
 .weekbar{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px}
 .weekbar form{display:flex;gap:8px;align-items:flex-end}
 .week-cards{display:none}
+.invoice-cards{display:none}
+.supplier-row{align-items:flex-end}
+#purchase-filters{display:flex;flex-direction:column;gap:10px}
+#purchase-filters .chips{order:1}
+#purchase-filters .date-row{order:2}
+#purchase-filters .supplier-row{order:3}
+#purchase-filters .help{order:4}
+.supplier-filter{border:1px solid var(--bd);border-radius:12px;background:#fff;padding:8px 12px}
+.supplier-filter summary{min-height:44px;display:flex;align-items:center;font-weight:800;cursor:pointer}
+.supplier-filter .choices{max-height:240px;overflow:auto;display:grid;margin-top:8px}
+.supplier-filter input[type=search]{margin-top:8px}
+.pay-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start}
+.pay-form{flex:1 1 220px}
+.pay-form summary.btn{width:100%}
+.pay-form summary::-webkit-details-marker{display:none}
+.pay-form form{display:grid;gap:8px;margin-top:8px}
+.pay-meta{color:var(--sl2);font-size:14px;margin:4px 0 0}
+.pay-state{font-weight:800}
+.pay-state.await{color:#8a5a12}
+.pay-state.matched{color:var(--ok)}
+.invoice-card{border:1px solid var(--bd);border-radius:14px;padding:12px;background:#fff;display:grid;gap:6px}
+.invoice-card.overdue{background:var(--badl)}
+.daybar{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin:0 0 16px}
+.daybar .f{flex:1 1 180px}
+span.btn{opacity:.45}
+a.glance{display:grid;gap:2px;min-height:44px;padding:12px 14px;border:1px solid var(--bd);border-radius:14px;background:#fff;text-decoration:none}
+a.glance b{font:600 26px var(--mono);letter-spacing:-.03em}
+a.glance span{color:var(--sl);font-size:14px;font-weight:600}
 .person ul.days{list-style:none;padding:0;margin:0}
 .person li{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid #f1f5f9;min-height:44px}
 .shift{border-top:1px solid var(--bd);padding:8px 0}
@@ -245,6 +274,10 @@ body.scanning{overflow:hidden}
  .ph h1{font-size:24px}
  .week-table{display:none}
  .week-cards{display:grid;gap:12px}
+ .invoice-table{display:none}
+ .invoice-cards{display:grid;gap:12px}
+ .daybar{display:grid;grid-template-columns:1fr 1fr}
+ .daybar .f,.daybar button[type=submit]{grid-column:1 / -1}
  .row>*{min-width:100%}
  .login-wrap{grid-template-columns:1fr}
  .help-panel{width:100%}

@@ -351,6 +351,8 @@ def product_names(c):
 
 
 def _prev_bounds(active, start, end):
+    if active == "week":
+        return start - timedelta(days=7), end - timedelta(days=7)
     if active == "month":
         prev_last = start.replace(day=1) - timedelta(days=1)
         day_n = min(end.day, prev_last.day)
@@ -2295,18 +2297,20 @@ def page_notes(c):
 <li>The overview month lines are till only: shop sales inc GST, kitchen food sales inc GST, and fuel litres. Bopple is not included. A past month shows its loaded total. The current month projects the month-end from the daily average, or from the same weekday when that sample exists. Same-month last year comes from the last-year-monthly upload. A blank field there is missing, not zero.</li>
 <li>Employee wage costs use the pay-rates upload. The rate follows the day the shift started: weekday, Saturday, Sunday, or a Queensland public holiday. Super is that employee's super rate. Contract hours are typed on Staff hours, have no super, and are not in the hours CSV or the staff-hours feed.</li>
 <li>Wages vs sales on the overview is employee wages including super, plus contract costs, divided by till sales excluding GST. Shop and fuel on the daysheet are inc GST, so each is divided by 1.1. A dash means hours, a pay rate, or till sales are missing.</li>
-<li>The portal does not pay invoices, set pump prices, or write SwiftPOS prices or costs. Staff hours are not sent to Xero.</li>
+<li>The portal does not pay invoices. Mark as paid only stores a record of a payment already made. It does not set pump prices, or write SwiftPOS prices or costs. Staff hours are not sent to Xero.</li>
 </ul>
 <p>Daily window: {portal.h(window.get('fromDate') or '—')} · {portal.h(window.get('rule') or '')}</p>
 {older_html}
 <ul>{''.join(packs)}</ul></section>"""
 
 
-def purchase_extra(c, active, start, end, bills):
+def purchase_extra(c, active, start, end, bills, suppliers=None):
     prev_start, prev_end = _prev_bounds(active, start, end)
+    filtering = suppliers is not None
+    clause, extra = portal.supplier_sql(filtering, suppliers or [])
     prev = portal.rows(c.execute(
-        "SELECT supplier, inc_gst, amount_due, status FROM portal_bills WHERE bill_date>=? AND bill_date<=?",
-        (prev_start.isoformat(), prev_end.isoformat()),
+        "SELECT supplier, inc_gst, amount_due, status FROM portal_bills WHERE bill_date>=? AND bill_date<=?" + clause,
+        [prev_start.isoformat(), prev_end.isoformat(), *extra],
     ))
     def due_of(row):
         status = (row["status"] or "").upper()
@@ -2346,8 +2350,8 @@ def purchase_extra(c, active, start, end, bills):
         + "".join(bill_rows) + "</tbody></table></div>"
     )
     spend = portal.rows(c.execute(
-        "SELECT spend_date, inc_gst, bucket FROM portal_spend WHERE spend_date>=? AND spend_date<=?",
-        (start.isoformat(), end.isoformat()),
+        "SELECT spend_date, inc_gst, bucket FROM portal_spend WHERE spend_date>=? AND spend_date<=?" + clause,
+        [start.isoformat(), end.isoformat(), *extra],
     ))
     shop_rows = portal.rows(c.execute(
         "SELECT date, sales_inc FROM portal_shop_days WHERE date>=? AND date<=? ORDER BY date",
@@ -2388,7 +2392,7 @@ def purchase_extra(c, active, start, end, bills):
     return f"""<section class="card" id="purchase-compare"><h2>Against the previous period</h2>{comp_html}</section>
 <section class="card" id="purchase-bills"><h2>Bills in this range</h2>{bills_html}</section>
 <section class="card" id="purchase-weeks"><h2>Weekly purchases and shop sales</h2>
-<p class="help">Bills are supplier invoices. Shop spend is the shop bucket from the purchases file. Fuel direct debits stay out of the bill list.</p>{chart}</section>"""
+<p class="help">Bills are supplier invoices. Shop spend is the shop bucket from the purchases file. Fuel direct debits stay out of the bill list.{" Shop sales in this table are the whole shop." if filtering else ""}</p>{chart}</section>"""
 
 
 def fuel_sections(c, days):

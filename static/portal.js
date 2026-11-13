@@ -52,6 +52,18 @@
   if (toggle) toggle.addEventListener("click", function () { setNav(!document.body.classList.contains("nav-open")); });
   if (backdrop) backdrop.addEventListener("click", function () { setNav(false); });
 
+  document.querySelectorAll("[data-supplier-filter]").forEach(function (box) {
+    var search = box.querySelector("input[type=search]");
+    if (!search) return;
+    search.addEventListener("input", function () {
+      var q = search.value.trim().toLowerCase();
+      box.querySelectorAll("[data-supplier]").forEach(function (row) {
+        var name = (row.getAttribute("data-supplier") || "").toLowerCase();
+        row.hidden = Boolean(q) && name.indexOf(q) === -1;
+      });
+    });
+  });
+
   var panel = document.getElementById("help-panel");
   var openBtn = document.getElementById("help-open");
   var closeBtn = document.getElementById("help-close");
