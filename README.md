@@ -104,7 +104,44 @@ No new environment variable is required for these pages.
 
 `pay_url` is optional. It must be `http` or `https`, with no username or password in the URL. The Pay button opens that address in a new tab, and only for a bill that is still unpaid. `status` is `unpaid`, `paid`, `void`, `draft`, or `absent`. `paid` and `p` are the paid list. Void, draft, and absent stay off both lists. A due date before today (Brisbane) is shown as overdue on an unpaid bill. `"sync": true` marks invoices missing from this upload as `absent` so they leave the unpaid list; the row is kept. Card numbers, and fields named like card, cvv, bsb, or bank account, are rejected and nothing from that upload is stored.
 
-`amount_due` is what is still owing. On a paid bill it is usually 0, so it is not the amount that was paid. Optional `amount` is the invoice total (inc GST), a number. Optional `paid_date` is `YYYY-MM-DD`. When those two are present, the paid list shows the paid date and the total paid is the sum of `amount`. Without them the paid list still shows who is paid, and the total stays blank.
+`amount_due` is what is still owing. On a paid bill it is usually 0, so it is not the amount that was paid. Optional `amount` is the invoice total (inc GST), a number. Optional `paid_date` is `YYYY-MM-DD`. When those two are present, the paid list shows the paid date and the total paid is the sum of `amount`. Without them the paid list still shows who is paid, and the total stays blank. Optional `invoice_id` is the Xero invoice id. A later upload that omits it keeps the id already stored.
+
+The Invoices page can filter by supplier (same checklist as Purchases: search, All suppliers, Clear). The choice is in the query string.
+
+**Owner mark as paid.** On an unpaid row, Mark as paid asks for method (Card, Cash, Bank transfer, Direct debit), date (default today, Australia/Brisbane), amount (defaults to the amount due), and an optional note. It is stored in the portal database, keyed by supplier and invoice number, and is not deleted when the invoices dataset is posted again. The row then reads Paid – awaiting Xero match and can be edited or undone. When a later ingest says the bill is paid, or the match endpoint below is called, it reads Paid – matched in Xero and the owner's method, date, amount, and note stay on the row. Pay still only opens the supplier's own page, and only while the bill is unpaid. The portal does not pay anyone.
+
+```
+GET /api/portal/invoice-payments
+Authorization: Bearer <PORTAL_INGEST_KEY>
+```
+
+`200` body:
+
+```json
+{"payments":[{"invoiceId":null,"invoiceNumber":"577803222","supplier":"Bega Dairy","amount":89.72,"method":"Cash","date":"2026-11-13","note":""}]}
+```
+
+Only owner records still awaiting a Xero match. `invoiceId` is the Xero id when `invoice_id` was ingested, otherwise `null`. `method` is one of `Card`, `Cash`, `Bank transfer`, `Direct debit`. `date` is `YYYY-MM-DD`. `note` is a string, empty when omitted.
+
+```
+POST /api/portal/invoice-payments/match
+Authorization: Bearer <PORTAL_INGEST_KEY>
+Content-Type: application/json
+
+{"supplier":"Bega Dairy","invoiceNumber":"577803222","xeroPaymentReference":"PAY-100"}
+```
+
+Send `invoiceId` instead of `supplier` and `invoiceNumber` when you have the Xero id. `200` body:
+
+```json
+{"ok":true,"invoiceId":null,"invoiceNumber":"577803222","supplier":"Bega Dairy","xeroPaymentReference":"PAY-100","matchedAt":"2026-11-13 09:00:00","alreadyMatched":false}
+```
+
+`matchedAt` is Australia/Brisbane, `YYYY-MM-DD HH:MM:SS`. Posting again returns the stored reference and `"alreadyMatched": true`. Missing key is `503`. Wrong key is `401`. No matching owner record is `404`. This does not create a payment in Xero.
+
+**Purchases filters.** `/portal/purchases` has This week, This month, Last month, and a custom From/To. The supplier checklist is every supplier in the purchases data, All suppliers by default, with a search box and Clear. Totals, the supplier table, the previous-period table, the bill list, and the weekly chart follow both filters. Shop sales in the weekly chart stay the whole shop. The query string is the bookmark.
+
+**Daily summary.** `/portal/day` is one day (date picker, previous day, next day). It opens on the latest loaded sales day. It shows that day's till, online, and combined sales, fuel, shop, and food, commission and GP, fuel litres and tank dips, staff hours, till exceptions, closing checklist and hot-box activity when those rows exist, and invoices dated that day. A missing feed says there is no data. Overview keeps the month totals, last-year card, fuel target, and insights, plus a today/yesterday card that links here.
 
 **sales** also keeps `periods[]` `weekdays`, `departments`, `top`, `low`, and `summary`, plus `products` (code to name), `kitchen`, `window`, `olderMonths`, and the commission header (`planDaily`, `neededDaily`, `missingDates`, `october`, …). `searchPack` is ignored. Optional `lastYear` is rejected if it contains cost, GP, coverage, or a missing-cost field.
 

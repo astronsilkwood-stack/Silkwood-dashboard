@@ -2,8 +2,9 @@
 
 Separate from the staff PIN. Pages and JSON under /portal and /api/portal require a
 session cookie, except the login page and the bearer-key ingest/hours endpoints.
-The portal never takes payment and never posts payroll. Pay rates and contract
-costs are shown only on the logged-in pages. They are not in the staff-hours feed.
+The portal never takes a payment and never posts payroll. Mark as paid only
+stores the owner's own record. Pay rates and contract costs are shown only on
+the logged-in pages. They are not in the staff-hours feed.
 """
 import csv, gzip, hashlib, hmac, io, json, os, re, secrets, zlib
 from datetime import date, datetime, timedelta
@@ -67,6 +68,7 @@ PART_HOLIDAYS = {
 }
 NAV = [
     ("/portal", "Overview", "overview"),
+    ("/portal/day", "Daily summary", "daily"),
     ("/portal/online", "Online orders", "online"),
     ("/portal/exceptions", "Till exceptions", "exceptions"),
     ("/portal/products", "Products", "products"),
@@ -86,6 +88,8 @@ NAV = [
 ]
 REDIRECT_OK = {href for href, _label, _key in NAV} | {"/portal/login", "/portal/password"}
 PAID_STATUS = {"paid", "p", "void", "voided", "deleted", "draft", "cancelled", "canceled", "absent", "d"}
+XERO_PAID = {"paid", "p"}
+PAYMENT_METHODS = ("Card", "Cash", "Bank transfer", "Direct debit")
 _dummy_hash = None
 _ingest_hits = {}
 
@@ -119,7 +123,12 @@ CREATE TABLE IF NOT EXISTS portal_insights(
 CREATE TABLE IF NOT EXISTS portal_invoices(
   invoice_key TEXT PRIMARY KEY, supplier TEXT NOT NULL, invoice_number TEXT NOT NULL, invoice_date TEXT,
   due_date TEXT, amount_due REAL, status TEXT NOT NULL, pay_url TEXT, source_as_of TEXT, updated_at TEXT NOT NULL,
-  paid_date TEXT, amount REAL);
+  paid_date TEXT, amount REAL, xero_invoice_id TEXT);
+CREATE TABLE IF NOT EXISTS portal_invoice_payments(
+  invoice_key TEXT PRIMARY KEY, supplier TEXT NOT NULL, invoice_number TEXT NOT NULL, xero_invoice_id TEXT,
+  method TEXT NOT NULL, paid_on TEXT NOT NULL, amount REAL NOT NULL, note TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, created_by TEXT NOT NULL, updated_by TEXT NOT NULL,
+  matched_at TEXT, xero_payment_ref TEXT);
 CREATE TABLE IF NOT EXISTS portal_people(
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -197,6 +206,11 @@ CREATE INDEX IF NOT EXISTS ix_portal_contract_date ON portal_contract_entries(wo
 def stock():
     import portal_stock
     return portal_stock
+
+
+def daypage():
+    import portal_day
+    return portal_day
 
 
 def exceptions():
@@ -1036,6 +1050,47 @@ def apply_insights(c, data):
     return {"asOf": d, "days": 1}
 
 
+def invoice_key(supplier, number):
+    """Stable bill identity: supplier plus invoice number. Case does not matter."""
+    return str(supplier).strip().casefold() + "\n" + str(number).strip().casefold()
+
+
+def clean_invoice_id(value):
+    """Optional Xero invoice id. Empty means the upload did not send one."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ValueError("invoice_id must be text")
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) > 80 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", text) or has_card_number(text):
+        raise ValueError("invoice_id must be a short id")
+    return text
+
+
+def taken_invoice_id(inv):
+    for key in ("invoice_id", "xero_invoice_id"):
+        if key in inv and inv.get(key) not in (None, ""):
+            return clean_invoice_id(inv.get(key))
+    return None
+
+
+def touch_owner_payment(c, key, supplier, number, xero_id):
+    """Keep the owner's payment row pointed at this bill. Do not change what they entered."""
+    if xero_id:
+        c.execute(
+            """UPDATE portal_invoice_payments SET supplier=?, invoice_number=?, xero_invoice_id=COALESCE(?, xero_invoice_id)
+               WHERE invoice_key=?""",
+            (supplier, number, xero_id, key),
+        )
+    else:
+        c.execute(
+            "UPDATE portal_invoice_payments SET supplier=?, invoice_number=? WHERE invoice_key=?",
+            (supplier, number, key),
+        )
+
+
 def apply_invoices(c, data):
     if not isinstance(data, dict) or not isinstance(data.get("invoices"), list):
         raise ValueError("invoices data needs an invoices list")
@@ -1053,22 +1108,25 @@ def apply_invoices(c, data):
         status = str(inv.get("status") or "unpaid").strip().lower()[:24]
         if not re.fullmatch(r"[a-z][a-z _-]{0,23}", status):
             raise ValueError(f"invoices[{i}] has a bad status")
-        key = supplier.casefold() + "\n" + number.casefold()
+        key = invoice_key(supplier, number)
         pay = clean_pay_url(inv.get("pay_url"))
         paid_date = need_date(inv.get("paid_date"), "paid date") if inv.get("paid_date") else None
         amount = num(inv.get("amount"), "amount") if "amount" in inv and inv.get("amount") not in (None, "") else None
+        xero_id = taken_invoice_id(inv)
         c.execute(
-            """INSERT INTO portal_invoices(invoice_key,supplier,invoice_number,invoice_date,due_date,amount_due,status,pay_url,source_as_of,updated_at,paid_date,amount)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            """INSERT INTO portal_invoices(invoice_key,supplier,invoice_number,invoice_date,due_date,amount_due,status,pay_url,source_as_of,updated_at,paid_date,amount,xero_invoice_id)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(invoice_key) DO UPDATE SET supplier=excluded.supplier, invoice_number=excluded.invoice_number,
                  invoice_date=excluded.invoice_date, due_date=excluded.due_date, amount_due=excluded.amount_due,
                  status=excluded.status, pay_url=excluded.pay_url, source_as_of=excluded.source_as_of, updated_at=excluded.updated_at,
-                 paid_date=excluded.paid_date, amount=excluded.amount""",
+                 paid_date=excluded.paid_date, amount=excluded.amount,
+                 xero_invoice_id=COALESCE(excluded.xero_invoice_id, portal_invoices.xero_invoice_id)""",
             (key, supplier, number,
              need_date(inv.get("date"), "invoice date") if inv.get("date") else None,
              need_date(inv.get("due_date"), "due date") if inv.get("due_date") else None,
-             num(inv.get("amount_due"), "amount_due"), status, pay, as_of, stamp(), paid_date, amount),
+             num(inv.get("amount_due"), "amount_due"), status, pay, as_of, stamp(), paid_date, amount, xero_id),
         )
+        touch_owner_payment(c, key, supplier, number, xero_id)
         seen.add(key)
         n += 1
     if data.get("sync") is True:
@@ -1635,6 +1693,8 @@ def period_bounds(period, start_s, end_s, today_d):
         if (end - start).days > 400:
             raise ValueError("Choose 400 days or fewer")
         return "custom", start, end
+    if period == "week":
+        return "week", week_monday(today_d), today_d
     if period == "lastmonth":
         first = today_d.replace(day=1)
         end = first - timedelta(days=1)
@@ -1767,22 +1827,45 @@ def latest_insight(c):
     return row
 
 
+def owner_payment_map(c):
+    return {row["invoice_key"]: row for row in rows(c.execute("SELECT * FROM portal_invoice_payments"))}
+
+
+def payment_is_matched(payment, invoice):
+    """Matched once the bot stored a Xero reference, or a later ingest shows the bill paid."""
+    if not payment:
+        return False
+    if payment.get("matched_at"):
+        return True
+    status = (invoice.get("status") or "").strip().lower() if invoice else ""
+    return status in XERO_PAID
+
+
 def invoice_lists(c, today_d):
-    """Unpaid bills, and bills marked paid. Void, draft, and absent rows stay off both lists."""
+    """Unpaid bills, and bills marked paid. Void, draft, and absent rows stay off both lists.
+
+    An owner payment moves the bill onto the paid list until it is undone. The nightly
+    ingest does not delete that payment.
+    """
+    payments = owner_payment_map(c)
     unpaid, paid = [], []
     for row in rows(c.execute("SELECT * FROM portal_invoices")):
         status = (row["status"] or "").strip().lower()
-        owing = float(row["amount_due"] or 0)
-        if status in ("paid", "p"):
+        payment = payments.get(row["invoice_key"])
+        row["owner_payment"] = payment
+        row["owner_matched"] = bool(payment) and payment_is_matched(payment, row)
+        row["owner_awaiting"] = bool(payment) and not row["owner_matched"]
+        if status in PAID_STATUS and status not in XERO_PAID:
+            continue
+        if status in XERO_PAID or row["owner_awaiting"] or row["owner_matched"]:
             paid.append(row)
             continue
-        if status in PAID_STATUS:
-            continue
+        owing = float(row["amount_due"] or 0)
         row["overdue"] = bool(row["due_date"] and row["due_date"] < today_d.isoformat() and owing > 0)
         unpaid.append(row)
     unpaid.sort(key=lambda r: (not r["overdue"], r["due_date"] or "9999-99-99", r["supplier"].casefold()))
-    paid.sort(key=lambda r: r["supplier"].casefold())
-    paid.sort(key=lambda r: r.get("paid_date") or r.get("invoice_date") or "", reverse=True)
+    paid.sort(key=lambda r: ((r.get("owner_payment") or {}).get("paid_on") or r.get("paid_date") or r.get("invoice_date") or ""), reverse=True)
+    paid.sort(key=lambda r: 0 if r.get("owner_awaiting") else 1)
     return unpaid, paid
 
 
@@ -2201,6 +2284,7 @@ def bar_class(percent):
 def _icon(key):
     paths = {
         "overview": '<path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/>',
+        "daily": '<path d="M7 3v3M17 3v3M4 9h16M6 5h12a1 1 0 0 1 1 1v13H5V6a1 1 0 0 1 1-1z"/>',
         "online": '<path d="M6 7h12l-1 13H7L6 7zM9 7a3 3 0 0 1 6 0"/>',
         "exceptions": '<path d="M7 3h8l4 4v14H7zM15 3v5h5M12 11v4M12 17h.01"/>',
         "products": '<path d="M4 7h16M4 12h16M4 17h10"/>',
@@ -2224,7 +2308,7 @@ def _icon(key):
 def layout(title, active, body, user, when):
     by_key = {key: (href, label) for href, label, key in NAV}
     groups = (
-        ("Trading", ("overview", "online", "exceptions", "products", "kitchen", "departments")),
+        ("Trading", ("overview", "daily", "online", "exceptions", "products", "kitchen", "departments")),
         ("Price and stock", ("pricing", "till", "stock")),
         ("Fuel", ("dips", "commission", "fuel")),
         ("Money", ("purchases", "invoices")),
@@ -2867,6 +2951,7 @@ def page_overview(c, query):
             f'{h(missing)} {missing_label}. This is 2026 only and is not a warning about 2025.</p>'
         )
     return f"""<div class="ph"><h1>Sales overview</h1>{through_line(through)}<p>{h(caption)}. Figures are the loaded trading days, with no zero filled in for a missing day. Australia/Brisbane. Today’s sales wait for the 9:30pm refresh. {h(sales_note)}</p></div>
+{daypage().glance(c)}
 {error}{period_controls('/portal', active, start, end)}
 {parity().override_note(deltas)}{callout}
 <section class="grid g4" id="sales-split">
@@ -2894,7 +2979,7 @@ def page_overview(c, query):
 <p class="help">Fuel and shop are the till daysheet. Online orders are not in this split. Shop GP is till GP and excludes sales with no usable cost. It is not operating profit.</p></section>
 {projection_card(proj, october, amounts is not None)}
 {parity().last_year_with_litres(c, all_sales, all_comm)}
-<section class="card"><h2>Daily sales</h2>{daily_table(display)}</section>"""
+<p class="help">Day by day sales, dips, hours, and the bills received that day are on <a href="/portal/day">Daily summary</a>.</p>"""
 
 
 def _online_query(active, start, end, day=""):
@@ -3133,6 +3218,129 @@ def page_online(c, query):
 {order_html}</section>"""
 
 
+def query_list(query, key):
+    if not query:
+        return []
+    value = query.get(key)
+    if value is None:
+        return []
+    if isinstance(value, list):
+        items = value
+    else:
+        items = [value]
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def named_suppliers_from(rows_in):
+    found = {}
+    for row in rows_in:
+        name = (row.get("supplier") or "").strip()
+        if name:
+            found.setdefault(name.casefold(), name)
+    return [found[key] for key in sorted(found)]
+
+
+def named_suppliers(c, tables):
+    found = {}
+    for table in tables:
+        for row in rows(c.execute(f"SELECT DISTINCT supplier FROM {table}")):
+            name = (row["supplier"] or "").strip()
+            if name:
+                found.setdefault(name.casefold(), name)
+    return [found[key] for key in sorted(found)]
+
+
+def chosen_suppliers(query, known):
+    """Supplier names from the query that exist in `known`. Empty means no filter."""
+    wanted = query_list(query, "supplier")
+    if not wanted:
+        return [], False
+    by_key = {name.casefold(): name for name in known}
+    chosen, seen = [], set()
+    for raw in wanted:
+        name = by_key.get(raw.casefold())
+        if name and name.casefold() not in seen:
+            chosen.append(name)
+            seen.add(name.casefold())
+    return chosen, True
+
+
+def supplier_sql(filtering, selected):
+    if not filtering:
+        return "", []
+    if not selected:
+        return " AND 1=0", []
+    marks = ",".join("?" for _ in selected)
+    return f" AND supplier IN ({marks})", list(selected)
+
+
+def supplier_filter_box(names, selected, filtering):
+    if filtering and selected:
+        summary = f"{len(selected)} supplier" + ("s" if len(selected) != 1 else "")
+    elif filtering:
+        summary = "No matching supplier"
+    else:
+        summary = "All suppliers"
+    chosen = {name.casefold() for name in selected}
+    boxes = []
+    for name in names:
+        checked = " checked" if name.casefold() in chosen else ""
+        boxes.append(
+            f'<label class="check" data-supplier="{h(name)}">'
+            f'<input type="checkbox" name="supplier" value="{h(name)}"{checked}>{h(name)}</label>'
+        )
+    choices = '<p class="empty">No suppliers in this data yet.</p>' if not boxes else (
+        '<input type="search" placeholder="Search suppliers" aria-label="Search suppliers" autocomplete="off">'
+        f'<div class="choices">{"".join(boxes)}</div>'
+    )
+    opened = " open" if filtering else ""
+    return (
+        f'<details class="supplier-filter" data-supplier-filter{opened}>'
+        f"<summary>{h(summary)}</summary>{choices}</details>"
+    )
+
+
+def _purchase_query(period, start, end, selected, filtering):
+    pairs = [("period", period)]
+    if period == "custom":
+        pairs.extend((("from", start.isoformat()), ("to", end.isoformat())))
+    if filtering:
+        pairs.extend(("supplier", name) for name in selected)
+    return "/portal/purchases?" + urlencode(pairs)
+
+
+def purchase_filter_form(active, start, end, names, selected, filtering):
+    presets = (("week", "This week"), ("month", "This month"), ("lastmonth", "Last month"))
+    chips = []
+    for key, label in presets:
+        cls = " on" if key == active else ""
+        chips.append(f'<a class="chip{cls}" href="{h(_purchase_query(key, start, end, selected, filtering))}">{label}</a>')
+    keep = active if active != "custom" else "custom"
+    clear_href = _purchase_query(keep, start, end, [], False)
+    return f"""<form class="period" id="purchase-filters" method="get" action="/portal/purchases">
+<div class="chips" role="group" aria-label="Date range">{''.join(chips)}</div>
+<div class="row supplier-row">
+<div class="f"><span>Suppliers</span>{supplier_filter_box(names, selected, filtering)}</div>
+<button class="btn" type="submit" name="period" value="{h(keep)}">Apply suppliers</button>
+<a class="btn ghost" href="{h(clear_href)}">Clear</a>
+</div>
+<div class="row date-row">
+<label class="f">From<input type="date" name="from" value="{h(start.isoformat())}" required></label>
+<label class="f">To<input type="date" name="to" value="{h(end.isoformat())}" required></label>
+<button class="btn" type="submit" name="period" value="custom">Apply custom dates</button>
+</div>
+<p class="help">All suppliers is the default. Clear drops the supplier choice and keeps this date range. The address is the bookmark.</p>
+</form>"""
+
+
+def bills_between(c, start, end, filtering, selected):
+    clause, params = supplier_sql(filtering, selected)
+    return rows(c.execute(
+        "SELECT * FROM portal_bills WHERE bill_date>=? AND bill_date<=?" + clause + " ORDER BY inc_gst DESC",
+        [start.isoformat(), end.isoformat(), *params],
+    ))
+
+
 def page_purchases(c, query):
     through = data_through(c)
     anchor = anchor_day(c)
@@ -3142,10 +3350,9 @@ def page_purchases(c, query):
     except ValueError as ex:
         active, start, end = period_bounds("month", None, None, anchor)
         error = f'<p class="alert">{h(str(ex))}</p>'
-    bills = rows(c.execute(
-        "SELECT * FROM portal_bills WHERE bill_date>=? AND bill_date<=? ORDER BY inc_gst DESC",
-        (start.isoformat(), end.isoformat()),
-    ))
+    names = named_suppliers(c, ("portal_bills", "portal_spend"))
+    selected, filtering = chosen_suppliers(query, names)
+    bills = bills_between(c, start, end, filtering, selected)
     by_supplier = {}
     for bill in bills:
         bucket = by_supplier.setdefault(bill["supplier"], {"bills": 0, "inc": 0.0, "due": 0.0})
@@ -3163,16 +3370,17 @@ def page_purchases(c, query):
     total_inc = sum(b["inc_gst"] or 0 for b in bills)
     shop_rows = sales_between(c, start, end)
     shop = sum(r["shop"] or 0 for r in shop_rows)
+    shop_note = " Shop sales are the whole shop, not split by supplier." if filtering else ""
     table = '<p class="empty">No supplier bills in this range.</p>' if not body else (
         '<div class="tw"><table><thead><tr><th>Supplier</th><th>Bills</th><th>Inc GST</th><th>Still due</th></tr></thead><tbody>'
         + "".join(body) + f'<tr class="total"><td>Total</td><td class="num">{len(bills)}</td><td class="num">{money(total_inc)}</td><td></td></tr></tbody></table></div>'
     )
     return f"""<div class="ph"><h1>Purchases by supplier</h1>{through_line(through)}
 <p>Bills dated in the selected range. This is not a cost-of-goods figure, and fuel direct debits are not in this table.</p></div>
-{error}{period_controls('/portal/purchases', active, start, end)}
-<section class="card"><h2>{money(total_inc)} inc GST</h2>
-<p class="help">{len(bills)} bills. Shop sales in the same dates: {money(shop) if shop_rows else '—'}.</p>{table}</section>
-{parity().purchase_extra(c, active, start, end, bills)}"""
+{error}{purchase_filter_form(active, start, end, names, selected, filtering)}
+<section class="card" id="purchase-summary"><h2>{money(total_inc)} inc GST</h2>
+<p class="help">{len(bills)} bills. Shop sales in the same dates: {money(shop) if shop_rows else '—'}.{h(shop_note)}</p>{table}</section>
+{parity().purchase_extra(c, active, start, end, bills, selected if filtering else None)}"""
 
 
 def page_fuel(c, query):
@@ -3270,8 +3478,17 @@ def page_dips(c, query):
 {parity().dips_range(c, active, start, end)}{body}"""
 
 
+def _paid_amount(row):
+    if row.get("amount") is not None:
+        return row["amount"]
+    payment = row.get("owner_payment") or {}
+    if payment.get("amount") is not None:
+        return payment["amount"]
+    return None
+
+
 def _paid_total(paid):
-    known = [row["amount"] for row in paid if row.get("amount") is not None]
+    known = [_paid_amount(row) for row in paid if _paid_amount(row) is not None]
     if not paid:
         return "—", "no paid invoices"
     if len(known) == len(paid):
@@ -3282,57 +3499,367 @@ def _paid_total(paid):
     return "—", "paid status is in the file; the amount paid is not"
 
 
-def page_invoices(c, query=None):
+def _payment_amount(raw, fallback):
+    if raw is None or str(raw).strip() == "":
+        amount = float(fallback or 0)
+    else:
+        text = str(raw).strip().replace(",", "").replace("$", "")
+        amount = num(text, "amount")
+    if amount < 0 or amount > 1_000_000_000:
+        raise ValueError("Amount is out of range.")
+    return float(_cents(amount))
+
+
+def _payment_date(raw):
+    paid_on = need_date(raw, "payment date")
+    day = date.fromisoformat(paid_on)
+    if day < date(2024, 1, 1) or day > today():
+        raise ValueError("Payment date must be from 2024 through today, Australia/Brisbane.")
+    return paid_on
+
+
+def _payment_note(raw):
+    note = " ".join(str(raw or "").split())
+    if len(note) > 500:
+        raise ValueError("Note must be 500 characters or less.")
+    try:
+        reject_sensitive(note, "note")
+    except ValueError:
+        raise ValueError("Note cannot include a card number.")
+    return note or None
+
+
+def _payment_method(raw):
+    method = " ".join(str(raw or "").split())
+    if method not in PAYMENT_METHODS:
+        raise ValueError("Choose Card, Cash, Bank transfer, or Direct debit.")
+    return method
+
+
+def save_owner_payment(c, username, supplier, number, method, paid_on, amount_raw, note_raw):
+    supplier = " ".join(str(supplier or "").split())
+    number = str(number or "").strip()
+    if not supplier or not number:
+        raise ValueError("That invoice was not found.")
+    invoice = one(c.execute("SELECT * FROM portal_invoices WHERE invoice_key=?", (invoice_key(supplier, number),)))
+    if not invoice:
+        raise ValueError("That invoice was not found.")
+    status = (invoice["status"] or "").strip().lower()
+    if status in PAID_STATUS and status not in XERO_PAID:
+        raise ValueError("That invoice is not open.")
+    existing = one(c.execute("SELECT * FROM portal_invoice_payments WHERE invoice_key=?", (invoice["invoice_key"],)))
+    if payment_is_matched(existing, invoice):
+        raise ValueError("That payment is already matched in Xero.")
+    if status in XERO_PAID and not existing:
+        raise ValueError("That invoice is already paid in Xero.")
+    method = _payment_method(method)
+    paid_on = _payment_date(paid_on)
+    amount = _payment_amount(amount_raw, invoice["amount_due"] or 0)
+    note = _payment_note(note_raw)
+    now_s = stamp()
+    c.execute(
+        """INSERT INTO portal_invoice_payments(
+             invoice_key,supplier,invoice_number,xero_invoice_id,method,paid_on,amount,note,
+             created_at,updated_at,created_by,updated_by)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(invoice_key) DO UPDATE SET
+             supplier=excluded.supplier, invoice_number=excluded.invoice_number,
+             xero_invoice_id=COALESCE(excluded.xero_invoice_id, portal_invoice_payments.xero_invoice_id),
+             method=excluded.method, paid_on=excluded.paid_on, amount=excluded.amount, note=excluded.note,
+             updated_at=excluded.updated_at, updated_by=excluded.updated_by""",
+        (invoice["invoice_key"], invoice["supplier"], invoice["invoice_number"], invoice.get("xero_invoice_id"),
+         method, paid_on, amount, note, now_s, now_s, username, username),
+    )
+    return invoice
+
+
+def undo_owner_payment(c, supplier, number):
+    supplier = " ".join(str(supplier or "").split())
+    number = str(number or "").strip()
+    invoice = one(c.execute("SELECT * FROM portal_invoices WHERE invoice_key=?", (invoice_key(supplier, number),)))
+    if not invoice:
+        raise ValueError("That invoice was not found.")
+    existing = one(c.execute("SELECT * FROM portal_invoice_payments WHERE invoice_key=?", (invoice["invoice_key"],)))
+    if not existing:
+        raise ValueError("There is no payment record on that invoice.")
+    if payment_is_matched(existing, invoice):
+        raise ValueError("That payment is already matched in Xero.")
+    c.execute("DELETE FROM portal_invoice_payments WHERE invoice_key=?", (invoice["invoice_key"],))
+    return invoice
+
+
+def awaiting_owner_payments(c):
+    """Owner records still waiting for a Xero match. Void, draft, and absent bills are left out."""
+    invoices = {row["invoice_key"]: row for row in rows(c.execute("SELECT * FROM portal_invoices"))}
+    out = []
+    for payment in rows(c.execute("SELECT * FROM portal_invoice_payments ORDER BY paid_on, supplier, invoice_number")):
+        invoice = invoices.get(payment["invoice_key"])
+        if payment_is_matched(payment, invoice or {"status": ""}):
+            continue
+        if invoice and (invoice["status"] or "").strip().lower() in PAID_STATUS:
+            continue
+        xero_id = payment.get("xero_invoice_id") or (invoice or {}).get("xero_invoice_id")
+        out.append({
+            "invoiceId": xero_id,
+            "invoiceNumber": payment["invoice_number"],
+            "supplier": payment["supplier"],
+            "amount": float(_cents(payment["amount"])),
+            "method": payment["method"],
+            "date": payment["paid_on"],
+            "note": payment["note"] or "",
+        })
+    return out
+
+
+def _match_reference(value):
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("xeroPaymentReference is required")
+    text = " ".join(value.split())
+    if len(text) > 120 or has_card_number(text):
+        raise ValueError("xeroPaymentReference must be a short reference")
+    return text
+
+
+def _body_text(body, *keys):
+    for key in keys:
+        value = body.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def find_owner_payment(c, body):
+    invoice_id = _body_text(body, "invoiceId", "invoice_id")
+    if invoice_id:
+        cleaned = clean_invoice_id(invoice_id)
+        row = one(c.execute("SELECT * FROM portal_invoice_payments WHERE xero_invoice_id=?", (cleaned,)))
+        if row:
+            return row
+        invoice = one(c.execute("SELECT * FROM portal_invoices WHERE xero_invoice_id=?", (cleaned,)))
+        if invoice:
+            row = one(c.execute("SELECT * FROM portal_invoice_payments WHERE invoice_key=?", (invoice["invoice_key"],)))
+            if row:
+                return row
+    supplier = _body_text(body, "supplier")
+    number = _body_text(body, "invoiceNumber", "invoice_number")
+    if supplier and number:
+        return one(c.execute("SELECT * FROM portal_invoice_payments WHERE invoice_key=?", (invoice_key(supplier, number),)))
+    raise ValueError("supplier and invoiceNumber, or invoiceId, is required")
+
+
+def match_owner_payment(c, body):
+    if not isinstance(body, dict):
+        raise ValueError("body must be an object")
+    reference = _match_reference(body.get("xeroPaymentReference") if "xeroPaymentReference" in body else body.get("xero_payment_reference"))
+    payment = find_owner_payment(c, body)
+    if not payment:
+        return None
+    if payment.get("matched_at"):
+        return payment, True
+    now_s = stamp()
+    c.execute(
+        "UPDATE portal_invoice_payments SET matched_at=?, xero_payment_ref=? WHERE invoice_key=?",
+        (now_s, reference, payment["invoice_key"]),
+    )
+    payment["matched_at"] = now_s
+    payment["xero_payment_ref"] = reference
+    return payment, False
+
+
+def payment_public(payment, already):
+    return {
+        "ok": True,
+        "invoiceId": payment.get("xero_invoice_id"),
+        "invoiceNumber": payment["invoice_number"],
+        "supplier": payment["supplier"],
+        "xeroPaymentReference": payment.get("xero_payment_ref") or "",
+        "matchedAt": payment.get("matched_at"),
+        "alreadyMatched": already,
+    }
+
+
+def _invoice_pairs(list_name, selected, filtering):
+    pairs = [("list", list_name)]
+    if filtering:
+        pairs.extend(("supplier", name) for name in selected)
+    return pairs
+
+
+def _invoice_href(list_name, selected, filtering):
+    return "/portal/invoices?" + urlencode(_invoice_pairs(list_name, selected, filtering))
+
+
+def _method_options(current):
+    options = []
+    for label in PAYMENT_METHODS:
+        selected = " selected" if label == current else ""
+        options.append(f'<option value="{h(label)}"{selected}>{h(label)}</option>')
+    return "".join(options)
+
+
+def _payment_fields(user, row, payment, action, open_form):
+    method = (payment or {}).get("method") or "Card"
+    paid_on = (payment or {}).get("paid_on") or today().isoformat()
+    amount = _amount_value(payment["amount"]) if payment else _amount_value(row.get("amount_due"))
+    note = (payment or {}).get("note") or ""
+    summary = "Edit" if payment else "Mark as paid"
+    opened = " open" if open_form else ""
+    return f"""<details class="pay-form"{opened}><summary class="btn">{summary}</summary>
+<form method="post" action="{h(action)}">
+<input type="hidden" name="csrf" value="{h(user['csrf'])}">
+<input type="hidden" name="action" value="save_payment">
+<input type="hidden" name="supplier" value="{h(row['supplier'])}">
+<input type="hidden" name="invoice_number" value="{h(row['invoice_number'])}">
+<label class="f">Method<select name="method" required>{_method_options(method)}</select></label>
+<label class="f">Date<input type="date" name="paid_on" value="{h(paid_on)}" required></label>
+<label class="f">Amount<input name="amount" inputmode="decimal" value="{h(amount)}" autocomplete="off"></label>
+<label class="f">Note<input name="note" maxlength="500" value="{h(note)}"></label>
+<button class="btn" type="submit">Save</button>
+</form></details>"""
+
+
+def _undo_form(user, row, action):
+    return f"""<form method="post" action="{h(action)}" data-confirm="Remove your payment record? This does not change Xero.">
+<input type="hidden" name="csrf" value="{h(user['csrf'])}">
+<input type="hidden" name="action" value="undo_payment">
+<input type="hidden" name="supplier" value="{h(row['supplier'])}">
+<input type="hidden" name="invoice_number" value="{h(row['invoice_number'])}">
+<button class="btn ghost" type="submit">Undo</button></form>"""
+
+
+def _pay_link(row):
+    if not row.get("pay_url"):
+        return ""
+    return f'<a class="btn sm" href="{h(row["pay_url"])}" target="_blank" rel="noopener noreferrer">Pay</a>'
+
+
+def _owner_state(row):
+    payment = row.get("owner_payment") or {}
+    when = fmt_date(payment["paid_on"]) if payment.get("paid_on") else "—"
+    meta = f'{h(payment.get("method") or "")} · {h(when)}'
+    if payment.get("amount") is not None:
+        meta += f' · {money(payment["amount"])}'
+    if payment.get("note"):
+        meta += f' · {h(payment["note"])}'
+    if row.get("owner_matched"):
+        ref = ""
+        if payment.get("xero_payment_ref"):
+            ref = f' Reference {h(payment["xero_payment_ref"])}.'
+        return (
+            f'<span class="pay-state matched">Paid – matched in Xero</span>'
+            f'<div class="pay-meta">Your record: {meta}.{ref}</div>'
+        )
+    return f'<span class="pay-state await">Paid – awaiting Xero match</span><div class="pay-meta">{meta}</div>'
+
+
+def _filter_rows(rows_in, selected, filtering):
+    if not filtering:
+        return rows_in
+    wanted = {name.casefold() for name in selected}
+    return [row for row in rows_in if row["supplier"].casefold() in wanted]
+
+
+def page_invoices(c, query=None, user=None, error="", open_invoice=None):
     query = query or {}
     active = "paid" if query.get("list") == "paid" else "unpaid"
     today_d = today()
-    unpaid, paid = invoice_lists(c, today_d)
+    all_unpaid, all_paid = invoice_lists(c, today_d)
+    source = all_paid if active == "paid" else all_unpaid
+    names = named_suppliers_from(source)
+    selected, filtering = chosen_suppliers(query, names)
+    unpaid = _filter_rows(all_unpaid, selected, filtering)
+    paid = _filter_rows(all_paid, selected, filtering)
     overdue_n = sum(1 for r in unpaid if r["overdue"])
     overdue_sum = sum(r["amount_due"] or 0 for r in unpaid if r["overdue"])
     owing = sum(r["amount_due"] or 0 for r in unpaid)
     paid_figure, paid_note = _paid_total(paid)
+    post_action = _invoice_href(active, selected, filtering)
+    open_key = None
+    if open_invoice and open_invoice[0] and open_invoice[1]:
+        open_key = invoice_key(open_invoice[0], open_invoice[1])
     tabs = []
     for key, label in (("unpaid", "Unpaid"), ("paid", "Paid")):
         cls = " on" if key == active else ""
-        tabs.append(f'<a class="chip{cls}" href="/portal/invoices?list={key}">{label}</a>')
+        tabs.append(f'<a class="chip{cls}" href="{h(_invoice_href(key, selected, filtering))}">{label}</a>')
+    clear_href = "/portal/invoices?list=" + active
+    supplier_form = f"""<form class="period" id="invoice-supplier-filter" method="get" action="/portal/invoices">
+<input type="hidden" name="list" value="{h(active)}">
+<div class="row supplier-row">
+<div class="f"><span>Suppliers</span>{supplier_filter_box(names, selected, filtering)}</div>
+<button class="btn" type="submit">Apply</button>
+<a class="btn ghost" href="{h(clear_href)}">Clear</a>
+</div></form>"""
     if active == "paid":
-        body = []
+        body, cards = [], []
         for row in paid:
             paid_on = fmt_date(row["paid_date"]) if row.get("paid_date") else "—"
-            total = money(row["amount"]) if row.get("amount") is not None else "—"
+            if row.get("owner_payment") and not row.get("paid_date"):
+                paid_on = fmt_date(row["owner_payment"]["paid_on"])
+            shown_amount = _paid_amount(row)
+            total = money(shown_amount) if shown_amount is not None else "—"
+            if row.get("owner_payment"):
+                state = _owner_state(row)
+                actions = ""
+                if row.get("owner_awaiting") and user:
+                    opened = open_key == row["invoice_key"]
+                    actions = _payment_fields(user, row, row["owner_payment"], post_action, opened) + _undo_form(user, row, post_action)
+            else:
+                state = '<span class="pill ok">Paid</span>'
+                actions = ""
             body.append(
                 f"<tr class=\"ok\"><td>{h(row['supplier'])}</td><td>{h(row['invoice_number'])}</td>"
                 f"<td>{h(fmt_date(row['invoice_date'])) if row['invoice_date'] else '—'}</td>"
                 f"<td>{h(fmt_date(row['due_date'])) if row['due_date'] else '—'}</td>"
-                f"<td>{h(paid_on)}</td><td class=\"num\">{total}</td><td><span class=\"pill ok\">Paid</span></td></tr>"
+                f"<td>{h(paid_on)}</td><td class=\"num\">{total}</td><td>{state}</td>"
+                f"<td class=\"actions\">{actions}</td></tr>"
+            )
+            cards.append(
+                f'<article class="invoice-card"><b>{h(row["supplier"])}</b><div>{h(row["invoice_number"])}</div>'
+                f'<p class="mini">{h(paid_on)} · {total}</p><div>{state}</div><div class="pay-actions">{actions}</div></article>'
             )
         table = '<p class="empty">No paid invoices.</p>' if not body else (
-            '<div class="tw"><table><thead><tr><th>Supplier</th><th>Invoice</th><th>Invoice date</th><th>Due</th>'
-            '<th>Paid</th><th>Invoice total</th><th>Status</th></tr></thead><tbody>'
+            '<div class="invoice-cards">' + "".join(cards) + "</div>"
+            '<div class="tw invoice-table"><table><thead><tr><th>Supplier</th><th>Invoice</th><th>Invoice date</th><th>Due</th>'
+            '<th>Paid</th><th>Invoice total</th><th>Status</th><th></th></tr></thead><tbody>'
             + "".join(body) + "</tbody></table></div>"
         )
         listing = f'<section class="card" id="paid-list"><h2>Paid invoices</h2>{table}</section>'
     else:
-        body = []
+        body, cards = [], []
         for row in unpaid:
             cls = ' class="overdue"' if row["overdue"] else ""
-            pay = ""
-            if row["pay_url"]:
-                pay = f'<a class="btn sm" href="{h(row["pay_url"])}" target="_blank" rel="noopener noreferrer">Pay</a>'
+            card_cls = " overdue" if row["overdue"] else ""
+            pay = _pay_link(row)
             due = fmt_date(row["due_date"]) if row["due_date"] else "No due date"
             flag = '<span class="pill bad">Overdue</span>' if row["overdue"] else '<span class="pill">Unpaid</span>'
+            form = ""
+            if user:
+                opened = open_key == row["invoice_key"]
+                form = _payment_fields(user, row, None, post_action, opened)
+            actions = f'<div class="pay-actions">{form}{pay}</div>'
             body.append(
                 f"<tr{cls}><td>{h(row['supplier'])}</td><td>{h(row['invoice_number'])}</td><td>{h(fmt_date(row['invoice_date'])) if row['invoice_date'] else '—'}</td>"
-                f"<td>{h(due)}</td><td class=\"num\">{money(row['amount_due'])}</td><td>{flag}</td><td>{pay}</td></tr>"
+                f"<td>{h(due)}</td><td class=\"num\">{money(row['amount_due'])}</td><td>{flag}</td><td class=\"actions\">{actions}</td></tr>"
+            )
+            cards.append(
+                f'<article class="invoice-card{card_cls}"><b>{h(row["supplier"])}</b><div>{h(row["invoice_number"])}</div>'
+                f'<p>{h(due)} · {money(row["amount_due"])}</p><div>{flag}</div>{actions}</article>'
             )
         table = '<p class="empty">No unpaid invoices.</p>' if not body else (
-            '<div class="tw"><table><thead><tr><th>Supplier</th><th>Invoice</th><th>Date</th><th>Due</th><th>Amount due</th><th>Status</th><th></th></tr></thead><tbody>'
+            '<div class="invoice-cards">' + "".join(cards) + "</div>"
+            '<div class="tw invoice-table"><table><thead><tr><th>Supplier</th><th>Invoice</th><th>Date</th><th>Due</th><th>Amount due</th><th>Status</th><th></th></tr></thead><tbody>'
             + "".join(body) + "</tbody></table></div>"
         )
         listing = f'<section class="card" id="invoice-list"><h2>Unpaid invoices</h2>{table}</section>'
     as_of = meta_get(c, "invoices").get("asOf")
+    alert = f'<p class="alert">{h(error)}</p>' if error else ""
+    ok_text = {"saved": "Saved. This records the payment here only. Nothing was paid and nothing was sent to Xero.",
+               "removed": "Your payment record was removed."}.get(query.get("ok") or "", "")
+    ok_html = f'<p class="oknote">{h(ok_text)}</p>' if ok_text else ""
     return f"""<div class="ph"><h1>Invoices</h1>{through_line(data_through(c))}
-<p>Supplier bills from the nightly invoice list. Unpaid is shown first. Pay opens that supplier's own page in a new tab, and only on an unpaid bill. This portal does not pay anyone, and it does not store card or bank numbers.</p></div>
+<p>Supplier bills from the nightly invoice list. Unpaid is shown first. Pay opens that supplier's own page in a new tab, and only on an unpaid bill. Mark as paid stores your record on this portal. It does not pay the supplier, and it does not send anything to Xero. Card and bank numbers are not stored.</p></div>
+{alert}{ok_html}
+{supplier_form}
 <section class="grid g4" id="invoice-totals">
 <div class="card stat" id="unpaid-total"><div class="lbl">Total owing</div><b>{money(owing)}</b><span>{len(unpaid)} unpaid invoice{'s' if len(unpaid) != 1 else ''}</span></div>
 <div class="card stat" id="overdue-total"><div class="lbl">Overdue</div><b>{money(overdue_sum)}</b><span>{overdue_n} past the due date</span></div>
@@ -3865,7 +4392,8 @@ def handle_get(handler, parsed):
     path = parsed.path.rstrip("/") or "/"
     if path == "/portal":
         path = "/portal"
-    query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+    raw_query = parse_qs(parsed.query)
+    query = {k: (v if len(v) > 1 else v[0]) for k, v in raw_query.items()}
     if path == "/portal/login":
         csrf = secrets.token_urlsafe(32)
         c = db()
@@ -3878,6 +4406,8 @@ def handle_get(handler, parsed):
         return
     if path == "/api/portal/staff-hours":
         return handle_hours_api(handler, query)
+    if path == "/api/portal/invoice-payments":
+        return handle_invoice_payments_get(handler)
     if path == "/api/portal/stock":
         return handle_stock_api(handler)
     if path == "/api/portal/stock/barcode":
@@ -3924,7 +4454,9 @@ def handle_get(handler, parsed):
         elif path == "/portal/notes":
             html = layout("Data notes", "notes", parity().page_notes(c), user, _srv().now())
         elif path == "/portal/invoices":
-            html = layout("Invoices", "invoices", page_invoices(c, query), user, _srv().now())
+            html = layout("Invoices", "invoices", page_invoices(c, query, user), user, _srv().now())
+        elif path == "/portal/day":
+            html = layout("Daily summary", "daily", daypage().page(c, query), user, _srv().now())
         elif path == "/portal/hours":
             html = layout("Staff hours", "hours", page_hours(c, user, query), user, _srv().now())
         elif path == "/portal/password":
@@ -4140,6 +4672,8 @@ def handle_post(handler):
     path = urlparse(handler.path).path.rstrip("/") or "/"
     if path == "/api/portal/ingest":
         return handle_ingest(handler)
+    if path == "/api/portal/invoice-payments/match":
+        return handle_invoice_payment_match(handler)
     if path == "/api/portal/chat/reply":
         return handle_chat_reply(handler)
     if path == "/api/portal/chat":
@@ -4183,6 +4717,8 @@ def handle_post(handler):
         return handle_hours_post(handler, user, form)
     if path == "/portal/stock":
         return handle_stock_post(handler, user, form)
+    if path == "/portal/invoices":
+        return handle_invoices_post(handler, user, form)
     handler.send(404, {"error": "not found"})
 
 
@@ -4437,6 +4973,107 @@ def _hours_error(handler, c, user, week, message):
     send_portal(handler, 400, html, user)
 
 
+def _request_suppliers(handler):
+    return parse_qs(urlparse(handler.path).query).get("supplier") or []
+
+
+def _invoices_redirect(handler, list_name, ok):
+    pairs = [("list", list_name), ("ok", ok)]
+    for name in _request_suppliers(handler):
+        pairs.append(("supplier", name))
+    return "/portal/invoices?" + urlencode(pairs)
+
+
+def _invoices_query(handler):
+    raw = parse_qs(urlparse(handler.path).query)
+    query = {k: (v if len(v) > 1 else v[0]) for k, v in raw.items()}
+    return query
+
+
+def handle_invoices_post(handler, user, form):
+    action = form.get("action") or ""
+    if action not in ("save_payment", "undo_payment"):
+        handler.send(400, {"error": "bad action"})
+        return
+    c = db()
+    try:
+        try:
+            if action == "undo_payment":
+                undo_owner_payment(c, form.get("supplier"), form.get("invoice_number"))
+                ok = "removed"
+                dest_list = "unpaid"
+            else:
+                save_owner_payment(
+                    c, user["username"], form.get("supplier"), form.get("invoice_number"),
+                    form.get("method"), form.get("paid_on"), form.get("amount"), form.get("note"),
+                )
+                ok = "saved"
+                dest_list = "paid"
+        except ValueError as ex:
+            html = layout(
+                "Invoices", "invoices",
+                page_invoices(c, _invoices_query(handler), user, str(ex)[:180], (form.get("supplier"), form.get("invoice_number"))),
+                user, _srv().now(),
+            )
+            send_portal(handler, 400, html, user)
+            return
+        c.commit()
+    finally:
+        c.close()
+    log("owner invoice payment " + ("removed" if action == "undo_payment" else "saved"))
+    handler.redirect(_invoices_redirect(handler, dest_list, ok))
+
+
+def ingest_authorized(handler):
+    """Bearer PORTAL_INGEST_KEY, same rule as the nightly ingest. Never logs the key."""
+    key = ingest_key()
+    if not key:
+        log("portal api refused; PORTAL_INGEST_KEY is not set")
+        handler.send(503, {"error": "ingest is not configured"})
+        return False
+    if not secret_eq(bearer_token(handler), key):
+        handler.send(401, {"error": "unauthorized"})
+        return False
+    return True
+
+
+def handle_invoice_payments_get(handler):
+    if not ingest_authorized(handler):
+        return
+    c = db()
+    try:
+        payload = {"payments": awaiting_owner_payments(c)}
+    finally:
+        c.close()
+    handler.send(200, payload, extra=[("X-Robots-Tag", "noindex, nofollow")])
+
+
+def handle_invoice_payment_match(handler):
+    if not ingest_authorized(handler):
+        return
+    try:
+        form = read_form(handler)
+    except (OverflowError, ValueError):
+        handler.send(400, {"error": "bad request"})
+        return
+    c = db()
+    try:
+        try:
+            found = match_owner_payment(c, form)
+        except ValueError as ex:
+            handler.send(400, {"error": str(ex)[:180]})
+            return
+        if not found:
+            handler.send(404, {"error": "not found"})
+            return
+        payment, already = found
+        c.commit()
+    finally:
+        c.close()
+    log("invoice payment matched")
+    handler.send(200, payment_public(payment, already))
+
+
 def handle_ingest(handler):
     key = ingest_key()
     if not key:
@@ -4525,7 +5162,7 @@ def ensure_online_order_columns(c):
 
 def ensure_invoice_columns(c):
     """Older databases were created before paid_date and amount existed."""
-    wanted = (("paid_date", "TEXT"), ("amount", "REAL"))
+    wanted = (("paid_date", "TEXT"), ("amount", "REAL"), ("xero_invoice_id", "TEXT"))
     if _srv().PG:
         found = {
             row["column_name"]

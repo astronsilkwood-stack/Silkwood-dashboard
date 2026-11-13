@@ -58,6 +58,7 @@ class PortalTest(unittest.TestCase):
         c.execute("DELETE FROM portal_blobs WHERE dataset='pay-rates'")
         c.execute("DELETE FROM portal_snapshots WHERE dataset='pay-rates'")
         c.execute("DELETE FROM portal_meta WHERE k='pay-rates'")
+        c.execute("DELETE FROM portal_invoice_payments")
         c.execute("UPDATE portal_users SET password_hash=? WHERE username='astron'", (ORIGINAL_HASH,))
         c.commit(); c.close()
         self.jar = {}
@@ -119,7 +120,7 @@ class PortalTest(unittest.TestCase):
         })
 
     def test_logged_out_pages_redirect_and_staff_routes_stay(self):
-        for path in ("/portal", "/portal/invoices", "/portal/hours", "/portal/purchases", "/portal/fuel", "/portal/dips", "/portal/hours.csv",
+        for path in ("/portal", "/portal/day", "/portal/invoices", "/portal/hours", "/portal/purchases", "/portal/fuel", "/portal/dips", "/portal/hours.csv",
                      "/portal/products", "/portal/pricing", "/portal/till-prices", "/portal/departments", "/portal/kitchen",
                      "/portal/shifts", "/portal/commission", "/portal/notes", "/portal/stock", "/portal/exceptions"):
             status, hdrs, body, _ = self.request("GET", path, headers={"X-Staff-Pin": "9999"})
@@ -2214,6 +2215,269 @@ class PortalTest(unittest.TestCase):
             c.commit()
         finally:
             c.close()
+
+    def test_owner_invoice_payments_survive_reingest(self):
+        portal._ingest_hits.clear()
+        self.login()
+        c = server.db()
+        c.execute("DELETE FROM portal_invoices")
+        c.execute("DELETE FROM portal_invoice_payments")
+        c.commit()
+        c.close()
+        code, _, raw, _ = self.ingest("invoices", load("invoices.json"))
+        self.assertEqual(code, 200, raw[:300])
+        page = self.authed("GET", "/portal/invoices")[2].decode()
+        self.assertIn("Mark as paid", page)
+        self.assertIn('name="method"', page)
+        self.assertIn("Direct debit", page)
+        self.assertIn('href="https://example.com/pay/bega/577803222"', page)
+        token = self.csrf_from(page)
+        form = urlencode({
+            "csrf": token, "action": "save_payment", "supplier": "Bega Dairy", "invoice_number": "577803222",
+            "method": "Cash", "paid_on": "2026-11-11", "amount": "", "note": "till float",
+        })
+        status, hdrs, body, _ = self.authed("POST", "/portal/invoices", form)
+        self.assertEqual(status, 302, body[:300])
+        self.assertIn("list=paid", hdrs.get("Location", ""))
+        c = server.db()
+        saved = dict(c.execute("SELECT * FROM portal_invoice_payments").fetchone())
+        c.close()
+        self.assertAlmostEqual(saved["amount"], 89.72, places=2)
+        self.assertEqual(saved["method"], "Cash")
+        self.assertEqual(saved["paid_on"], "2026-11-11")
+        self.assertEqual(saved["note"], "till float")
+        unpaid = self.authed("GET", "/portal/invoices")[2].decode()
+        unpaid_list = unpaid.split('id="invoice-list"', 1)[1]
+        self.assertNotIn("Bega Dairy", unpaid_list)
+        self.assertIn('href="https://example.com/pay/smokestix/14027"', unpaid_list)
+        paid = self.authed("GET", "/portal/invoices?list=paid")[2].decode()
+        paid_list = paid.split('id="paid-list"', 1)[1]
+        self.assertIn("Paid – awaiting Xero match", paid_list)
+        self.assertIn("Cash", paid_list)
+        self.assertIn("11 Nov 2026", paid_list)
+        self.assertNotIn(">Pay<", paid_list)
+        self.assertNotIn("https://example.com/pay/bega", paid)
+
+        token = self.csrf_from(paid)
+        edited = urlencode({
+            "csrf": token, "action": "save_payment", "supplier": "Bega Dairy", "invoice_number": "577803222",
+            "method": "Bank transfer", "paid_on": "2026-11-10", "amount": "90", "note": "bank",
+        })
+        status, _, body, _ = self.authed("POST", "/portal/invoices?list=paid", edited)
+        self.assertEqual(status, 302, body[:200])
+        c = server.db()
+        saved = dict(c.execute("SELECT method, amount, note FROM portal_invoice_payments").fetchone())
+        c.close()
+        self.assertEqual(saved["method"], "Bank transfer")
+        self.assertAlmostEqual(saved["amount"], 90, places=2)
+
+        code, _, raw, _ = self.ingest("invoices", {"date": "2026-11-12", "invoices": [{
+            "supplier": "Bega Dairy", "invoice_number": "577803222", "invoice_id": "xero-bega-1",
+            "date": "2026-09-08", "due_date": "2026-09-15", "amount_due": 10, "status": "unpaid",
+        }]})
+        self.assertEqual(code, 200, raw[:300])
+        c = server.db()
+        kept = dict(c.execute("SELECT amount, method, note, xero_invoice_id FROM portal_invoice_payments").fetchone())
+        c.close()
+        self.assertAlmostEqual(kept["amount"], 90, places=2)
+        self.assertEqual(kept["method"], "Bank transfer")
+        self.assertEqual(kept["note"], "bank")
+        self.assertEqual(kept["xero_invoice_id"], "xero-bega-1")
+        waiting = json.loads(self.request("GET", "/api/portal/invoice-payments", headers={"Authorization": "Bearer test-ingest-key"})[2])
+        self.assertEqual(waiting["payments"][0]["invoiceId"], "xero-bega-1")
+        self.assertEqual(waiting["payments"][0]["invoiceNumber"], "577803222")
+        self.assertEqual(waiting["payments"][0]["supplier"], "Bega Dairy")
+        self.assertEqual(waiting["payments"][0]["method"], "Bank transfer")
+        self.assertEqual(waiting["payments"][0]["date"], "2026-11-10")
+        self.assertEqual(waiting["payments"][0]["note"], "bank")
+        self.assertAlmostEqual(waiting["payments"][0]["amount"], 90, places=2)
+
+        code, _, raw, _ = self.ingest("invoices", {"date": "2026-11-12", "sync": True, "invoices": [{
+            "supplier": "Bega Dairy", "invoice_number": "577803222", "date": "2026-09-08",
+            "due_date": "2026-09-15", "amount_due": 0, "amount": 90, "paid_date": "2026-11-11", "status": "paid",
+        }]})
+        self.assertEqual(code, 200, raw[:300])
+        c = server.db()
+        still = c.execute("SELECT amount, note, matched_at FROM portal_invoice_payments").fetchone()
+        c.close()
+        self.assertAlmostEqual(still["amount"], 90, places=2)
+        self.assertEqual(still["note"], "bank")
+        self.assertIsNone(still["matched_at"])
+        matched_page = self.authed("GET", "/portal/invoices?list=paid")[2].decode()
+        self.assertIn("Paid – matched in Xero", matched_page.split('id="paid-list"', 1)[1])
+        self.assertIn("Bank transfer", matched_page)
+        self.assertEqual(json.loads(self.request("GET", "/api/portal/invoice-payments", headers={"Authorization": "Bearer test-ingest-key"})[2])["payments"], [])
+        token = self.csrf_from(matched_page)
+        undo = urlencode({
+            "csrf": token, "action": "undo_payment", "supplier": "Bega Dairy", "invoice_number": "577803222",
+        })
+        status, _, body, _ = self.authed("POST", "/portal/invoices?list=paid", undo)
+        self.assertEqual(status, 400, body[:300])
+        self.assertIn(b"matched in Xero", body)
+        c = server.db()
+        self.assertIsNotNone(c.execute("SELECT 1 FROM portal_invoice_payments").fetchone())
+        c.close()
+
+        fresh = self.ingest("invoices", {"date": "2026-11-12", "invoices": [{
+            "supplier": "Tully Pies", "invoice_number": "TILL8122", "date": "2026-11-10",
+            "due_date": "2026-12-10", "amount_due": 118.50, "status": "unpaid",
+        }]})
+        self.assertEqual(fresh[0], 200, fresh[2][:300])
+        token = self.csrf_from(self.authed("GET", "/portal/invoices")[2].decode())
+        bad_note = urlencode({
+            "csrf": token, "action": "save_payment", "supplier": "Tully Pies", "invoice_number": "TILL8122",
+            "method": "Card", "paid_on": "2026-11-11", "amount": "", "note": "4242424242424242",
+        })
+        refused = self.authed("POST", "/portal/invoices", bad_note)
+        self.assertEqual(refused[0], 400)
+        self.assertIn(b"card", refused[2].lower())
+        c = server.db()
+        self.assertIsNone(c.execute("SELECT 1 FROM portal_invoice_payments WHERE supplier='Tully Pies'").fetchone())
+        c.close()
+        token = self.csrf_from(self.authed("GET", "/portal/invoices")[2].decode())
+        mark = urlencode({
+            "csrf": token, "action": "save_payment", "supplier": "Tully Pies", "invoice_number": "TILL8122",
+            "method": "Direct debit", "paid_on": "2026-11-11", "amount": "118.50", "note": "",
+        })
+        self.assertEqual(self.authed("POST", "/portal/invoices", mark)[0], 302)
+        listed = json.loads(self.request("GET", "/api/portal/invoice-payments", headers={"Authorization": "Bearer test-ingest-key"})[2])
+        self.assertEqual(listed["payments"][0]["supplier"], "Tully Pies")
+        payload = json.dumps({
+            "supplier": "Tully Pies", "invoiceNumber": "TILL8122", "xeroPaymentReference": "BANK-1",
+        }).encode()
+        status, _, body, _ = self.request("POST", "/api/portal/invoice-payments/match", payload, {
+            "Content-Type": "application/json", "Authorization": "Bearer test-ingest-key", "Content-Length": str(len(payload)),
+        })
+        self.assertEqual(status, 200, body[:300])
+        matched = json.loads(body)
+        self.assertTrue(matched["ok"])
+        self.assertEqual(matched["xeroPaymentReference"], "BANK-1")
+        self.assertFalse(matched["alreadyMatched"])
+        self.assertEqual(matched["invoiceNumber"], "TILL8122")
+        status, _, body, _ = self.request("POST", "/api/portal/invoice-payments/match", payload, {
+            "Content-Type": "application/json", "Authorization": "Bearer test-ingest-key", "Content-Length": str(len(payload)),
+        })
+        self.assertEqual(status, 200, body[:300])
+        self.assertTrue(json.loads(body)["alreadyMatched"])
+        self.assertEqual(json.loads(body)["xeroPaymentReference"], "BANK-1")
+        self.assertEqual(json.loads(self.request("GET", "/api/portal/invoice-payments", headers={"Authorization": "Bearer test-ingest-key"})[2])["payments"], [])
+        token = self.csrf_from(self.authed("GET", "/portal/invoices?list=paid")[2].decode())
+        again = urlencode({
+            "csrf": token, "action": "save_payment", "supplier": "Tully Pies", "invoice_number": "TILL8122",
+            "method": "Cash", "paid_on": "2026-11-11", "amount": "1", "note": "",
+        })
+        status, _, body, _ = self.authed("POST", "/portal/invoices?list=paid", again)
+        self.assertEqual(status, 400)
+        self.assertIn(b"matched in Xero", body)
+
+        status, _, body, _ = self.request("GET", "/api/portal/invoice-payments", headers={"Authorization": "Bearer nope"})
+        self.assertEqual(status, 401)
+        self.assertNotIn(b"nope", body)
+        status, _, body, _ = self.request("POST", "/api/portal/invoice-payments/match", payload, {
+            "Content-Type": "application/json", "Authorization": "Bearer nope", "Content-Length": str(len(payload)),
+        })
+        self.assertEqual(status, 401)
+        self.assertNotIn(b"nope", body)
+        os.environ["PORTAL_INGEST_KEY"] = ""
+        try:
+            status, _, body, _ = self.request("GET", "/api/portal/invoice-payments")
+            self.assertEqual(status, 503)
+            self.assertNotIn(b"test-ingest-key", body)
+        finally:
+            os.environ["PORTAL_INGEST_KEY"] = "test-ingest-key"
+
+    def test_purchase_filters_and_invoice_supplier(self):
+        portal._ingest_hits.clear()
+        self.login()
+        self.ingest("purchases", load("purchases.json"))
+        self.ingest("invoices", load("invoices.json"))
+        page = self.authed("GET", "/portal/purchases")[2].decode()
+        self.assertIn("This week", page)
+        self.assertIn("This month", page)
+        self.assertIn("Last month", page)
+        self.assertIn("All suppliers", page)
+        self.assertIn('id="purchase-filters"', page)
+        self.assertIn(">Clear<", page)
+        self.assertIn("TILL8122", page.split('id="purchase-bills"', 1)[1])
+        week = self.authed("GET", "/portal/purchases?period=week")[2].decode()
+        week_bills = week.split('id="purchase-bills"', 1)[1].split('id="purchase-weeks"', 1)[0]
+        self.assertIn("TILL8122", week_bills)
+        self.assertNotIn("TILL8019", week_bills)
+        last = self.authed("GET", "/portal/purchases?period=lastmonth")[2].decode()
+        last_bills = last.split('id="purchase-bills"', 1)[1].split('id="purchase-weeks"', 1)[0]
+        self.assertIn("TILL8062", last_bills)
+        self.assertNotIn("TILL8122", last_bills)
+        custom = self.authed("GET", "/portal/purchases?period=custom&from=2026-11-10&to=2026-11-10")[2].decode()
+        custom_bills = custom.split('id="purchase-bills"', 1)[1].split('id="purchase-weeks"', 1)[0]
+        self.assertIn("TILL8122", custom_bills)
+        self.assertNotIn("TILL8109", custom_bills)
+        one = self.authed("GET", "/portal/purchases?period=month&supplier=Tully+Pies")[2].decode()
+        self.assertIn('value="Tully Pies" checked', one)
+        one_bills = one.split('id="purchase-bills"', 1)[1].split('id="purchase-weeks"', 1)[0]
+        compare = one.split('id="purchase-compare"', 1)[1].split('id="purchase-bills"', 1)[0]
+        summary = one.split('id="purchase-summary"', 1)[1].split('id="purchase-compare"', 1)[0]
+        self.assertIn("TILL8122", one_bills)
+        self.assertNotIn("578066285", one_bills)
+        self.assertIn("Tully Pies", compare)
+        self.assertNotIn("Bega Dairy", compare)
+        self.assertIn("whole shop", one.split('id="purchase-weeks"', 1)[1])
+        c = server.db()
+        anchor = portal.anchor_day(c)
+        _active, start, end = portal.period_bounds("month", None, None, anchor)
+        rows = portal.bills_between(c, start, end, True, ["Tully Pies"])
+        c.close()
+        self.assertIn(portal.money(sum(row["inc_gst"] or 0 for row in rows)), summary)
+
+        inv = self.authed("GET", "/portal/invoices?supplier=Bega+Dairy")[2].decode()
+        listing = inv.split('id="invoice-list"', 1)[1]
+        self.assertIn("Bega Dairy", listing)
+        self.assertIn('href="https://example.com/pay/bega/577803222"', listing)
+        self.assertNotIn("SMOKESTIX", listing)
+        self.assertIn("Mark as paid", listing)
+        c = server.db()
+        unpaid_rows, _paid_rows = portal.invoice_lists(c, portal.today())
+        c.close()
+        bega = [row for row in unpaid_rows if row["supplier"] == "Bega Dairy"]
+        owing = inv.split('id="unpaid-total"', 1)[1].split('id="overdue-total"', 1)[0]
+        self.assertIn(portal.money(sum(row["amount_due"] or 0 for row in bega)), owing)
+
+    def test_daily_summary_keeps_overview_month_figures(self):
+        portal._ingest_hits.clear()
+        self.login()
+        for name in ("sales", "fuel-commission", "fuel-dips", "invoices", "purchases"):
+            code, _, raw, _ = self.ingest(name, load(name + ".json"))
+            self.assertEqual(code, 200, raw[:300])
+        c = server.db()
+        c.execute("DELETE FROM hotbox_items WHERE date='2026-11-10'")
+        c.execute("DELETE FROM audit WHERE date='2026-11-10'")
+        c.commit()
+        through = portal.data_through(c)
+        c.close()
+        home = self.authed("GET", "/portal")[2].decode()
+        self.assertIn('id="day-glance"', home)
+        self.assertIn("/portal/day?date=2026-11-10", home)
+        self.assertIn("/portal/day?date=2026-11-11", home)
+        self.assertIn("Fuel vs shop", home)
+        self.assertIn("AI insights", home)
+        self.assertIn('id="month-lines"', home)
+        self.assertIn('id="last-year"', home)
+        self.assertIn('id="overview-exceptions"', home)
+        self.assertNotIn("<h2>Daily sales</h2>", home)
+        opened = self.authed("GET", "/portal/day")[2].decode()
+        self.assertIn(portal.fmt_date(through), opened)
+        self.assertIn('href="/portal/day" aria-current="page"', opened)
+        day = self.authed("GET", "/portal/day?date=2026-11-10")[2].decode()
+        self.assertIn("<h2>Daily sales</h2>", day)
+        self.assertIn("Previous day", day)
+        self.assertIn("Next day", day)
+        self.assertIn('value="2026-11-10"', day)
+        self.assertIn("Tully Pies", day.split('id="day-invoices"', 1)[1])
+        self.assertIn("TILL8122", day.split('id="day-invoices"', 1)[1])
+        self.assertIn("Unleaded", day.split('id="day-dips"', 1)[1])
+        self.assertIn("No staff hours for this day.", day.split('id="day-hours"', 1)[1])
+        self.assertIn("No closing checklist or food activity for this day.", day.split('id="day-activity"', 1)[1])
+        bad = self.authed("GET", "/portal/day?date=nope")[2].decode()
+        self.assertIn("YYYY-MM-DD", bad)
 
     def tearDown(self):
         # The barcode-map test is the only one that writes this dataset. Clearing it here
