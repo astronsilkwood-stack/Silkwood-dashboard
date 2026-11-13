@@ -2278,6 +2278,7 @@ def page_notes(c):
         ("last-year", "November 2025"),
         ("last-year-monthly", "Last-year monthly totals"),
         ("shifts", "Shift balancing"),
+        ("pay-rates", "Pay rates"),
     ):
         info = portal.meta_get(c, key)
         packs.append(f"<li>{portal.h(label)}: {portal.h(info.get('asOf') or 'not loaded')}</li>")
@@ -2292,6 +2293,8 @@ def page_notes(c):
 <li>A product with an override is marked Cost override. A $0 till cost is not warned on 2025, and a 2026 row with an override is not treated as missing a cost.</li>
 <li>November 2025 is quantity, sales ex GST, and fuel litres for the whole month. It has no cost, GP, GP% or coverage.</li>
 <li>The overview month lines are till only: shop sales inc GST, kitchen food sales inc GST, and fuel litres. Bopple is not included. A past month shows its loaded total. The current month projects the month-end from the daily average, or from the same weekday when that sample exists. Same-month last year comes from the last-year-monthly upload. A blank field there is missing, not zero.</li>
+<li>Employee wage costs use the pay-rates upload. The rate follows the day the shift started: weekday, Saturday, Sunday, or a Queensland public holiday. Super is that employee's super rate. Contract hours are typed on Staff hours, have no super, and are not in the hours CSV or the staff-hours feed.</li>
+<li>Wages vs sales on the overview is employee wages including super, plus contract costs, divided by till sales excluding GST. Shop and fuel on the daysheet are inc GST, so each is divided by 1.1. A dash means hours, a pay rate, or till sales are missing.</li>
 <li>The portal does not pay invoices, set pump prices, or write SwiftPOS prices or costs. Staff hours are not sent to Xero.</li>
 </ul>
 <p>Daily window: {portal.h(window.get('fromDate') or '—')} · {portal.h(window.get('rule') or '')}</p>

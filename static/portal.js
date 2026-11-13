@@ -20,6 +20,29 @@
     });
   });
 
+  var contractForm = document.getElementById("contract-form");
+  var contractName = document.getElementById("contract-name");
+  var contractRate = document.getElementById("contract-rate");
+  if (contractForm && contractName && contractRate) {
+    var savedRates = {};
+    try { savedRates = JSON.parse(contractForm.getAttribute("data-rates") || "{}"); } catch (e) { savedRates = {}; }
+    function contractKey(value) {
+      return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+    }
+    function fillContractRate() {
+      var saved = savedRates[contractKey(contractName.value)];
+      if (!saved) return;
+      if (contractRate.value && contractRate.getAttribute("data-filled") !== "1") return;
+      contractRate.value = saved;
+      contractRate.setAttribute("data-filled", "1");
+    }
+    contractName.addEventListener("change", fillContractRate);
+    contractName.addEventListener("blur", fillContractRate);
+    contractRate.addEventListener("input", function () {
+      contractRate.setAttribute("data-filled", contractRate.value ? "0" : "1");
+    });
+  }
+
   var toggle = document.getElementById("nav-toggle");
   var backdrop = document.getElementById("nav-backdrop");
   function setNav(open) {

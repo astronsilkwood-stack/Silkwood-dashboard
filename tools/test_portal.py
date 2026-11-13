@@ -53,6 +53,11 @@ class PortalTest(unittest.TestCase):
         c.execute("DELETE FROM portal_roster_audit")
         c.execute("DELETE FROM portal_roster")
         c.execute("DELETE FROM portal_people")
+        c.execute("DELETE FROM portal_contract_entries")
+        c.execute("DELETE FROM portal_contractors")
+        c.execute("DELETE FROM portal_blobs WHERE dataset='pay-rates'")
+        c.execute("DELETE FROM portal_snapshots WHERE dataset='pay-rates'")
+        c.execute("DELETE FROM portal_meta WHERE k='pay-rates'")
         c.execute("UPDATE portal_users SET password_hash=? WHERE username='astron'", (ORIGINAL_HASH,))
         c.commit(); c.close()
         self.jar = {}
@@ -402,6 +407,253 @@ class PortalTest(unittest.TestCase):
         self.assertEqual(holiday_days["2026-04-25"], "Anzac Day")
         # No payroll endpoint exists.
         self.assertEqual(self.authed("POST", "/api/portal/payroll", "{}")[0], 404)
+
+    def test_pay_rates_wages_and_contractors(self):
+        from decimal import Decimal, ROUND_HALF_UP
+        self.assertEqual(portal.pay_kind("2026-11-09", "06:00"), "ordinary")
+        self.assertEqual(portal.pay_kind("2026-11-14", "08:00"), "saturday")
+        self.assertEqual(portal.pay_kind("2026-11-15", "09:00"), "sunday")
+        self.assertEqual(portal.pay_kind("2026-04-25", "09:00"), "publicHoliday")
+        self.assertEqual(portal.pay_kind("2026-05-04", "09:00"), "publicHoliday")
+        self.assertEqual(portal.pay_kind("2026-12-24", "17:00"), "ordinary")
+        self.assertEqual(portal.pay_kind("2026-12-24", "18:00"), "publicHoliday")
+        sample = portal.shift_wage(7.5, {"ordinary": "31.25", "superRate": "0.12"}, "ordinary")
+        self.assertEqual(sample["excl"], Decimal("234.38"))
+        self.assertEqual(sample["incl"], Decimal("262.51"))
+        sales = portal.till_sales_ex_gst([
+            {"shop": "6804.47", "fuel": "6159.77", "total": "12964.24"},
+            {"shop": "6941.08", "fuel": "8759.49", "total": "15700.57"},
+        ])
+        self.assertEqual(sales["total_ex"], Decimal("26058.91"))
+        self.assertEqual(sales["total_inc"], Decimal("28664.81"))
+
+        self.login()
+        # Lock the two till days this overview week uses, in case another test changed them.
+        self.assertEqual(self.ingest("sales", {"asOf": "2026-11-11", "latestSalesDate": "2026-11-11", "periods": [{"daily": [
+            {"date": "2026-11-09", "total": 12964.24, "shop": 6804.47, "fuel": 6159.77, "gp": 1},
+            {"date": "2026-11-10", "total": 15700.57, "shop": 6941.08, "fuel": 8759.49, "gp": 1},
+        ]}]})[0], 200)
+        page = self.authed("GET", "/portal/hours?week=2026-11-09")[2].decode()
+        csrf = self.csrf_from(page)
+
+        def post(fields, week="2026-11-09"):
+            fields = dict(fields)
+            fields["csrf"] = csrf
+            fields["week"] = week
+            return self.authed("POST", "/portal/hours", urlencode(fields))
+
+        def refresh(week="2026-11-09"):
+            nonlocal csrf
+            html = self.authed("GET", f"/portal/hours?week={week}")[2].decode()
+            csrf = self.csrf_from(html)
+            return html
+
+        self.assertEqual(post({"action": "add_staff", "name": "Alex"})[0], 302)
+        page = refresh()
+        alex = re.search(r'name="person_id" value="(\d+)"', page).group(1)
+        self.assertEqual(post({"action": "add_staff", "name": "Sam"})[0], 302)
+        page = refresh()
+        ids = re.findall(r'name="person_id" value="(\d+)"', page)
+        sam = [i for i in ids if i != alex][0]
+        self.assertEqual(post({
+            "action": "save_shift", "person_id": alex, "work_date": "2026-11-09",
+            "start_time": "06:00", "finish_time": "14:30", "break_minutes": "30",
+        })[0], 302)
+        self.assertEqual(post({
+            "action": "save_shift", "person_id": alex, "work_date": "2026-11-14",
+            "start_time": "08:00", "finish_time": "13:00", "break_minutes": "0",
+        })[0], 302)
+        self.assertEqual(post({
+            "action": "save_shift", "person_id": sam, "work_date": "2026-11-11",
+            "start_time": "09:00", "finish_time": "17:00", "break_minutes": "30",
+        })[0], 302)
+        page = refresh()
+        self.assertIn('id="grand-total">20.5 h', page)
+        self.assertIn("No rate yet", page)
+        self.assertIn("No pay rates yet", page)
+        home = self.authed("GET", "/portal")[2].decode()
+        week = home.split('id="wages-week"', 1)[1].split('id="wages-month"', 1)[0]
+        self.assertIn("<b>—</b>", week)
+        self.assertIn("No pay rates yet", week)
+        self.assertNotIn("3.0%", week)
+
+        denied = self.ingest("pay-rates", {"employees": []}, key="nope")
+        self.assertEqual(denied[0], 401)
+        bad_super = self.ingest("pay-rates", {"employees": [{
+            "name": "Alex", "ordinary": 32, "saturday": 48, "sunday": 64, "publicHoliday": 80, "superRate": 12,
+        }]})
+        self.assertEqual(bad_super[0], 400)
+        self.assertIn(b"0.12", bad_super[2])
+        dup = self.ingest("pay-rates", {"employees": [
+            {"name": "Alex", "ordinary": 32, "saturday": 48, "sunday": 64, "publicHoliday": 80, "superRate": 0.12},
+            {"name": "alex", "ordinary": 32, "saturday": 48, "sunday": 64, "publicHoliday": 80, "superRate": 0.12},
+        ]})
+        self.assertEqual(dup[0], 400)
+        card = self.ingest("pay-rates", {"employees": [{
+            "name": "Alex 4242424242424242", "ordinary": 32, "saturday": 48, "sunday": 64,
+            "publicHoliday": 80, "superRate": 0.12,
+        }]})
+        self.assertEqual(card[0], 400)
+
+        rates = {"asOf": "2026-11-11", "employees": [
+            {"name": "Alex", "ordinary": 32, "saturday": 48, "sunday": 64, "publicHoliday": 80, "superRate": 0.12},
+            {"name": "sam", "ordinary": 30, "saturday": 45, "sunday": 60, "publicHoliday": 75, "superRate": 0.12},
+        ]}
+        code, _, raw, _ = self.ingest("pay-rates", rates)
+        self.assertEqual(code, 200, raw)
+        self.assertEqual(json.loads(raw)["employees"], 2)
+        # Re-posting replaces the list. Sam drops out, then both come back.
+        only_alex = {"asOf": "2026-11-11", "employees": rates["employees"][:1]}
+        self.assertEqual(self.ingest("pay-rates", only_alex)[0], 200)
+        page = refresh()
+        self.assertIn("No rate yet for Sam (7.5 h)", page)
+        self.assertIn("$256.00 excl", page)
+        self.assertNotIn("$225.00 excl", page)
+        self.assertEqual(self.ingest("pay-rates", rates)[0], 200)
+
+        page = refresh()
+        self.assertIn("$256.00 excl", page)
+        self.assertIn("$286.72 incl", page)
+        self.assertIn("$240.00 excl", page)
+        self.assertIn("Saturday", page)
+        self.assertIn("Weekday $32.00/h", page)
+        self.assertIn("Weekday $30.00/h", page)
+        self.assertIn("$225.00 excl", page)
+        self.assertIn("$252.00 incl", page)
+        self.assertIn('id="employee-wages-excl">$721.00', page)
+        self.assertIn('id="employee-wages-incl">$807.52', page)
+        self.assertIn("incl. 12% super", page)
+        self.assertNotIn("No rate yet", page)
+
+        self.assertEqual(post({
+            "action": "save_contract", "name": "Pat", "work_date": "2026-11-11",
+            "pay_style": "hourly", "hours": "4", "hourly_rate": "40",
+        })[0], 302)
+        self.assertEqual(post({
+            "action": "save_contract", "name": "Pat", "work_date": "2026-11-14",
+            "pay_style": "hourly", "hours": "2",
+        })[0], 302)
+        self.assertEqual(post({
+            "action": "save_contract", "name": "Riley", "work_date": "2026-11-10",
+            "pay_style": "flat", "flat_amount": "90",
+        })[0], 302)
+        page = refresh()
+        self.assertIn('id="contractor-wages-cost">$330.00', page)
+        self.assertIn('id="combined-wages-excl">$1,051.00', page)
+        self.assertIn('id="combined-wages-incl">$1,137.52', page)
+        self.assertIn(">Contract<", page)
+        self.assertIn("Pat", page)
+        self.assertIn("4 h × $40.00/h", page)
+        self.assertIn("2 h × $40.00/h", page)
+        self.assertIn("Flat $90.00", page)
+        self.assertIn("no super", page)
+        self.assertIn('id="grand-total">20.5 h', page)
+        self.assertIn("not in the hours CSV", page)
+
+        home = self.authed("GET", "/portal")[2].decode()
+        self.assertIn('id="wages-vs-sales"', home)
+        self.assertIn("divided by 1.1", home)
+        self.assertIn("excl. GST", home)
+        week = home.split('id="wages-week"', 1)[1].split('id="wages-month"', 1)[0]
+        month = home.split('id="wages-month"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("<b>3.0%</b>", week)
+        self.assertIn("$788.72", week)
+        self.assertIn("$28,664.81", week)
+        self.assertIn("$26,058.91", week)
+        self.assertIn("inc GST", week)
+        c = server.db()
+        month_rows = c.execute(
+            "SELECT shop, fuel, total FROM portal_sales_days WHERE date>='2026-11-01' AND date<='2026-11-11'"
+        ).fetchall()
+        c.close()
+        shop = sum((Decimal(str(r["shop"] or 0)) for r in month_rows), Decimal(0))
+        fuel = sum((Decimal(str(r["fuel"] or 0)) for r in month_rows), Decimal(0))
+        month_ex = (shop / Decimal("1.1")).quantize(Decimal("0.01"), ROUND_HALF_UP)
+        month_ex += (fuel / Decimal("1.1")).quantize(Decimal("0.01"), ROUND_HALF_UP)
+        month_pct = (Decimal("788.72") / month_ex * Decimal(100)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        self.assertIn(f"<b>{month_pct}%</b>", month)
+        self.assertIn("First of the month through today", month)
+
+        logged_out = self.request("GET", "/portal")
+        self.assertEqual(logged_out[0], 302)
+        self.assertNotIn(b"788.72", logged_out[2])
+        self.assertNotIn(b"pay-rates", logged_out[2].lower())
+        code, _, body, _ = self.request(
+            "GET", "/api/portal/staff-hours?week=2026-11-09",
+            headers={"Authorization": "Bearer test-ingest-key"},
+        )
+        payload = json.loads(body)
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["grandTotal"], 20.5)
+        raw_api = body.decode()
+        self.assertNotIn("Pat", raw_api)
+        self.assertNotIn("Riley", raw_api)
+        self.assertNotIn("32.00", raw_api)
+        self.assertNotIn("superRate", raw_api)
+        self.assertNotIn("contract", raw_api.lower())
+        status, _, csv_body, _ = self.authed("GET", "/portal/hours.csv?week=2026-11-09")
+        self.assertEqual(status, 200)
+        csv_text = csv_body.decode("utf-8-sig")
+        self.assertIn("Alex", csv_text)
+        self.assertIn("Sam", csv_text)
+        self.assertNotIn("Pat", csv_text)
+        self.assertNotIn("Riley", csv_text)
+        self.assertNotIn("32.00", csv_text)
+        self.assertNotIn("90.00", csv_text)
+
+        self.assertEqual(post({"action": "add_staff", "name": "Jo"})[0], 302)
+        page = refresh()
+        ids = re.findall(r'name="person_id" value="(\d+)"', page)
+        jo = [i for i in ids if i not in (alex, sam)][0]
+        self.assertEqual(post({
+            "action": "save_shift", "person_id": jo, "work_date": "2026-11-11",
+            "start_time": "12:00", "finish_time": "16:00", "break_minutes": "0",
+        })[0], 302)
+        page = refresh()
+        self.assertIn("No rate yet for Jo (4 h)", page)
+        self.assertIn('id="employee-wages-excl">$721.00', page)
+        home = self.authed("GET", "/portal")[2].decode()
+        week = home.split('id="wages-week"', 1)[1].split('id="wages-month"', 1)[0]
+        self.assertIn("<b>—</b>", week)
+        self.assertIn("No rate yet for Jo", week)
+        self.assertNotIn("<b>3.0%</b>", week)
+        code, _, body, _ = self.request(
+            "GET", "/api/portal/staff-hours?week=2026-11-09",
+            headers={"Authorization": "Bearer test-ingest-key"},
+        )
+        self.assertEqual(code, 200)
+        self.assertIn("Jo", body.decode())
+        self.assertNotIn("32.00", body.decode())
+        self.assertNotIn("Pat", body.decode())
+
+        self.assertEqual(post({
+            "action": "save_shift", "person_id": alex, "work_date": "2026-05-04",
+            "start_time": "09:00", "finish_time": "17:00", "break_minutes": "0",
+        }, week="2026-05-04")[0], 302)
+        holiday = refresh("2026-05-04")
+        self.assertIn("Public holiday $80.00/h", holiday)
+        self.assertIn("$640.00 excl", holiday)
+        self.assertIn("$716.80 incl", holiday)
+        self.assertEqual(post({
+            "action": "save_shift", "person_id": alex, "work_date": "2026-04-25",
+            "start_time": "09:00", "finish_time": "17:00", "break_minutes": "0",
+        }, week="2026-04-20")[0], 302)
+        anzac = refresh("2026-04-20")
+        self.assertIn("Public holiday $80.00/h", anzac)
+        self.assertNotIn("Saturday $48.00/h", anzac)
+        self.assertEqual(post({
+            "action": "save_shift", "person_id": alex, "work_date": "2026-12-24",
+            "start_time": "09:00", "finish_time": "13:00", "break_minutes": "0",
+        }, week="2026-12-21")[0], 302)
+        self.assertEqual(post({
+            "action": "save_shift", "person_id": alex, "work_date": "2026-12-24",
+            "start_time": "18:00", "finish_time": "22:00", "break_minutes": "0",
+        }, week="2026-12-21")[0], 302)
+        eve = refresh("2026-12-21")
+        self.assertIn("Weekday $32.00/h", eve)
+        self.assertIn("$128.00 excl", eve)
+        self.assertIn("Public holiday $80.00/h", eve)
+        self.assertIn("$320.00 excl", eve)
 
     def test_optional_insight_generator_stays_off(self):
         tiny = {"asOf": "2026-07-02", "latestSalesDate": "2026-07-02", "periods": [{"daily": [

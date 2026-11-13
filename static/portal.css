@@ -95,6 +95,9 @@ tr.low td{background:var(--ambl)}
 tr.low td:first-child{box-shadow:inset 4px 0 var(--amb)}
 tr.negative td{background:var(--badl)}
 tr.negative td:first-child{box-shadow:inset 4px 0 var(--bad)}
+td .wage,li .wage{display:block;font:600 12px var(--mono);letter-spacing:0;text-transform:none;color:var(--sl2);font-variant-numeric:tabular-nums}
+.wage.norate{color:var(--amb);font-family:system-ui,sans-serif}
+.card.stat>b.substat{font-size:22px}
 th.weekend,td.weekend{background:var(--ambl)}
 th.holiday,td.holiday{background:#f5f3ff}
 th small{display:block;text-transform:none;letter-spacing:0;font:600 11px system-ui;color:var(--sl2)}
