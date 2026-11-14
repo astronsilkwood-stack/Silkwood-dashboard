@@ -1,0 +1,221 @@
+{
+  "months": [
+    {
+      "month": "2025-11",
+      "label": "November 2025",
+      "fromDate": "2025-11-01",
+      "toDate": "2025-11-30",
+      "days": 30,
+      "tradingWindow": "1/11/2025 6:00:00 AM to 1/12/2025 5:59:59 AM",
+      "source": "SwiftPOS PLU Sales Total, Astron Silkwood. Reporting period 1 Nov 2025 6:00am to 1 Dec 2025 5:59am.",
+      "note": "Whole month only. Same-days figures are the daily average, because this file is not day by day. Dollars on the comparison are inc GST.",
+      "totalInc": 397328.81,
+      "totalEx": 368303.31,
+      "shopInc": 184188.71,
+      "shopEx": 174539.59,
+      "fuelInc": 213140.10,
+      "fuelEx": 193763.72,
+      "fuelLitres": 115281.947,
+      "fuelGrades": [
+        {
+          "grade": "DIS",
+          "name": "Diesel",
+          "litres": 66848.947,
+          "salesInc": 125029.59,
+          "salesEx": 113663.26
+        },
+        {
+          "grade": "ULP",
+          "name": "Unleaded",
+          "litres": 40269.06,
+          "salesInc": 72443.88,
+          "salesEx": 65858.07
+        },
+        {
+          "grade": "P95",
+          "name": "Premium 95",
+          "litres": 8163.94,
+          "salesInc": 15666.63,
+          "salesEx": 14242.39
+        }
+      ],
+      "departments": [
+        {
+          "name": "Roadhouse",
+          "salesInc": 64707.18,
+          "salesEx": 64526.77,
+          "qty": 11327
+        },
+        {
+          "name": "Beverages",
+          "salesInc": 55078.72,
+          "salesEx": 51009.52,
+          "qty": 11719
+        },
+        {
+          "name": "Tobacco",
+          "salesInc": 35896.78,
+          "salesEx": 32633.43,
+          "qty": 935
+        },
+        {
+          "name": "Confectionery",
+          "salesInc": 5406.36,
+          "salesEx": 4914.87,
+          "qty": 1343
+        },
+        {
+          "name": "Ice Cream",
+          "salesInc": 3866.61,
+          "salesEx": 3519.84,
+          "qty": 648
+        },
+        {
+          "name": "Cafe",
+          "salesInc": 3167.47,
+          "salesEx": 3075.02,
+          "qty": 626
+        },
+        {
+          "name": "Ice",
+          "salesInc": 2420.15,
+          "salesEx": 2200.15,
+          "qty": 485
+        },
+        {
+          "name": "Snack Food",
+          "salesInc": 2386.54,
+          "salesEx": 2201.10,
+          "qty": 423
+        },
+        {
+          "name": "Grocery",
+          "salesInc": 1421.12,
+          "salesEx": 1368.29,
+          "qty": 204
+        },
+        {
+          "name": "Newspapers / Magazines",
+          "salesInc": 1299.00,
+          "salesEx": 1180.90,
+          "qty": 326
+        },
+        {
+          "name": "Miscellaneous",
+          "salesInc": 1199.78,
+          "salesEx": 1149.73,
+          "qty": 143
+        },
+        {
+          "name": "Health & Beauty",
+          "salesInc": 1103.53,
+          "salesEx": 1026.19,
+          "qty": 118
+        },
+        {
+          "name": "Master Group 1",
+          "salesInc": 1024.05,
+          "salesEx": 943.73,
+          "qty": 7547
+        },
+        {
+          "name": "Frozen Drinks",
+          "salesInc": 792.60,
+          "salesEx": 720.55,
+          "qty": 177
+        },
+        {
+          "name": "BBQ Gas",
+          "salesInc": 787.00,
+          "salesEx": 715.46,
+          "qty": 21
+        },
+        {
+          "name": "Drinks",
+          "salesInc": 747.33,
+          "salesEx": 690.85,
+          "qty": 176
+        },
+        {
+          "name": "Technology",
+          "salesInc": 663.30,
+          "salesEx": 603.00,
+          "qty": 36
+        },
+        {
+          "name": "General Merchandise",
+          "salesInc": 602.82,
+          "salesEx": 548.02,
+          "qty": 21
+        },
+        {
+          "name": "Automotive",
+          "salesInc": 440.94,
+          "salesEx": 400.85,
+          "qty": 32
+        },
+        {
+          "name": "Fishing",
+          "salesInc": 343.87,
+          "salesEx": 330.70,
+          "qty": 33
+        },
+        {
+          "name": "Lubricants",
+          "salesInc": 225.85,
+          "salesEx": 205.32,
+          "qty": 13
+        },
+        {
+          "name": "Surcharge",
+          "salesInc": 201.90,
+          "salesEx": 183.55,
+          "qty": 48
+        },
+        {
+          "name": "Variety",
+          "salesInc": 118.28,
+          "salesEx": 118.28,
+          "qty": 23
+        },
+        {
+          "name": "System",
+          "salesInc": 108.66,
+          "salesEx": 98.78,
+          "qty": 34
+        },
+        {
+          "name": "Food to Go",
+          "salesInc": 75.00,
+          "salesEx": 75.00,
+          "qty": 12
+        },
+        {
+          "name": "Groceries",
+          "salesInc": 58.00,
+          "salesEx": 58.00,
+          "qty": 7
+        },
+        {
+          "name": "Confectionery (group 7)",
+          "salesInc": 38.87,
+          "salesEx": 35.34,
+          "qty": 13
+        },
+        {
+          "name": "Auto Accessories",
+          "salesInc": 7.00,
+          "salesEx": 6.36,
+          "qty": 1
+        },
+        {
+          "name": "A Fuel",
+          "salesInc": 213140.10,
+          "salesEx": 193763.72,
+          "qty": 115281.947,
+          "fuel": true
+        }
+      ]
+    }
+  ]
+}
