@@ -136,6 +136,23 @@ th small{display:block;text-transform:none;letter-spacing:0;font:600 11px system
 .supplier-filter summary{min-height:44px;display:flex;align-items:center;font-weight:800;cursor:pointer}
 .supplier-filter .choices{max-height:240px;overflow:auto;display:grid;margin-top:8px}
 .supplier-filter input[type=search]{margin-top:8px}
+.supplier-block{display:grid;gap:4px;min-width:12rem}
+.supplier-read{display:none}
+form.supplier-set{display:flex;gap:6px;align-items:center;margin:0}
+form.supplier-set input[name=supplier]{min-height:44px;width:9.5rem;flex:1 1 8rem}
+form.supplier-set .btn{flex:0 0 auto;padding:0 10px}
+tr.supplier-head td{font-weight:800;background:#eef3f7;border-top:2px solid var(--nav)}
+tr.supplier-head .mini{font-weight:600}
+@media print{
+  #portal-nav,.top,.nav-backdrop,.side-foot,#help-panel,#help-open,.period,.chips,form.supplier-set,.scanner,button.btn{display:none !important}
+  .app{display:block}
+  aside{display:none !important}
+  main{padding:0;max-width:none}
+  .tw{max-height:none;overflow:visible}
+  .supplier-read{display:block;font-weight:800}
+  tr.supplier-head{break-after:avoid}
+  a{text-decoration:none;color:inherit}
+}
 .pay-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start}
 .pay-form{flex:1 1 220px}
 .pay-form summary.btn{width:100%}

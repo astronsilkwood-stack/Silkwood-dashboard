@@ -2479,6 +2479,191 @@ class PortalTest(unittest.TestCase):
         bad = self.authed("GET", "/portal/day?date=nope")[2].decode()
         self.assertIn("YYYY-MM-DD", bad)
 
+    def test_product_supplier_survives_ingest(self):
+        portal._ingest_hits.clear()
+        self.login()
+        self.assertEqual(self.ingest("product-search", load("product-search.json"))[0], 200)
+        self.assertEqual(self.ingest("purchases", load("purchases.json"))[0], 200)
+        self.assertEqual(self.ingest("invoices", load("invoices.json"))[0], 200)
+        self.assertEqual(self.ingest("stock-movements", load("stock-movements.json"))[0], 200)
+        self.assertEqual(portal._supplier_from_invoice([("2026-01-01", "A"), ("2026-01-02", "B")]), "")
+        self.assertEqual(
+            portal._supplier_from_invoice([("2026-01-01", "Tully Pies"), ("2026-02-01", "tully pies")]),
+            "tully pies",
+        )
+
+        def supplier_block(page, code):
+            return page.split(f'id="supplier-{code}"', 1)[1].split("</form>", 1)[0]
+
+        def post(path, fields):
+            page = self.authed("GET", path)[2].decode()
+            fields = dict(fields)
+            fields["csrf"] = self.csrf_from(page)
+            target = path.split("?", 1)[0]
+            return self.authed("POST", target, urlencode(fields))
+
+        try:
+            road = self.authed("GET", "/portal/products?dept=Roadhouse")[2].decode()
+            hinted = supplier_block(road, "804040")
+            self.assertIn("Tully Pies", hinted)
+            self.assertIn('class="pill">Suggested', hinted)
+            self.assertIn('value="Tully Pies"', hinted)
+            self.assertIn('placeholder="Search suppliers"', road)
+            self.assertIn('data-supplier="Unassigned"', road)
+            self.assertIn("Print list", road)
+            self.assertIn('id="known-suppliers"', road)
+            self.assertNotIn("test-ingest-key", road)
+            self.assertNotIn(PASSWORD, road)
+
+            grocery = self.authed("GET", "/portal/products?dept=Grocery&supplier=Unassigned")[2].decode()
+            self.assertIn("ARNOTTS SHAPES", grocery.split('id="dept-products"', 1)[1])
+            missed = self.authed("GET", "/portal/products?dept=Roadhouse&supplier=Unassigned")[2].decode()
+            self.assertNotIn("BACON EGG MUFFIN", missed.split('id="dept-products"', 1)[1])
+
+            self.assertEqual(self.ingest("stock-movements", {"asOf": "2026-11-11", "movements": [
+                {"code": "804040", "date": "2026-11-11", "source": "supplier-invoice", "sold": 0, "received": 1, "reference": "577803222"},
+            ]})[0], 200)
+            later = supplier_block(self.authed("GET", "/portal/products?dept=Roadhouse")[2].decode(), "804040")
+            self.assertIn("Bega Dairy", later)
+            self.assertIn('class="pill">Suggested', later)
+            self.assertNotIn('value="Tully Pies"', later)
+
+            status, hdrs, _, _ = post("/portal/products?dept=Roadhouse", {
+                "action": "set_supplier", "code": "804040", "supplier": "Yamagishism",
+                "back": "https://evil.example/phish",
+            })
+            self.assertEqual(status, 302, hdrs)
+            self.assertTrue(hdrs.get("Location", "").startswith("/portal/products"))
+            self.assertNotIn("evil", hdrs.get("Location", ""))
+            saved = self.authed("GET", "/portal/products?dept=Roadhouse")[2].decode()
+            block = supplier_block(saved, "804040")
+            self.assertIn('value="Yamagishism"', block)
+            self.assertNotIn('class="pill">Suggested', block)
+            self.assertIn("Invoices suggest Bega Dairy", block)
+            self.assertIn('value="Yamagishism"', saved)
+
+            for dataset, payload in (
+                ("product-search", load("product-search.json")),
+                ("purchases", load("purchases.json")),
+                ("invoices", load("invoices.json")),
+                ("stock-movements", load("stock-movements.json")),
+            ):
+                self.assertEqual(self.ingest(dataset, payload)[0], 200)
+            c = server.db()
+            row = c.execute("SELECT supplier FROM portal_product_suppliers WHERE code='804040'").fetchone()
+            c.close()
+            self.assertEqual(row["supplier"], "Yamagishism")
+            kept = supplier_block(self.authed("GET", "/portal/products?dept=Roadhouse")[2].decode(), "804040")
+            self.assertIn('value="Yamagishism"', kept)
+            self.assertNotIn('class="pill">Suggested', kept)
+            c = server.db()
+            c.execute("DELETE FROM portal_stock_movements WHERE move_date='2026-11-11'")
+            c.commit()
+            c.close()
+
+            one = self.authed("GET", "/portal/products?dept=Roadhouse&supplier=Yamagishism")[2].decode()
+            self.assertIn("BACON EGG MUFFIN", one.split('id="dept-products"', 1)[1])
+            other = self.authed("GET", "/portal/products?dept=Roadhouse&supplier=Bega+Dairy")[2].decode()
+            self.assertNotIn("BACON EGG MUFFIN", other.split('id="dept-products"', 1)[1])
+            grouped = self.authed("GET", "/portal/products?dept=Roadhouse&arrange=supplier")[2].decode()
+            self.assertIn('class="supplier-head"', grouped)
+            self.assertIn("Yamagishism", grouped.split('class="supplier-head"', 1)[1].split("</tr>", 1)[0])
+
+            status, hdrs, _, _ = post("/portal/products?dept=Roadhouse", {
+                "action": "set_supplier", "code": "804040", "supplier": "",
+                "back": "dept=Roadhouse&period=month",
+            })
+            self.assertEqual(status, 302, hdrs)
+            self.assertIn("dept=Roadhouse", hdrs.get("Location", ""))
+            self.assertIn("ok=supplier", hdrs.get("Location", ""))
+            cleared = supplier_block(self.authed("GET", hdrs["Location"])[2].decode(), "804040")
+            self.assertIn("Tully Pies", cleared)
+            self.assertIn('class="pill">Suggested', cleared)
+
+            for code, day in (("804040", "2026-11-01"), ("10000", "2026-11-01")):
+                status, hdrs, body, _ = post("/portal/stock", {
+                    "action": "set_count", "code": code, "qty": "4",
+                    "baseline_date": day, "baseline_time": "23:59", "note": "supplier-test",
+                })
+                self.assertEqual(status, 302, body[:200])
+            stock = self.authed("GET", "/portal/stock")[2].decode()
+            self.assertIn('id="stock-scan"', stock)
+            self.assertIn("Scan barcode", stock)
+            self.assertIn("Print list", stock)
+            self.assertIn('data-supplier-filter', stock)
+            stock_hint = supplier_block(stock, "804040")
+            self.assertIn("Tully Pies", stock_hint)
+            self.assertIn('class="pill">Suggested', stock_hint)
+            shapes = supplier_block(stock, "10000")
+            self.assertIn("Unassigned", shapes)
+
+            status, hdrs, _, _ = post("/portal/stock", {
+                "action": "set_supplier", "code": "10000", "supplier": "Woolworths",
+                "back": "filter=all",
+            })
+            self.assertEqual(status, 302, hdrs)
+            self.assertTrue(hdrs.get("Location", "").startswith("/portal/stock"))
+            both = self.authed("GET", "/portal/stock?supplier=Woolworths&supplier=Unassigned")[2].decode()
+            self.assertIn('id="stock-10000"', both)
+            self.assertNotIn('id="stock-804040"', both)
+            named = self.authed("GET", "/portal/stock?sort=name")[2].decode()
+            self.assertLess(named.index('id="stock-10000"'), named.index('id="stock-804040"'))
+            by_supplier = self.authed("GET", "/portal/stock?sort=supplier")[2].decode()
+            self.assertLess(by_supplier.index('id="stock-804040"'), by_supplier.index('id="stock-10000"'))
+            self.assertIn('class="supplier-head"', by_supplier)
+            api = json.loads(self.request("GET", "/api/portal/stock", headers={"Authorization": "Bearer test-ingest-key"})[2])
+            shapes_api = next(row for row in api["products"] if row["code"] == "10000")
+            muffin_api = next(row for row in api["products"] if row["code"] == "804040")
+            self.assertEqual(shapes_api["supplier"], "Woolworths")
+            self.assertEqual(shapes_api["supplierSource"], "manual")
+            self.assertEqual(muffin_api["supplier"], "Tully Pies")
+            self.assertEqual(muffin_api["supplierSource"], "suggested")
+
+            bad = post("/portal/stock", {
+                "action": "set_supplier", "code": "10000", "supplier": "4111111111111111", "back": "filter=all",
+            })
+            self.assertEqual(bad[0], 400)
+            self.assertIn("card", bad[2].decode().lower())
+            c = server.db()
+            still = c.execute("SELECT supplier FROM portal_product_suppliers WHERE code='10000'").fetchone()["supplier"]
+            c.close()
+            self.assertEqual(still, "Woolworths")
+            unknown = post("/portal/products", {"action": "set_supplier", "code": "NO-SUCH", "supplier": "Bega Dairy"})
+            self.assertEqual(unknown[0], 400)
+
+            status, hdrs, _, _ = post("/portal/stock", {
+                "action": "add_manual", "name": "Order sauce", "code": "SUP1", "barcode": "", "group": "Kitchen",
+                "supplier": "Bega Dairy", "qty": "2", "baseline_date": "2026-11-01", "baseline_time": "23:59",
+            })
+            self.assertEqual(status, 302, hdrs)
+            status, hdrs, _, _ = post("/portal/stock?edit=SUP1", {
+                "action": "edit_manual", "old_code": "SUP1", "code": "SUP2", "name": "Order sauce",
+                "barcode": "", "group": "Kitchen", "supplier": "Bega Dairy",
+            })
+            self.assertEqual(status, 302, hdrs)
+            c = server.db()
+            moved = c.execute("SELECT supplier FROM portal_product_suppliers WHERE code='SUP2'").fetchone()
+            left = c.execute("SELECT supplier FROM portal_product_suppliers WHERE code='SUP1'").fetchone()
+            c.close()
+            self.assertEqual(moved["supplier"], "Bega Dairy")
+            self.assertIsNone(left)
+            detail = self.authed("GET", "/portal/products?product=804040")[2].decode()
+            self.assertIn('id="supplier-804040"', detail.split('id="product-804040"', 1)[1])
+            self.assertIn('id="stock-scan"', self.authed("GET", "/portal/stock")[2].decode())
+        finally:
+            self.ingest("stock-movements", load("stock-movements.json"))
+            c = server.db()
+            c.execute("DELETE FROM portal_product_suppliers")
+            c.execute("DELETE FROM portal_stock_counts WHERE note='supplier-test'")
+            c.execute("DELETE FROM portal_stock_movements WHERE move_date='2026-11-11'")
+            for code in ("SUP1", "SUP2"):
+                c.execute("DELETE FROM portal_stock_items WHERE code=?", (code,))
+                c.execute("DELETE FROM portal_stock_counts WHERE code=?", (code,))
+                c.execute("DELETE FROM portal_stock_movements WHERE code=?", (code,))
+                c.execute("DELETE FROM portal_stock_audit WHERE code=?", (code,))
+            c.commit()
+            c.close()
+
     def tearDown(self):
         # The barcode-map test is the only one that writes this dataset. Clearing it here
         # keeps a failed assertion from leaking barcodes into later cases.

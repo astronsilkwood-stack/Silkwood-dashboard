@@ -892,7 +892,16 @@ def _department_cards(archive, active, start, end):
     return f'<section class="card" id="product-departments"><h2>Departments</h2><div class="dept-grid">{"".join(cards)}</div></section>'
 
 
-def _department_products(c, archive, dept, active, start, end, query):
+def _product_keep(active, start, end, dept, group, q, sort, arrange, selected, filtering, product=""):
+    pairs = _range_pairs(active, start, end) + [
+        ("dept", dept), ("group", group), ("q", q), ("sort", sort), ("arrange", arrange), ("product", product),
+    ]
+    if filtering:
+        pairs.extend(("supplier", name) for name in selected)
+    return pairs
+
+
+def _department_products(c, archive, dept, active, start, end, query, user):
     grouped = _department_index(archive)
     info = grouped.get(dept)
     back = "/portal/products?" + _qs(_range_pairs(active, start, end))
@@ -900,24 +909,34 @@ def _department_products(c, archive, dept, active, start, end, query):
         return f'<p class="empty">That department is not in the product archive.</p><p><a class="btn ghost" href="{portal.h(back)}">All departments</a></p>'
     import portal_stock
     on_hand = {row["code"]: row["onHand"] for row in portal_stock.tracked_rows(c)}
+    manual = portal.manual_supplier_map(c)
+    suggested = portal.suggested_supplier_map(c)
+    supplier_names = portal.supplier_filter_names(c)
+    selected, filtering = portal.chosen_suppliers(query, supplier_names)
     table = override_table(c)
     needle = (query.get("q") or "").strip().casefold()
     group_filter = query.get("group") or ""
+    sort = query.get("sort") if query.get("sort") in ("name", "qty", "sales", "gp", "stock", "supplier") else "name"
+    arrange = "supplier" if query.get("arrange") == "supplier" else ""
     built = []
     for product, group in info["products"]:
         if group_filter and group != group_filter:
             continue
-        hay = f"{product[0]} {product[1]} {product[3] or ''} {group}".casefold()
+        code = str(product[0])
+        state = portal.supplier_state(code, manual, suggested)
+        label = state["name"] if state["source"] else ""
+        if not portal.supplier_kept(label, selected, filtering):
+            continue
+        hay = f"{product[0]} {product[1]} {product[3] or ''} {group} {label}".casefold()
         if needle and needle not in hay:
             continue
         totals = sum_rows(_walk_pack(product, archive["dates"], start.isoformat(), end.isoformat(), table, True))
-        code = str(product[0])
         built.append({
             "code": code, "name": str(product[1]), "group": group,
             "qty": totals["qty"], "sales": totals["sales_inc"] / Decimal(100), "gp": totals["gp"] / Decimal(100),
             "onhand": on_hand.get(code), "override": totals["override_days"] > 0,
+            "supplier": label, "state": state,
         })
-    sort = query.get("sort") if query.get("sort") in ("name", "qty", "sales", "gp", "stock") else "name"
     def sort_key(row):
         if sort == "qty":
             return row["qty"]
@@ -927,55 +946,122 @@ def _department_products(c, archive, dept, active, start, end, query):
             return row["gp"]
         if sort == "stock":
             return row["onhand"] if row["onhand"] is not None else Decimal("-1e18")
+        if sort == "supplier":
+            return (portal.supplier_rank(row["supplier"]), row["name"].casefold())
         return row["name"].casefold()
-    built.sort(key=sort_key, reverse=sort != "name")
+    built.sort(key=sort_key, reverse=sort not in ("name", "supplier"))
+    grouped_rows = arrange == "supplier" or sort == "supplier"
+    if grouped_rows and sort != "supplier":
+        built.sort(key=lambda row: portal.supplier_rank(row["supplier"]))
+    q_text = query.get("q") or ""
+
+    def keep(sort_key_name=sort, group_name=group_filter, arrange_name=arrange, product=""):
+        return _product_keep(active, start, end, dept, group_name, q_text, sort_key_name, arrange_name, selected, filtering, product)
+
     chips = []
-    for key, label in (("name", "Name"), ("qty", "Qty"), ("sales", "Sales"), ("gp", "GP"), ("stock", "Stock")):
+    for key, label in (("name", "Name"), ("supplier", "Supplier"), ("qty", "Qty"), ("sales", "Sales"), ("gp", "GP"), ("stock", "Stock")):
         cls = " on" if key == sort else ""
-        href = "/portal/products?" + _qs(_range_pairs(active, start, end) + [("dept", dept), ("group", group_filter), ("q", query.get("q") or ""), ("sort", key)])
+        href = "/portal/products?" + _qs(keep(sort_key_name=key))
         chips.append(f'<a class="chip{cls}" href="{portal.h(href)}">{label}</a>')
-    group_chips = [f'<a class="chip{" on" if not group_filter else ""}" href="' + portal.h("/portal/products?" + _qs(_range_pairs(active, start, end) + [("dept", dept), ("sort", sort)])) + '">All groups</a>']
+    group_on = arrange == "supplier"
+    chips.append(
+        f'<a class="chip{" on" if group_on else ""}" href="{portal.h("/portal/products?" + _qs(keep(arrange_name="" if group_on else "supplier")))}">'
+        "Group by supplier</a>"
+    )
+    chips.append('<button class="btn ghost" type="button" data-print>Print list</button>')
+    group_chips = [
+        f'<a class="chip{" on" if not group_filter else ""}" href="'
+        + portal.h("/portal/products?" + _qs(keep(group_name="")))
+        + '">All groups</a>'
+    ]
     for group in sorted(info["groups"], key=str.casefold):
         cls = " on" if group == group_filter else ""
-        href = "/portal/products?" + _qs(_range_pairs(active, start, end) + [("dept", dept), ("group", group), ("sort", sort)])
+        href = "/portal/products?" + _qs(keep(group_name=group))
         group_chips.append(f'<a class="chip {portal.tone(group)}{cls}" href="{portal.h(href)}">{portal.h(group)}</a>')
+    sticky = {
+        "period": active, "from": start.isoformat(), "to": end.isoformat(), "dept": dept, "sort": sort,
+    }
+    if group_filter:
+        sticky["group"] = group_filter
+    if q_text:
+        sticky["q"] = q_text
+    if arrange:
+        sticky["arrange"] = arrange
+    if filtering:
+        sticky["supplier"] = selected
+    editor_back = portal.return_query(sticky, portal.PRODUCT_RETURN_KEYS)
     body = []
+    previous = None
     for row in built:
+        if grouped_rows and row["supplier"] != previous:
+            previous = row["supplier"]
+            label = previous or "Unassigned"
+            count = sum(1 for item in built if item["supplier"] == previous)
+            noun = "product" if count == 1 else "products"
+            body.append(
+                f'<tr class="supplier-head"><td colspan="7">{portal.h(label)} '
+                f'<span class="mini">{count} {noun}</span></td></tr>'
+            )
         pill = ' <span class="pill">Cost override</span>' if row["override"] else ""
         stock = portal_stock.qty_text(row["onhand"]) if row["onhand"] is not None else "—"
-        href = "/portal/products?" + _qs(_range_pairs(active, start, end) + [("dept", dept), ("product", row["code"])])
+        href = "/portal/products?" + _qs(keep(product=row["code"]))
+        editor = portal.supplier_editor(user, "/portal/products", row["code"], row["state"], editor_back, row["name"])
         body.append(
-            f'<tr><td><a href="{portal.h(href)}">{portal.h(row["name"])}</a>{pill}<div class="mini">{portal.h(row["code"])}</div></td>'
-            f'<td>{portal.h(row["group"] or "—")}</td><td class="num">{_fmt_qty(row["qty"], dept == "A Fuel")}</td>'
+            f'<tr id="product-row-{portal.h(row["code"])}"><td><a href="{portal.h(href)}">{portal.h(row["name"])}</a>{pill}<div class="mini">{portal.h(row["code"])}</div></td>'
+            f'<td>{portal.h(row["group"] or "—")}</td><td>{editor}</td>'
+            f'<td class="num">{_fmt_qty(row["qty"], dept == "A Fuel")}</td>'
             f'<td class="num">{portal.money(_dollars(row["sales"]))}</td><td class="num">{portal.money(_dollars(row["gp"]))}</td>'
             f'<td class="num">{stock}</td></tr>'
         )
     table_html = '<p class="empty">No products in this department match.</p>' if not body else (
-        '<div class="tw"><table><thead><tr><th>Product</th><th>Group</th><th class="num">Qty</th><th class="num">Sales</th><th class="num">GP</th><th class="num">On hand</th></tr></thead><tbody>'
+        '<div class="tw"><table><thead><tr><th>Product</th><th>Group</th><th>Supplier</th><th class="num">Qty</th><th class="num">Sales</th><th class="num">GP</th><th class="num">On hand</th></tr></thead><tbody>'
         + "".join(body) + "</tbody></table></div>"
     )
+    clear_href = "/portal/products?" + _qs([pair for pair in keep() if pair[0] != "supplier"])
     return f'''<p><a class="btn ghost" href="{portal.h(back)}">All departments</a></p>
 <section class="card" id="dept-products"><h2>{portal.h(dept)}</h2>
-<form class="period" method="get" action="/portal/products">
+<form class="period" id="product-filters" method="get" action="/portal/products">
 <input type="hidden" name="period" value="{portal.h(active)}"><input type="hidden" name="from" value="{start.isoformat()}"><input type="hidden" name="to" value="{end.isoformat()}">
 <input type="hidden" name="dept" value="{portal.h(dept)}"><input type="hidden" name="sort" value="{portal.h(sort)}">
-<label class="f">Search in this department<input name="q" value="{portal.h(query.get("q") or "")}"></label>
-<button class="btn" type="submit">Search</button></form>
+<input type="hidden" name="arrange" value="{portal.h(arrange)}">
+<input type="hidden" name="group" value="{portal.h(group_filter)}">
+<label class="f">Search in this department<input name="q" value="{portal.h(q_text)}"></label>
+<button class="btn" type="submit">Search</button>
+<div class="row supplier-row">
+<div class="f"><span>Suppliers</span>{portal.supplier_filter_box(supplier_names, selected, filtering)}</div>
+<button class="btn" type="submit">Apply suppliers</button>
+<a class="btn ghost" href="{portal.h(clear_href)}">Clear</a>
+</div>
+<p class="help">All suppliers is the default. Unassigned is no saved supplier and no invoice suggestion. Clear drops the supplier choice and keeps this department.</p>
+</form>
 <div class="chips">{"".join(group_chips)}</div>
 <div class="chips">{"".join(chips)}</div>
 {table_html}
-<p class="help">Qty and sales are for the selected dates. GP uses a cost override when one is effective, otherwise the till cost. On hand is shown only when the product is tracked.</p></section>'''
+{portal.supplier_datalist(portal.known_supplier_names(c))}
+<p class="help">Qty and sales are for the selected dates. GP uses a cost override when one is effective, otherwise the till cost. On hand is shown only when the product is tracked. A supplier you save stays when the nightly upload runs. Suggested is filled from a delivery whose invoice number matches a bill, and it is not saved until you press Save. Group by supplier, or sort by Supplier, for an order list you can print.</p></section>'''
 
 
-def page_products(c, query):
+def page_products(c, query, user, error_text=""):
     through = portal.data_through(c)
     anchor = portal.anchor_day(c)
+    error = f'<p class="alert">{portal.h(str(error_text)[:180])}</p>' if error_text else ""
     try:
         active, start, end = portal.period_bounds(query.get("period"), query.get("from"), query.get("to"), anchor)
-        error = ""
     except ValueError as ex:
         active, start, end = portal.period_bounds("month", None, None, anchor)
-        error = f'<p class="alert">{portal.h(str(ex))}</p>'
+        error += f'<p class="alert">{portal.h(str(ex))}</p>'
+    ok = ""
+    if query.get("ok") == "supplier":
+        ok = '<p class="oknote" id="supplier-saved">Supplier saved. The nightly upload will not replace it.</p>'
+    names = portal.supplier_filter_names(c)
+    selected, filtering = portal.chosen_suppliers(query, names)
+    extra = {}
+    for key in ("dept", "group", "q", "sort", "arrange", "product", "compare"):
+        value = query.get(key)
+        if isinstance(value, str) and value:
+            extra[key] = value
+    if filtering and selected:
+        extra["supplier"] = selected
     archive = product_archive(c)
     q = (query.get("q") or "").strip()
     chosen = (query.get("product") or "").strip()
@@ -999,6 +1085,11 @@ def page_products(c, query):
                 break
         if not chosen and len(matches) == 1:
             chosen = str(matches[0][0])
+        if chosen:
+            extra["product"] = chosen
+        if compare:
+            extra["compare"] = compare
+        editor_back = portal.return_query(extra, portal.PRODUCT_RETURN_KEYS)
         items = []
         for product in matches[:40]:
             code = str(product[0])
@@ -1010,21 +1101,24 @@ def page_products(c, query):
 <div class="row"><label class="f">Name, PLU or barcode<input name="q" value="{portal.h(q)}" maxlength="80"></label>
 <button class="btn" type="submit">Search</button></div></form>
 <div class="chips">{''.join(items) or '<p class="empty">No matching product in the archive.</p>'}</div>"""
-        detail = _product_detail(c, archive, chosen, compare, active, start, end, q) if chosen else ""
+        detail = _product_detail(c, archive, chosen, compare, active, start, end, q, user, editor_back) if chosen else ""
         span = _selected_archive_span(archive, start, end)
         note = f"Archive {portal.h(dates[0])} to {portal.h(dates[-1])}. {len(span)} trading days in this range. Days outside the archive are left out, not filled with zero."
         dept = query.get("dept") or ""
         if chosen:
-            back = "/portal/products?" + _qs(_range_pairs(active, start, end) + ([("dept", dept)] if dept else []))
+            back_pairs = _range_pairs(active, start, end) + ([("dept", dept)] if dept else [])
+            if filtering:
+                back_pairs.extend(("supplier", name) for name in selected)
+            back = "/portal/products?" + _qs(back_pairs)
             label = "All departments" if not dept else "Back to " + dept
             body = f'<p><a class="btn ghost" href="{portal.h(back)}">{portal.h(label)}</a></p>' + search + f'<p class="help">{note}</p>' + detail
         elif dept:
-            body = _department_products(c, archive, dept, active, start, end, query)
+            body = _department_products(c, archive, dept, active, start, end, query, user)
         else:
             body = _department_cards(archive, active, start, end) + search + f'<p class="help">{note}</p>'
     return f"""<div class="ph"><h1>Products</h1>{portal.through_line(through)}
-<p>Quantity is the sale unit. Fuel quantity is litres. Gross profit uses a cost override when one is effective on that sale date, otherwise the till cost.</p></div>
-{error}{portal.period_controls('/portal/products', active, start, end)}{body}"""
+<p>Quantity is the sale unit. Fuel quantity is litres. Gross profit uses a cost override when one is effective on that sale date, otherwise the till cost. Each product has one supplier for ordering. A name you save is kept when the nightly files upload.</p></div>
+{error}{ok}{portal.period_controls('/portal/products', active, start, end, extra)}{body}"""
 
 
 def _find_product(archive, code):
@@ -1034,7 +1128,7 @@ def _find_product(archive, code):
     return None
 
 
-def _product_block(c, archive, product, active, start, end, table):
+def _product_block(c, archive, product, active, start, end, table, user=None, back=""):
     if not product:
         return '<p class="empty">Choose a product.</p>'
     dates = archive["dates"]
@@ -1076,8 +1170,17 @@ def _product_block(c, archive, product, active, start, end, table):
         series.append(f"<tr><td>{portal.h(portal.fmt_date(row['date']))}</td><td class=\"num\">{_fmt_qty(row['qty'], litres)}{portal.h(mark)}</td></tr>")
     ly = _ly_product_line(c, str(product[0]), start, end)
     gp_line = portal.money(_dollars(totals["gp"] / 100))
+    supplier_html = ""
+    if user:
+        state = portal.supplier_state(str(product[0]), portal.manual_supplier_map(c), portal.suggested_supplier_map(c))
+        supplier_html = (
+            '<div class="lbl">Supplier</div>'
+            + portal.supplier_editor(user, "/portal/products", str(product[0]), state, back, str(product[1]))
+            + '<p class="help">Save a supplier to keep it. A suggestion comes from a delivery whose invoice number matches a purchase or invoice, and it stays a suggestion until you save.</p>'
+        )
     return f"""<section class="card" id="product-{portal.h(product[0])}"><h2>{portal.h(product[1])}</h2>
 <p class="help">PLU {portal.h(product[0])} · {portal.h(dept_of(archive, product))} · barcode {portal.h(product[3] or '—')}</p>
+{supplier_html}
 <div class="grid g4">
 <div class="stat"><div class="lbl">Qty</div><b>{_fmt_qty(totals['qty'], litres)}</b><span>{_fmt_qty(per_day, litres) if per_day is not None else '—'} per trading day</span></div>
 <div class="stat"><div class="lbl">Sales</div><b>{portal.money(_dollars(totals['sales_inc'] / 100))}</b><span>inc GST</span></div>
@@ -1119,10 +1222,10 @@ def _ly_product_line(c, code, start, end):
     )
 
 
-def _product_detail(c, archive, chosen, compare, active, start, end, q):
+def _product_detail(c, archive, chosen, compare, active, start, end, q, user=None, back=""):
     table = override_table(c)
     main = _find_product(archive, chosen) if chosen else None
-    html = _product_block(c, archive, main, active, start, end, table) if main else ""
+    html = _product_block(c, archive, main, active, start, end, table, user, back) if main else ""
     compare_html = ""
     if main:
         compare_html = f"""<form class="period" method="get" action="/portal/products">
@@ -1140,8 +1243,9 @@ def _product_detail(c, archive, chosen, compare, active, start, end, q):
                     other = product
                     break
             if other and str(other[0]) != str(main[0]):
-                compare_html += _product_block(c, archive, other, active, start, end, table)
-    return html + compare_html
+                compare_html += _product_block(c, archive, other, active, start, end, table, user, back)
+    datalist = portal.supplier_datalist(portal.known_supplier_names(c)) if user and (html or compare_html) else ""
+    return html + compare_html + datalist
 
 
 def endings_for(raw, ends=(50, 95, 99)):

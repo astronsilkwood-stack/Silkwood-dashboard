@@ -170,6 +170,8 @@ CREATE TABLE IF NOT EXISTS portal_stock_audit(
 CREATE TABLE IF NOT EXISTS portal_product_barcodes(
   barcode TEXT PRIMARY KEY, code TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_portal_product_barcodes_code ON portal_product_barcodes(code);
+CREATE TABLE IF NOT EXISTS portal_product_suppliers(
+  code TEXT PRIMARY KEY, supplier TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS portal_chat(
   id INTEGER PRIMARY KEY, message TEXT NOT NULL, page TEXT, context TEXT, reply TEXT,
   created_at TEXT NOT NULL, replied_at TEXT, created_by TEXT NOT NULL);
@@ -2374,17 +2376,28 @@ def through_line(iso):
     return f'<p class="through as-of" id="data-through">As of {h(shown)}, Australia/Brisbane. Data through {h(shown)}</p>'
 
 
+def _period_pairs(extra):
+    """Date-bar fields. A list value repeats the key, so several suppliers can travel with the dates."""
+    pairs = []
+    for key, value in (extra or {}).items():
+        values = value if isinstance(value, (list, tuple)) else [value]
+        for item in values:
+            if item not in (None, ""):
+                pairs.append((str(key), str(item)))
+    return pairs
+
+
 def period_controls(base, active, start, end, extra=None):
-    extra = {k: v for k, v in (extra or {}).items() if v not in (None, "")}
+    kept = _period_pairs(extra)
     labels = [("month", "This month"), ("lastmonth", "Last month"), ("last7", "Last 7 days"), ("last28", "Last 28 days")]
     buttons = []
     for key, label in labels:
         cls = " on" if key == active else ""
-        href = base + "?" + urlencode({"period": key, **extra}) if extra else f"{base}?period={key}"
+        href = base + "?" + urlencode([("period", key), *kept]) if kept else f"{base}?period={key}"
         buttons.append(f'<a class="chip{cls}" href="{href}">{label}</a>')
-    hidden = ""
-    if extra:
-        hidden = "".join(f'<input type="hidden" name="{h(k)}" value="{h(v)}">' for k, v in extra.items()) + "\n"
+    hidden = "".join(f'<input type="hidden" name="{h(k)}" value="{h(v)}">' for k, v in kept)
+    if hidden:
+        hidden += "\n"
     return f"""<form class="period" method="get" action="{base}">
 <div class="chips">{''.join(buttons)}</div>
 <div class="row">
@@ -3272,6 +3285,264 @@ def supplier_sql(filtering, selected):
         return " AND 1=0", []
     marks = ",".join("?" for _ in selected)
     return f" AND supplier IN ({marks})", list(selected)
+
+
+UNASSIGNED_SUPPLIER = "Unassigned"
+SUPPLIER_NAME_LIMIT = 120
+PRODUCT_RETURN_KEYS = ("period", "from", "to", "dept", "group", "q", "sort", "product", "compare", "arrange")
+STOCK_RETURN_KEYS = ("q", "filter", "pick", "edit", "sort", "arrange")
+_RETURN_KEYS = set(PRODUCT_RETURN_KEYS) | set(STOCK_RETURN_KEYS) | {"supplier"}
+
+
+def clean_supplier_name(value):
+    """Blank clears the saved supplier. Anything else is one supplier name."""
+    if value is None:
+        return ""
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise ValueError("Enter a supplier name.")
+    text = re.sub(r"\s+", " ", value.strip())
+    if not text:
+        return ""
+    if len(text) > SUPPLIER_NAME_LIMIT:
+        raise ValueError("That supplier name is too long.")
+    if text.casefold() == UNASSIGNED_SUPPLIER.casefold():
+        raise ValueError("Leave the supplier blank to show it as unassigned.")
+    if has_card_number(text):
+        raise ValueError("The supplier must not include a card number.")
+    return text
+
+
+def known_supplier_names(c):
+    """Suppliers already on purchases, invoices, or a product the owner named."""
+    return named_suppliers(c, ("portal_bills", "portal_invoices", "portal_spend", "portal_product_suppliers"))
+
+
+def supplier_filter_names(c):
+    names = [name for name in known_supplier_names(c) if name.casefold() != UNASSIGNED_SUPPLIER.casefold()]
+    return [UNASSIGNED_SUPPLIER] + names
+
+
+def manual_supplier_map(c):
+    """Owner choices. Nightly ingest does not write this table."""
+    return {row["code"]: row["supplier"] for row in rows(c.execute("SELECT code, supplier FROM portal_product_suppliers"))}
+
+
+def _invoice_index(c):
+    """Invoice number to the suppliers that used it, spelling kept from the latest row."""
+    found = {}
+    queries = (
+        "SELECT supplier, invoice_no AS number, bill_date AS dated FROM portal_bills",
+        "SELECT supplier, invoice_number AS number, COALESCE(invoice_date, '') AS dated FROM portal_invoices",
+    )
+    for sql in queries:
+        for row in rows(c.execute(sql)):
+            key = (row["number"] or "").strip().casefold()
+            name = (row["supplier"] or "").strip()
+            if not key or not name:
+                continue
+            found.setdefault(key, []).append((row["dated"] or "", name))
+    return found
+
+
+def _supplier_from_invoice(matches):
+    """One supplier for an invoice number. Two different suppliers is not a guess."""
+    if not matches:
+        return ""
+    folded = {}
+    for dated, name in matches:
+        folded.setdefault(name.casefold(), []).append((dated or "", name))
+    if len(folded) != 1:
+        return ""
+    rows_for = next(iter(folded.values()))
+    rows_for.sort()
+    return rows_for[-1][1]
+
+
+def _pick_suggested(items):
+    """Latest delivery wins. A tie on that date needs a single most-used supplier."""
+    if not items:
+        return ""
+    latest = max(when for when, _name in items)
+    newest = []
+    seen = set()
+    for when, name in items:
+        if when == latest and name.casefold() not in seen:
+            seen.add(name.casefold())
+            newest.append(name)
+    if len(newest) == 1:
+        return newest[0]
+    counts = {}
+    order = []
+    for _when, name in items:
+        key = name.casefold()
+        if key not in counts:
+            order.append(name)
+            counts[key] = 0
+        counts[key] += 1
+    order.sort(key=lambda name: (-counts[name.casefold()], name.casefold()))
+    if len(order) == 1 or counts[order[0].casefold()] > counts[order[1].casefold()]:
+        return order[0]
+    return ""
+
+
+def suggested_supplier_map(c):
+    """Supplier implied by a delivery whose invoice number is already on a bill or invoice.
+
+    The newest unambiguous delivery wins. A saved owner choice is applied later and replaces this.
+    """
+    invoices = _invoice_index(c)
+    votes = {}
+    for row in rows(c.execute(
+        """SELECT code, move_date, reference FROM portal_stock_movements
+           WHERE source='supplier-invoice' AND reference IS NOT NULL AND TRIM(reference) != ''"""
+    )):
+        name = _supplier_from_invoice(invoices.get(row["reference"].strip().casefold()) or [])
+        if not name:
+            continue
+        votes.setdefault(row["code"], []).append((row["move_date"] or "", name))
+    out = {}
+    for code, items in votes.items():
+        chosen = _pick_suggested(items)
+        if chosen:
+            out[code] = chosen
+    return out
+
+
+def supplier_state(code, manual, suggested):
+    """Manual choice wins. A suggestion is only the pre-fill until the owner saves one."""
+    chosen = (manual.get(code) or "").strip()
+    hint = (suggested.get(code) or "").strip()
+    if chosen:
+        return {"name": chosen, "source": "manual", "suggestion": hint}
+    if hint:
+        return {"name": hint, "source": "suggested", "suggestion": hint}
+    return {"name": "", "source": "", "suggestion": ""}
+
+
+def supplier_rank(name):
+    """Named suppliers first, Unassigned last, then A–Z."""
+    text = (name or "").strip()
+    if not text:
+        return (1, "")
+    return (0, text.casefold())
+
+
+def assign_product_supplier(c, user, code, raw):
+    """Save or clear one supplier for a product. Does not run during ingest."""
+    code = stock()._clean_code(code)
+    if stock()._known_product(c, code) is None:
+        raise ValueError("Choose a product from the catalog.")
+    name = clean_supplier_name(raw)
+    if not name:
+        c.execute("DELETE FROM portal_product_suppliers WHERE code=?", (code,))
+        return ""
+    c.execute(
+        """INSERT INTO portal_product_suppliers(code,supplier,updated_at,updated_by) VALUES(?,?,?,?)
+           ON CONFLICT(code) DO UPDATE SET supplier=excluded.supplier, updated_at=excluded.updated_at,
+             updated_by=excluded.updated_by""",
+        (code, name, stamp(), user["username"]),
+    )
+    return name
+
+
+def supplier_kept(name, selected, filtering):
+    if not filtering:
+        return True
+    if not selected:
+        return False
+    label = name or UNASSIGNED_SUPPLIER
+    return label.casefold() in {item.casefold() for item in selected}
+
+
+def return_query(query, keys):
+    pairs = []
+    for key in keys:
+        value = (query or {}).get(key)
+        if isinstance(value, list):
+            value = value[0] if value else ""
+        if value not in (None, ""):
+            pairs.append((key, str(value)[:200]))
+    for name in query_list(query, "supplier")[:40]:
+        pairs.append(("supplier", str(name)[:120]))
+    return urlencode(pairs)
+
+
+def back_pairs(raw):
+    if not isinstance(raw, str):
+        return []
+    raw = raw.strip()
+    if not raw or len(raw) > 4000 or "://" in raw or raw.startswith("/") or any(ch in raw for ch in "\r\n"):
+        return []
+    parsed = parse_qs(raw, keep_blank_values=False)
+    pairs = []
+    for key, values in parsed.items():
+        if key not in _RETURN_KEYS:
+            continue
+        limit = 40 if key == "supplier" else 1
+        for value in values[:limit]:
+            text = str(value).strip()[:200]
+            if text:
+                pairs.append((key, text))
+    return pairs
+
+
+def back_query(raw):
+    query = {}
+    for key, value in back_pairs(raw):
+        if key in query:
+            current = query[key]
+            query[key] = current + [value] if isinstance(current, list) else [current, value]
+        else:
+            query[key] = value
+    return query
+
+
+def safe_portal_return(base, raw):
+    if base not in ("/portal/products", "/portal/stock"):
+        base = "/portal/products"
+    pairs = back_pairs(raw)
+    if not pairs:
+        return base
+    return base + "?" + urlencode(pairs)
+
+
+def with_ok(path, flag):
+    if not re.fullmatch(r"[a-z0-9-]{1,32}", str(flag or "")):
+        return path
+    join = "&" if "?" in path else "?"
+    return path + join + "ok=" + flag
+
+
+def supplier_datalist(names):
+    options = []
+    for name in names:
+        if name.casefold() == UNASSIGNED_SUPPLIER.casefold():
+            continue
+        options.append(f'<option value="{h(name)}"></option>')
+    return f'<datalist id="known-suppliers">{"".join(options)}</datalist>'
+
+
+def supplier_editor(user, action, code, state, back, label):
+    """Small picker. Known suppliers are listed, and a new name can be typed."""
+    shown = state["name"]
+    bits = [f'<span class="supplier-read">{h(shown or UNASSIGNED_SUPPLIER)}</span>']
+    if state["source"] == "suggested":
+        bits.append('<span class="pill">Suggested</span>')
+    elif not shown:
+        bits.append('<span class="mini">Unassigned</span>')
+    if state["source"] == "manual" and state["suggestion"] and state["suggestion"].casefold() != shown.casefold():
+        bits.append(f'<div class="mini">Invoices suggest {h(state["suggestion"])}</div>')
+    bits.append(
+        f'<form method="post" action="{h(action)}" class="supplier-set">'
+        f'<input type="hidden" name="csrf" value="{h(user["csrf"])}">'
+        f'<input type="hidden" name="action" value="set_supplier">'
+        f'<input type="hidden" name="code" value="{h(code)}">'
+        f'<input type="hidden" name="back" value="{h(back)}">'
+        f'<input name="supplier" list="known-suppliers" value="{h(shown)}" maxlength="{SUPPLIER_NAME_LIMIT}" '
+        f'aria-label="Supplier for {h(label)}" autocomplete="off">'
+        f'<button class="btn sm" type="submit">Save</button></form>'
+    )
+    return f'<div class="supplier-block" id="supplier-{h(code)}">{"".join(bits)}</div>'
 
 
 def supplier_filter_box(names, selected, filtering):
@@ -4430,7 +4701,7 @@ def handle_get(handler, parsed):
         elif path == "/portal/exceptions":
             html = layout("Till exceptions", "exceptions", exceptions().page(c, query), user, _srv().now())
         elif path == "/portal/products":
-            html = layout("Products", "products", parity().page_products(c, query), user, _srv().now())
+            html = layout("Products", "products", parity().page_products(c, query, user), user, _srv().now())
         elif path == "/portal/stock":
             html = layout("Stock on hand", "stock", stock().page_stock(c, user, query), user, _srv().now())
         elif path == "/portal/pricing":
@@ -4717,9 +4988,36 @@ def handle_post(handler):
         return handle_hours_post(handler, user, form)
     if path == "/portal/stock":
         return handle_stock_post(handler, user, form)
+    if path == "/portal/products":
+        return handle_products_post(handler, user, form)
     if path == "/portal/invoices":
         return handle_invoices_post(handler, user, form)
     handler.send(404, {"error": "not found"})
+
+
+def handle_products_post(handler, user, form):
+    c = db()
+    try:
+        action = form.get("action") or ""
+        try:
+            if action != "set_supplier":
+                handler.send(400, {"error": "bad action"})
+                return
+            assign_product_supplier(c, user, form.get("code"), form.get("supplier"))
+        except ValueError as ex:
+            query = back_query(form.get("back"))
+            html = layout(
+                "Products", "products",
+                parity().page_products(c, query, user, str(ex)),
+                user, _srv().now(),
+            )
+            send_portal(handler, 400, html, user)
+            return
+        c.commit()
+    finally:
+        c.close()
+    log("product supplier saved")
+    handler.redirect(with_ok(safe_portal_return("/portal/products", form.get("back")), "supplier"))
 
 
 def handle_stock_post(handler, user, form):
@@ -4727,6 +5025,7 @@ def handle_stock_post(handler, user, form):
     try:
         action = form.get("action") or ""
         linked = None
+        saved_supplier = False
         try:
             if action == "set_count":
                 stock().save_count(c, user, form)
@@ -4738,11 +5037,14 @@ def handle_stock_post(handler, user, form):
                 stock().untrack(c, user, form)
             elif action == "link_barcode":
                 linked = stock().link_barcode(c, user, form.get("barcode"), form.get("code"))
+            elif action == "set_supplier":
+                assign_product_supplier(c, user, form.get("code"), form.get("supplier"))
+                saved_supplier = True
             else:
                 handler.send(400, {"error": "bad action"})
                 return
         except ValueError as ex:
-            query = {}
+            query = back_query(form.get("back")) if action == "set_supplier" else {}
             if action == "link_barcode":
                 query = {"link": form.get("barcode") or "", "pick": form.get("code") or ""}
             html = layout("Stock on hand", "stock", stock().page_stock(c, user, query, str(ex)), user, _srv().now())
@@ -4754,6 +5056,10 @@ def handle_stock_post(handler, user, form):
     if linked:
         moved = "&moved=1" if linked.get("movedFrom") else ""
         handler.redirect("/portal/stock?pick=" + quote(linked["code"]) + "&ok=linked" + moved)
+        return
+    if saved_supplier:
+        log("product supplier saved")
+        handler.redirect(with_ok(safe_portal_return("/portal/stock", form.get("back")), "supplier"))
         return
     handler.redirect("/portal/stock?ok=1")
 
