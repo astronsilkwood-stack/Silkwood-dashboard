@@ -43,6 +43,25 @@
     });
   }
 
+  document.querySelectorAll("form.day-form").forEach(function (form) {
+    form.addEventListener("submit", function (event) {
+      var cleared = false;
+      Array.prototype.forEach.call(form.elements, function (el) {
+        if (!el.classList || !el.classList.contains("day-input")) return;
+        if ((el.defaultValue || "").trim() && !(el.value || "").trim()) cleared = true;
+      });
+      if (cleared && !window.confirm("A blank day removes those hours. Save anyway?")) event.preventDefault();
+    });
+  });
+  document.querySelectorAll(".person-toggle").forEach(function (box) {
+    box.addEventListener("change", function () {
+      var row = box.closest("tr");
+      var panel = row ? row.nextElementSibling : null;
+      if (!panel || !panel.classList.contains("person-panel")) return;
+      panel.style.display = box.checked ? "table-row" : "none";
+    });
+  });
+
   var toggle = document.getElementById("nav-toggle");
   var backdrop = document.getElementById("nav-backdrop");
   function setNav(open) {

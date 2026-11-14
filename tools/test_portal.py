@@ -657,6 +657,200 @@ class PortalTest(unittest.TestCase):
         self.assertIn("Public holiday $80.00/h", eve)
         self.assertIn("$320.00 excl", eve)
 
+    def test_contract_days_and_name_breakdown(self):
+        self.login()
+
+        def post(fields, week="2026-11-09"):
+            page = self.authed("GET", f"/portal/hours?week={week}")[2].decode()
+            fields = dict(fields)
+            fields["csrf"] = self.csrf_from(page)
+            fields["week"] = week
+            return self.authed("POST", "/portal/hours", urlencode(fields))
+
+        def show(week="2026-11-09"):
+            return self.authed("GET", f"/portal/hours?week={week}")[2].decode()
+
+        self.assertEqual(post({"action": "add_staff", "name": "Alex"})[0], 302)
+        page = show()
+        alex = re.search(r'name="person_id" value="(\d+)"', page).group(1)
+        self.assertEqual(post({
+            "action": "save_shift", "person_id": alex, "work_date": "2026-11-09",
+            "start_time": "06:00", "finish_time": "14:30", "break_minutes": "30",
+        })[0], 302)
+        self.assertEqual(self.ingest("pay-rates", {"asOf": "2026-11-11", "employees": [
+            {"name": "Alex", "ordinary": 32, "saturday": 48, "sunday": 64, "publicHoliday": 80, "superRate": 0.12},
+        ]})[0], 200)
+        self.assertEqual(post({
+            "action": "save_contract", "name": "Pat", "work_date": "2026-11-11",
+            "pay_style": "hourly", "hours": "4", "hourly_rate": "40",
+        })[0], 302)
+        self.assertEqual(post({
+            "action": "save_contract", "name": "Pat", "work_date": "2026-11-14",
+            "pay_style": "hourly", "hours": "2",
+        })[0], 302)
+        self.assertEqual(post({
+            "action": "save_contract", "name": "Riley", "work_date": "2026-11-10",
+            "pay_style": "flat", "flat_amount": "90",
+        })[0], 302)
+        page = show()
+        self.assertIn("<h2>Pay run</h2>", page)
+        self.assertIn('id="contract-week"', page)
+        self.assertIn('id="contract-grand-total">6 h', page)
+        self.assertIn('id="contractor-wages-cost">$330.00', page)
+        self.assertIn('id="grand-total">8 h', page)
+        self.assertIn("not in the hours CSV", page)
+        alex_id = re.search(r'for="open-pay-(\d+)">Alex<span', page).group(1)
+        pay_row = page.split(f'id="wage-person-{alex_id}"', 1)[1].split("</tr>", 1)[0]
+        self.assertNotIn("day-input", pay_row)
+        pay_break = page.split(f'id="pay-{alex_id}-break"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("Mon 9 Nov 2026", pay_break)
+        self.assertIn("8 h", pay_break)
+        self.assertIn("Weekday $32.00/h", pay_break)
+        self.assertIn("$256.00 excl · $286.72 incl super", pay_break)
+        self.assertIn(">Total<", pay_break)
+        self.assertIn('id="pay-card-%s"' % alex_id, page)
+        pat = re.search(r'for="open-contract-(\d+)">Pat<span', page).group(1)
+        riley = re.search(r'for="open-contract-(\d+)">Riley<span', page).group(1)
+        wed = page.split(f'id="contract-cell-{pat}-2026-11-11"', 1)[1].split("</td>", 1)[0]
+        self.assertIn('data-entry="hourly"', wed)
+        self.assertIn('value="4.00"', wed)
+        self.assertIn("$160.00 · no super", wed)
+        sat = page.split(f'id="contract-cell-{pat}-2026-11-14"', 1)[1].split("</td>", 1)[0]
+        self.assertIn('value="2.00"', sat)
+        self.assertIn("$80.00 · no super", sat)
+        flat = page.split(f'id="contract-cell-{riley}-2026-11-10"', 1)[1].split("</td>", 1)[0]
+        self.assertIn('data-entry="flat"', flat)
+        self.assertIn("Flat $90.00", flat)
+        self.assertNotIn('name="hours_', flat)
+        pat_break = page.split(f'id="contract-{pat}-break"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("Wed 11 Nov 2026", pat_break)
+        self.assertIn("$40.00/h", pat_break)
+        self.assertIn("$160.00 · no super", pat_break)
+        self.assertIn("6 h", pat_break)
+        self.assertIn("$240.00 · no super", pat_break)
+        self.assertIn('id="contract-card-%s"' % pat, page)
+        self.assertIn('id="contract-days-add"', page)
+
+        self.assertEqual(post({
+            "action": "save_contract_days", "contractor_id": pat, "hourly_rate": "40",
+            "hours_2026-11-11": "5",
+        })[0], 302)
+        page = show()
+        wed = page.split(f'id="contract-cell-{pat}-2026-11-11"', 1)[1].split("</td>", 1)[0]
+        self.assertIn('value="5.00"', wed)
+        self.assertIn("$200.00 · no super", wed)
+        self.assertIn('value="2.00"', page.split(f'id="contract-cell-{pat}-2026-11-14"', 1)[1].split("</td>", 1)[0])
+        self.assertIn('id="contractor-wages-cost">$370.00', page)
+
+        self.assertEqual(post({
+            "action": "save_contract_days", "contractor_id": pat,
+            "hours_2026-11-09": "3",
+        })[0], 302)
+        page = show()
+        mon = page.split(f'id="contract-cell-{pat}-2026-11-09"', 1)[1].split("</td>", 1)[0]
+        self.assertIn('value="3.00"', mon)
+        self.assertIn("$120.00 · no super", mon)
+        self.assertIn('id="contractor-wages-cost">$490.00', page)
+        self.assertIn('id="contract-grand-total">10 h', page)
+
+        self.assertEqual(post({
+            "action": "save_contract_days", "contractor_id": pat, "hours_2026-11-14": "",
+        })[0], 302)
+        page = show()
+        sat = page.split(f'id="contract-cell-{pat}-2026-11-14"', 1)[1].split("</td>", 1)[0]
+        self.assertIn('data-entry="empty"', sat)
+        self.assertNotIn('value="2.00"', sat)
+        self.assertIn('id="contractor-wages-cost">$410.00', page)
+
+        self.assertEqual(post({
+            "action": "save_contract_days", "name": "Samira", "hourly_rate": "25",
+            "hours_2026-11-12": "3", "hours_2026-11-13": "1.5",
+        })[0], 302)
+        page = show()
+        samira = re.search(r'for="open-contract-(\d+)">Samira<span', page).group(1)
+        self.assertIn('value="25.00" aria-label="Samira hourly rate"', page)
+        thu = page.split(f'id="contract-cell-{samira}-2026-11-12"', 1)[1].split("</td>", 1)[0]
+        self.assertIn('value="3.00"', thu)
+        self.assertIn("$75.00 · no super", thu)
+        fri = page.split(f'id="contract-cell-{samira}-2026-11-13"', 1)[1].split("</td>", 1)[0]
+        self.assertIn('value="1.50"', fri)
+        self.assertIn("$37.50 · no super", fri)
+        self.assertIn('id="contractor-wages-cost">$522.50', page)
+
+        self.assertEqual(post({
+            "action": "save_contract_days", "contractor_id": pat, "hourly_rate": "",
+            "hours_2026-11-16": "2",
+        }, week="2026-11-16")[0], 302)
+        later = show("2026-11-16")
+        later_mon = later.split(f'id="contract-cell-{pat}-2026-11-16"', 1)[1].split("</td>", 1)[0]
+        self.assertIn('value="2.00"', later_mon)
+        self.assertIn("$80.00 · no super", later_mon)
+        self.assertIn('value="40.00" aria-label="Pat hourly rate"', later)
+        self.assertIn('id="contractor-wages-cost">$80.00', later)
+
+        refused = post({
+            "action": "save_contract_days", "contractor_id": riley, "hourly_rate": "40",
+            "hours_2026-11-10": "5",
+        })
+        self.assertEqual(refused[0], 400)
+        self.assertIn("Tue 10 Nov 2026 has a flat amount", refused[2].decode())
+        c = server.db()
+        flat_row = c.execute(
+            "SELECT flat_amount, cost FROM portal_contract_entries e JOIN portal_contractors k ON k.id=e.contractor_id WHERE k.name='Riley'"
+        ).fetchone()
+        self.assertEqual(flat_row["cost"], 90)
+        before = c.execute("SELECT COUNT(*) AS n FROM portal_contract_entries").fetchone()["n"]
+        c.close()
+
+        self.assertEqual(post({
+            "action": "save_contract", "name": "Pat", "work_date": "2026-11-09",
+            "pay_style": "hourly", "hours": "1", "hourly_rate": "40",
+        })[0], 302)
+        mixed = post({
+            "action": "save_contract_days", "contractor_id": pat, "hours_2026-11-09": "8",
+        })
+        self.assertEqual(mixed[0], 400)
+        self.assertIn("more than one entry", mixed[2].decode())
+        c = server.db()
+        monday_rows = c.execute(
+            """SELECT hours FROM portal_contract_entries e
+               JOIN portal_contractors k ON k.id=e.contractor_id
+               WHERE k.name='Pat' AND e.work_date='2026-11-09' ORDER BY e.id"""
+        ).fetchall()
+        self.assertEqual([row["hours"] for row in monday_rows], [3, 1])
+        self.assertEqual(self.ingest("pay-rates", {"asOf": "2026-11-12", "employees": [
+            {"name": "Alex", "ordinary": 32, "saturday": 48, "sunday": 64, "publicHoliday": 80, "superRate": 0.12},
+        ]})[0], 200)
+        self.assertEqual(self.ingest("sales", {"asOf": "2026-11-12", "latestSalesDate": "2026-11-12", "periods": [{"daily": [
+            {"date": "2026-11-12", "total": 10, "shop": 4, "fuel": 6, "gp": 1},
+        ]}]})[0], 200)
+        after = c.execute("SELECT COUNT(*) AS n FROM portal_contract_entries").fetchone()["n"]
+        names = [row["name"] for row in c.execute("SELECT name FROM portal_contractors ORDER BY name").fetchall()]
+        c.execute("DELETE FROM portal_sales_days WHERE date='2026-11-12'")
+        c.commit()
+        c.close()
+        self.assertEqual(before + 1, after)
+        self.assertEqual(names, ["Pat", "Riley", "Samira"])
+
+        code, _, body, _ = self.request(
+            "GET", "/api/portal/staff-hours?week=2026-11-09",
+            headers={"Authorization": "Bearer test-ingest-key"},
+        )
+        self.assertEqual(code, 200)
+        raw = body.decode().lower()
+        self.assertIn("alex", raw)
+        self.assertNotIn("pat", raw)
+        self.assertNotIn("samira", raw)
+        self.assertNotIn("riley", raw)
+        self.assertNotIn("contract", raw)
+        self.assertNotIn("40.00", raw)
+        csv_text = self.authed("GET", "/portal/hours.csv?week=2026-11-09")[2].decode("utf-8-sig")
+        self.assertIn("Alex", csv_text)
+        self.assertNotIn("Pat", csv_text)
+        self.assertNotIn("Samira", csv_text)
+        self.assertNotIn("Riley", csv_text)
+        self.assertNotIn("90.00", csv_text)
+
     def test_optional_insight_generator_stays_off(self):
         tiny = {"asOf": "2026-07-02", "latestSalesDate": "2026-07-02", "periods": [{"daily": [
             {"date": "2026-07-02", "total": 10, "shop": 4, "fuel": 6, "gp": 1}
