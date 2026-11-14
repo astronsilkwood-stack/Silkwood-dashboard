@@ -172,6 +172,31 @@ a.glance b{font:600 26px var(--mono);letter-spacing:-.03em}
 a.glance span{color:var(--sl);font-size:14px;font-weight:600}
 .person ul.days{list-style:none;padding:0;margin:0}
 .person li{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid #f1f5f9;min-height:44px}
+.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.person-toggle{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+th.person-cell{position:relative;text-transform:none;letter-spacing:0;font:inherit;color:inherit;min-width:10.5rem}
+.person-name{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:4px 0;cursor:pointer;font-weight:800;color:var(--nav);text-decoration:underline;text-underline-offset:3px}
+.person-name::before{content:"";width:0;height:0;border-top:5px solid transparent;border-bottom:5px solid transparent;border-left:6px solid currentColor;flex:none}
+tr:has(.person-toggle:checked)>.person-cell .person-name::before,
+details[open]>summary.person-name::before{transform:rotate(90deg)}
+.person-toggle:focus-visible+.person-name,
+summary.person-name:focus{outline:2px solid var(--ink);outline-offset:2px}
+summary.person-name{list-style:none}
+summary.person-name::-webkit-details-marker{display:none}
+tr.person-panel{display:none}
+tr:has(.person-toggle:checked)+tr.person-panel{display:table-row}
+tr.person-panel td{background:#f8fafc;padding:12px}
+.day-break .mini{margin:0 0 8px}
+.break-days{list-style:none;padding:0;margin:0}
+.break-days li{display:grid;grid-template-columns:minmax(8rem,1.4fr) minmax(4rem,.7fr) minmax(8rem,1.2fr) minmax(10rem,1.5fr);gap:8px 12px;align-items:baseline;padding:8px 0;border-bottom:1px solid #f1f5f9}
+.break-days .break-head{font:700 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--sl)}
+.break-days .total{font-weight:800;border-bottom:0}
+td.day-cell{min-width:6.5rem}
+.day-input{text-align:right}
+.person-sheet{margin:0 0 8px}
+.person-cell .f,.person-cell .btn{margin-top:8px}
+.person li b{text-align:right}
+.person li b .day-input{width:6.5rem;margin-left:auto}
 .shift{border-top:1px solid var(--bd);padding:8px 0}
 .shift summary{min-height:44px;cursor:pointer;font-weight:700}
 details.order{margin:0 0 8px 12px}
@@ -291,6 +316,9 @@ body.scanning{overflow:hidden}
  .ph h1{font-size:24px}
  .week-table{display:none}
  .week-cards{display:grid;gap:12px}
+ .break-days li{grid-template-columns:1fr auto}
+ .break-days li span:nth-child(3),.break-days li span:nth-child(4){grid-column:1 / -1}
+ .break-head{display:none}
  .invoice-table{display:none}
  .invoice-cards{display:grid;gap:12px}
  .daybar{display:grid;grid-template-columns:1fr 1fr}
