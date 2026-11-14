@@ -59,6 +59,9 @@ class PortalTest(unittest.TestCase):
         c.execute("DELETE FROM portal_blobs WHERE dataset='pay-rates'")
         c.execute("DELETE FROM portal_snapshots WHERE dataset='pay-rates'")
         c.execute("DELETE FROM portal_meta WHERE k='pay-rates'")
+        c.execute("DELETE FROM portal_xero_pnl")
+        c.execute("DELETE FROM portal_snapshots WHERE dataset='xero-pnl'")
+        c.execute("DELETE FROM portal_meta WHERE k='xero-pnl'")
         c.execute("DELETE FROM portal_invoice_payments")
         c.execute("UPDATE portal_users SET password_hash=? WHERE username='astron'", (ORIGINAL_HASH,))
         c.commit(); c.close()
@@ -123,7 +126,7 @@ class PortalTest(unittest.TestCase):
     def test_logged_out_pages_redirect_and_staff_routes_stay(self):
         for path in ("/portal", "/portal/day", "/portal/invoices", "/portal/hours", "/portal/purchases", "/portal/fuel", "/portal/dips", "/portal/hours.csv",
                      "/portal/products", "/portal/pricing", "/portal/till-prices", "/portal/departments", "/portal/kitchen",
-                     "/portal/shifts", "/portal/commission", "/portal/notes", "/portal/stock", "/portal/exceptions"):
+                     "/portal/shifts", "/portal/commission", "/portal/notes", "/portal/stock", "/portal/exceptions", "/portal/pnl"):
             status, hdrs, body, _ = self.request("GET", path, headers={"X-Staff-Pin": "9999"})
             self.assertEqual(status, 302, path)
             self.assertEqual(hdrs.get("Location"), "/portal/login")
@@ -3008,6 +3011,236 @@ class PortalTest(unittest.TestCase):
             c.commit()
         finally:
             c.close()
+
+    def test_xero_pnl_page(self):
+        """Till and Bopple income, Xero costs, and contract hours, without counting Xero wages twice."""
+        from datetime import date
+        from decimal import Decimal
+        sys.path.insert(0, str(ROOT / "tools"))
+        import xero_pnl
+        import portal_pnl
+        portal._ingest_hits.clear()
+        self.login()
+        cleanup = {"online_existed": True}
+
+        def _cleanup_pnl():
+            c = server.db()
+            try:
+                c.execute("DELETE FROM portal_sales_days WHERE date>='2026-02-01' AND date<'2026-04-01'")
+                c.execute("DELETE FROM portal_online_days WHERE date>='2026-02-01' AND date<'2026-04-01'")
+                if not cleanup["online_existed"]:
+                    c.execute("DELETE FROM portal_meta WHERE k='online-orders'")
+                    c.execute("DELETE FROM portal_snapshots WHERE dataset='online-orders'")
+                c.commit()
+            finally:
+                c.close()
+
+        self.addCleanup(_cleanup_pnl)
+        home = self.authed("GET", "/portal/pnl")[2].decode()
+        self.assertEqual(self.authed("GET", "/portal/pnl")[0], 200)
+        period = home.split('id="pnl-period"', 1)[1].split("</p>", 1)[0]
+        self.assertIn("month to date", period)
+        self.assertIn("11 Nov 2026", period)
+        self.assertIn('id="xero-pnl-empty"', home)
+        self.assertIn("Xero P&L not loaded yet", home)
+        self.assertIn("Xero purchases are by bill date, not stock used.", home)
+        self.assertIn('href="/portal/pnl"', home)
+        self.assertIn("Profit &amp; Loss", home)
+        overview = self.authed("GET", "/portal")[2].decode()
+        self.assertIn('href="/portal/pnl"', overview)
+        later = self.authed("GET", "/portal/pnl?month=2026-12")[2].decode()
+        self.assertIn("Choose a month from 2024 through this month.", later)
+        denied = self.ingest("xero-pnl", {"month": "2026-08", "accounts": [
+            {"section": "Less Cost of Sales", "accountName": "Purchases - Fuel", "accountId": "fuel", "amount": 1},
+        ]}, key="nope")
+        self.assertEqual(denied[0], 401)
+        self.assertEqual(self.ingest("xero-pnl", {"month": "2026-13", "accounts": [
+            {"section": "Less Cost of Sales", "accountName": "Purchases - Fuel", "accountId": "fuel", "amount": 1},
+        ]})[0], 400)
+        self.assertEqual(self.ingest("xero-pnl", {"month": "2026-08", "accounts": []})[0], 400)
+        self.assertEqual(self.ingest("xero-pnl", {"month": "2026-08", "accounts": [
+            {"section": "Less Cost of Sales", "accountName": "Purchases - Fuel", "accountId": "fuel", "amount": 1},
+            {"section": "Less Cost of Sales", "accountName": "Purchases - Shop", "accountId": "fuel", "amount": 2},
+        ]})[0], 400)
+        self.assertEqual(self.ingest("xero-pnl", {
+            "month": "2026-08", "account": "000111",
+            "accounts": [{"section": "Less Cost of Sales", "accountName": "Purchases - Fuel", "accountId": "fuel", "amount": 1}],
+        })[0], 400)
+        pan = "4111111111111111"
+        self.assertEqual(self.ingest("xero-pnl", {"month": "2026-08", "accounts": [
+            {"section": "Less Cost of Sales", "accountName": pan, "accountId": "fuel", "amount": 1},
+        ]})[0], 400)
+        code, _, raw, _ = self.ingest("xero-pnl", {"month": "2026-06", "accounts": [
+            {"section": "Less Cost of Sales", "accountName": "<b>Fuel</b>", "accountId": "fuel", "amount": 1},
+        ]})
+        self.assertEqual(code, 200, raw)
+        escaped = self.authed("GET", "/portal/pnl?month=2026-06")[2].decode()
+        self.assertIn("&lt;b&gt;Fuel&lt;/b&gt;", escaped)
+        self.assertNotIn("<b>Fuel</b>", escaped)
+
+        code, _, raw, _ = self.ingest("xero-pnl", {"month": "2026-02", "accounts": [
+            {"section": "Less Cost of Sales", "accountName": "Purchases - Fuel", "accountId": "fuel", "amount": 800},
+            {"section": "Less Cost of Sales", "accountName": "Purchases - Shop", "accountId": "shop", "amount": 400},
+            {"section": "Less Operating Expenses", "accountName": "Cleaning", "accountId": "clean", "amount": 50},
+            {"section": "Less Operating Expenses", "accountName": "Wages and Salaries", "accountId": "wages", "amount": 200},
+            {"section": "Less Operating Expenses", "accountName": "Superannuation", "accountId": "super", "amount": 24},
+        ]})
+        self.assertEqual(code, 200, raw)
+        self.assertEqual(json.loads(raw)["accounts"], 5)
+        replaced = self.ingest("xero-pnl", {"month": "2026-05", "accounts": [
+            {"section": "Less Operating Expenses", "accountName": "Cleaning", "accountId": "clean", "amount": 9},
+            {"section": "Less Operating Expenses", "accountName": "Freight", "accountId": "freight", "amount": 1},
+        ]})
+        self.assertEqual(json.loads(replaced[2])["accounts"], 2)
+        again = self.ingest("xero-pnl", {"month": "2026-05", "accounts": [
+            {"section": "Less Operating Expenses", "accountName": "Cleaning", "accountId": "clean", "amount": 4},
+        ]})
+        self.assertEqual(json.loads(again[2])["accounts"], 1)
+        code, _, raw, _ = self.ingest("xero-pnl", {"month": "2026-03", "accounts": [
+            {"section": "Less Operating Expenses", "accountName": "Cleaning", "accountId": "clean", "amount": 10},
+        ]})
+        self.assertEqual(code, 200, raw)
+        sample = xero_pnl.ingest_data((ROOT / "tools" / "fixtures" / "xero-pnl-oct-2026-sample.txt").read_text(), "2026-10")
+        code, _, raw, _ = self.ingest("xero-pnl", sample)
+        self.assertEqual(code, 200, raw)
+        stored = json.loads(raw)
+        self.assertEqual(stored["dataset"], "xero-pnl")
+        self.assertEqual(stored["month"], "2026-10")
+        self.assertEqual(stored["accounts"], 13)
+
+        c = server.db()
+        try:
+            names = [row["account_name"] for row in c.execute(
+                "SELECT account_name FROM portal_xero_pnl WHERE month='2026-10'"
+            )]
+            self.assertEqual(len(names), 13)
+            for skipped in ("Gross Profit", "Net Profit", "Total Cost of Sales", "Total Operating Expenses"):
+                self.assertNotIn(skipped, names)
+            kept = c.execute("SELECT amount FROM portal_xero_pnl WHERE month='2026-05'").fetchone()
+            self.assertEqual(kept["amount"], 4)
+            self.assertEqual(c.execute("SELECT COUNT(*) AS n FROM portal_xero_pnl WHERE month='2026-02'").fetchone()["n"], 5)
+            c.execute("DELETE FROM portal_sales_days WHERE date>='2026-02-01' AND date<'2026-04-01'")
+            c.execute("DELETE FROM portal_online_days WHERE date>='2026-02-01' AND date<'2026-04-01'")
+            online_existed = bool(portal.meta_get(c, "online-orders").get("asOf"))
+            cleanup["online_existed"] = online_existed
+            if not online_existed:
+                portal.meta_set(c, "online-orders", {"asOf": "2026-02-16", "source": "test"})
+            now = portal.stamp()
+            c.execute(
+                """INSERT INTO portal_sales_days(date,total,shop,fuel,gp,gp_pct,coverage,missing,products,covered_ex,source_as_of)
+                   VALUES('2026-02-16',3300,1100,2200,0,0,1,0,1,0,'2026-02-16')"""
+            )
+            c.execute(
+                """INSERT INTO portal_sales_days(date,total,shop,fuel,gp,gp_pct,coverage,missing,products,covered_ex,source_as_of)
+                   VALUES('2026-03-09',330,110,220,0,0,1,0,1,0,'2026-03-09')"""
+            )
+            c.execute(
+                """INSERT INTO portal_online_days(date,orders,total,fees,refunds,net,source_as_of)
+                   VALUES('2026-02-16',1,110,0,0,110,'2026-02-16')"""
+            )
+            person = portal.one(c.execute(
+                "INSERT INTO portal_people(name,active,created_at,updated_at) VALUES('Alex',1,?,?) RETURNING id",
+                (now, now),
+            ))
+            for work_date in ("2026-02-02", "2026-03-02"):
+                c.execute(
+                    """INSERT INTO portal_roster(person_id,work_date,start_time,finish_time,break_minutes,notes,hours,created_at,updated_at,created_by,updated_by)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (person["id"], work_date, "09:00", "17:00", 0, "", 8, now, now, "astron", "astron"),
+                )
+            contractor = portal.one(c.execute(
+                "INSERT INTO portal_contractors(name,hourly_rate,active,created_at,updated_at) VALUES('Pat',40,1,?,?) RETURNING id",
+                (now, now),
+            ))
+            c.execute(
+                """INSERT INTO portal_contract_entries(contractor_id,work_date,hours,hourly_rate,flat_amount,cost,notes,created_at,updated_at,created_by,updated_by)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (contractor["id"], "2026-02-10", None, None, 80, 80, "", now, now, "astron", "astron"),
+            )
+            c.commit()
+        finally:
+            c.close()
+        self.assertEqual(self.ingest("pay-rates", {"asOf": "2026-08-31", "employees": [
+            {"name": "Alex", "ordinary": 32, "saturday": 48, "sunday": 64, "publicHoliday": 80, "superRate": 0.12},
+        ]})[0], 200)
+
+        c = server.db()
+        try:
+            august = portal_pnl.build(c, date(2026, 2, 1), date(2026, 11, 11))
+            september = portal_pnl.build(c, date(2026, 3, 1), date(2026, 11, 11))
+        finally:
+            c.close()
+        self.assertEqual(august["fuel"], Decimal("2000.00"))
+        self.assertEqual(august["shop"], Decimal("1000.00"))
+        self.assertEqual(august["online"], Decimal("100.00"))
+        self.assertEqual(august["income"], Decimal("3100.00"))
+        self.assertEqual(august["cost"], Decimal("1200.00"))
+        self.assertEqual(august["gross"], Decimal("1900.00"))
+        self.assertEqual(august["gp_pct"], Decimal("61.3"))
+        self.assertIsNone(august["portal_wages"])
+        self.assertEqual(august["wage_mode"], "xero")
+        self.assertEqual(august["contract"], Decimal("80.00"))
+        self.assertEqual(august["expenses"], Decimal("354.00"))
+        self.assertEqual(august["net"], Decimal("1546.00"))
+        self.assertEqual(august["margin"], Decimal("49.9"))
+        self.assertFalse(august["prev_loaded"])
+        self.assertEqual(september["income"], Decimal("300.00"))
+        self.assertEqual(september["online"], Decimal("0.00"))
+        self.assertEqual(september["cost"], Decimal("0.00"))
+        self.assertEqual(september["gross"], Decimal("300.00"))
+        self.assertEqual(september["portal_wages"], Decimal("286.72"))
+        self.assertEqual(september["contract"], Decimal("0.00"))
+        self.assertEqual(september["expenses"], Decimal("296.72"))
+        self.assertEqual(september["net"], Decimal("3.28"))
+        self.assertEqual(september["margin"], Decimal("1.1"))
+        self.assertTrue(september["prev_loaded"])
+
+        august_page = self.authed("GET", "/portal/pnl?month=2026-02")[2].decode()
+        august_period = august_page.split('id="pnl-period"', 1)[1].split("</p>", 1)[0]
+        self.assertNotIn("month to date", august_period)
+        self.assertIn("February 2026", august_period)
+        self.assertIn("January 2026", august_page)
+        fuel = august_page.split('id="pnl-fuel"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("$2,000.00", fuel)
+        shop = august_page.split('id="pnl-shop"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("$1,000.00", shop)
+        online = august_page.split('id="pnl-online"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("$100.00", online)
+        gross = august_page.split('id="pnl-gross"', 1)[1].split('id="pnl-net"', 1)[0]
+        self.assertIn("$1,900.00", gross)
+        self.assertIn("61.3%", gross)
+        net = august_page.split('id="pnl-net"', 1)[1].split('id="pnl-statement"', 1)[0]
+        self.assertIn("$1,546.00", net)
+        contract = august_page.split('id="pnl-contract"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("$80.00", contract)
+        self.assertIn("Not in Xero", contract)
+        self.assertIn("Wages and Salaries", august_page)
+        self.assertNotIn("$286.72", august_page)
+        self.assertNotIn('id="pnl-portal-wages"', august_page)
+        self.assertIn('id="pnl-prev-missing"', august_page)
+        self.assertIn("Xero P&L not loaded yet", august_page.split('id="pnl-prev-missing"', 1)[1].split("</p>", 1)[0])
+        self.assertIn("Purchases - Fuel", august_page)
+        self.assertIn('class="pnl-cards"', august_page)
+        self.assertIn("nav-toggle", august_page)
+
+        september_page = self.authed("GET", "/portal/pnl?month=2026-03")[2].decode()
+        wages = september_page.split('id="pnl-portal-wages"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("$286.72", wages)
+        self.assertIn("Included in Xero", wages)
+        self.assertNotIn('id="xero-pnl-empty"', september_page)
+        opex = september_page.split('id="pnl-opex"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("$296.72", opex)
+        self.assertIn("$354.00", opex)
+
+        october = self.authed("GET", "/portal/pnl?month=2026-10")[2].decode()
+        self.assertIn("Purchases - Fuel", october)
+        self.assertIn("$79,072.96", october)
+        self.assertIn("Wages and Salaries", october)
+        self.assertIn("$21,199.73", october)
+        self.assertIn("Xero purchases are by bill date, not stock used.", october)
+        still = self.authed("GET", "/portal/pnl")[2].decode()
+        self.assertIn('id="xero-pnl-empty"', still)
+        self.assertIn("month to date", still.split('id="pnl-period"', 1)[1].split("</p>", 1)[0])
 
     def tearDown(self):
         # The barcode-map test is the only one that writes this dataset. Clearing it here

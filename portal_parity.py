@@ -2386,6 +2386,7 @@ def page_notes(c):
         ("last-year-plu", "Last year comparison"),
         ("shifts", "Shift balancing"),
         ("pay-rates", "Pay rates"),
+        ("xero-pnl", "Xero profit and loss"),
     ):
         info = portal.meta_get(c, key)
         packs.append(f"<li>{portal.h(label)}: {portal.h(info.get('asOf') or 'not loaded')}</li>")
@@ -2403,6 +2404,7 @@ def page_notes(c):
 <li>Last year comparison is one calendar month of till sales, inc GST, against the same month last year. This year is the loaded days. Last year is a stored SwiftPOS monthly total. Same days is that total’s daily average, because the file is not day by day. A month that has not been stored says last year not loaded yet and is not shown as zero.</li>
 <li>Employee wage costs use the pay-rates upload. The rate follows the day the shift started: weekday, Saturday, Sunday, or a Queensland public holiday. Super is that employee's super rate. Contract hours are typed on Staff hours, day by day, and have no super. They are not in the hours CSV or the staff-hours feed. Tap a name on Staff hours for that person's dates, hours, rates, and cost for the week.</li>
 <li>Wages vs sales on the overview is employee wages including super, plus contract costs, divided by till sales excluding GST. Shop and fuel on the daysheet are inc GST, so each is divided by 1.1. A dash means hours, a pay rate, or till sales are missing.</li>
+<li>Profit and loss for a month uses till fuel and shop, plus Bopple online gross, each divided by 1.1 so the income is ex GST. Cost of sales and operating expenses come from the Xero P&amp;L for that month, already ex GST. Xero purchases are by bill date, not stock used. Wages and super are the Xero accounts when that report has them. Contract hours are typed on Staff hours, are not in Xero, and are added as their own line. Employee wages are not added again when Xero already has them. A month with no Xero upload says Xero P&amp;L not loaded yet.</li>
 <li>The portal does not pay invoices. Mark as paid only stores a record of a payment already made. It does not set pump prices, or write SwiftPOS prices or costs. Staff hours are not sent to Xero.</li>
 </ul>
 <p>Daily window: {portal.h(window.get('fromDate') or '—')} · {portal.h(window.get('rule') or '')}</p>

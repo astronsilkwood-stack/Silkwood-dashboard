@@ -42,6 +42,11 @@ def main():
             data = json.loads((ROOT / "tools" / "fixtures" / filename).read_text())
             result = portal.APPLIERS[dataset](c, data)
             print(f"loaded {dataset} through {result.get('asOf')}")
+        sys.path.insert(0, str(ROOT / "tools"))
+        import xero_pnl
+        sample = (ROOT / "tools" / "fixtures" / "xero-pnl-oct-2026-sample.txt").read_text()
+        result = portal.APPLIERS["xero-pnl"](c, xero_pnl.ingest_data(sample, "2026-10"))
+        print(f"loaded xero-pnl {result.get('month')} ({result.get('accounts')} accounts)")
         if not portal.one(c.execute("SELECT 1 AS x FROM portal_people")):
             now = portal.stamp()
             for name, shifts in SAMPLE:
