@@ -1,0 +1,383 @@
+Profit and Loss Report: Profit and Loss
+Date Range: 14 November 2026
+Updated At: 2026-11-14T07:06:34.731Z
+[
+  {
+    "rowType": "Header",
+    "cells": [
+      {
+        "value": ""
+      },
+      {
+        "value": "31 Oct 26"
+      }
+    ]
+  },
+  {
+    "rowType": "Section",
+    "title": "Less Cost of Sales",
+    "rows": [
+      {
+        "rowType": "Row",
+        "cells": [
+          {
+            "value": "Purchases - Fuel",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "6db74470-bcc1-4f6d-bb5a-8fb739bea54c"
+              }
+            ]
+          },
+          {
+            "value": "79072.96",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "6db74470-bcc1-4f6d-bb5a-8fb739bea54c"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rowType": "Row",
+        "cells": [
+          {
+            "value": "Purchases - Others Shop",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "0a37bc75-82fb-4eef-b809-218e33e3b617"
+              }
+            ]
+          },
+          {
+            "value": "15.15",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "0a37bc75-82fb-4eef-b809-218e33e3b617"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rowType": "Row",
+        "cells": [
+          {
+            "value": "Purchases - Shop",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "fdc1702a-232e-4f77-a49a-2034a17b9b1e"
+              }
+            ]
+          },
+          {
+            "value": "54258.74",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "fdc1702a-232e-4f77-a49a-2034a17b9b1e"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rowType": "SummaryRow",
+        "cells": [
+          {
+            "value": "Total Cost of Sales"
+          },
+          {
+            "value": "133346.85"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "rowType": "Section",
+    "title": "",
+    "rows": [
+      {
+        "rowType": "Row",
+        "cells": [
+          {
+            "value": "Gross Profit"
+          },
+          {
+            "value": "-133346.85"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "rowType": "Section",
+    "title": "Less Operating Expenses",
+    "rows": [
+      {
+        "rowType": "Row",
+        "cells": [
+          {
+            "value": "Cleaning",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "c324ad67-700d-43f0-9e20-31b80ca5eef5"
+              }
+            ]
+          },
+          {
+            "value": "503.63",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "c324ad67-700d-43f0-9e20-31b80ca5eef5"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rowType": "Row",
+        "cells": [
+          {
+            "value": "Electricity & Gas",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "2b0e1fac-1949-49c7-b1a9-a407db14580a"
+              }
+            ]
+          },
+          {
+            "value": "3388.76",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "2b0e1fac-1949-49c7-b1a9-a407db14580a"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rowType": "Row",
+        "cells": [
+          {
+            "value": "Freight & Courier",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "7f061315-4e87-49d4-9075-33b1de350c23"
+              }
+            ]
+          },
+          {
+            "value": "8.50",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "7f061315-4e87-49d4-9075-33b1de350c23"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rowType": "Row",
+        "cells": [
+          {
+            "value": "General Expenses",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "c20698b0-3ec7-4183-b94a-85f504d09bc8"
+              }
+            ]
+          },
+          {
+            "value": "206.81",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "c20698b0-3ec7-4183-b94a-85f504d09bc8"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rowType": "Row",
+        "cells": [
+          {
+            "value": "Merchant Fees",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "3462021e-06f2-4091-b06a-91f6acd5f42b"
+              }
+            ]
+          },
+          {
+            "value": "45.00",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "3462021e-06f2-4091-b06a-91f6acd5f42b"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rowType": "Row",
+        "cells": [
+          {
+            "value": "Security & Pest Control",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "c2d2a1b9-3447-4482-8287-76d1f16911d9"
+              }
+            ]
+          },
+          {
+            "value": "46.51",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "c2d2a1b9-3447-4482-8287-76d1f16911d9"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rowType": "Row",
+        "cells": [
+          {
+            "value": "Subscriptions",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "d87cff1d-7b96-4628-9e96-1a14d148b38c"
+              }
+            ]
+          },
+          {
+            "value": "199.62",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "d87cff1d-7b96-4628-9e96-1a14d148b38c"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rowType": "Row",
+        "cells": [
+          {
+            "value": "Superannuation",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "f5935025-4b1d-4312-9c3f-000bc1a619c3"
+              }
+            ]
+          },
+          {
+            "value": "2543.98",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "f5935025-4b1d-4312-9c3f-000bc1a619c3"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rowType": "Row",
+        "cells": [
+          {
+            "value": "Telephone & Internet",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "700c6f16-6331-4838-816b-19c0a3e4cabb"
+              }
+            ]
+          },
+          {
+            "value": "109.09",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "700c6f16-6331-4838-816b-19c0a3e4cabb"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rowType": "Row",
+        "cells": [
+          {
+            "value": "Wages and Salaries",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "9fc02881-ac9b-4703-bf81-f5e933541891"
+              }
+            ]
+          },
+          {
+            "value": "21199.73",
+            "attributes": [
+              {
+                "id": "account",
+                "value": "9fc02881-ac9b-4703-bf81-f5e933541891"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rowType": "SummaryRow",
+        "cells": [
+          {
+            "value": "Total Operating Expenses"
+          },
+          {
+            "value": "28251.63"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "rowType": "Section",
+    "title": "",
+    "rows": [
+      {
+        "rowType": "Row",
+        "cells": [
+          {
+            "value": "Net Profit"
+          },
+          {
+            "value": "-161598.48"
+          }
+        ]
+      }
+    ]
+  }
+]

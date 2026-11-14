@@ -281,6 +281,24 @@ td.nowrap{white-space:nowrap}
 .compare-table tr:not(.compare-group) td:first-child,.compare-table tr:not(.compare-group) th:first-child{text-align:left;position:sticky;left:0;background:#fff;z-index:1}
 .compare-table caption{caption-side:bottom;text-align:left;padding-top:8px}
 .compare-group td{font-weight:800;text-align:left;background:#eef3f7;border-top:2px solid var(--nav)}
+.pnl-cards{display:none}
+.pnl-kicker{margin:14px 0 0;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--sl)}
+.pnl-card{border:1px solid var(--bd);border-left:4px solid var(--nav);border-radius:12px;padding:12px 14px;background:#fff}
+.pnl-card.total{background:#f4f7fa}
+.pnl-card h3{margin:0;font-size:16px}
+.pnl-card h3 .mini{display:block;font-weight:600}
+.pnl-card dl{display:grid;gap:8px;margin:8px 0 0}
+.pnl-card dt{font:700 11px var(--mono);letter-spacing:.04em;text-transform:uppercase;color:var(--sl)}
+.pnl-card dd{margin:0}
+.pnl-card dd b{display:block;font:600 18px var(--mono);letter-spacing:-.02em}
+.pnl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.pnl-table{width:100%;min-width:640px;border-collapse:collapse}
+.pnl-table th,.pnl-table td{padding:8px 10px;border-bottom:1px solid var(--bd);vertical-align:top}
+.pnl-table th.num,.pnl-table td.num{text-align:right;font-variant-numeric:tabular-nums}
+.pnl-table td:first-child,.pnl-table th:first-child{text-align:left;position:sticky;left:0;background:#fff;z-index:1}
+.pnl-table tr.pnl-section td{font-weight:800;text-align:left;background:#eef3f7;border-top:2px solid var(--nav)}
+.pnl-table tr.pnl-total td{font-weight:800;border-top:2px solid var(--bd)}
+.pnl-table .mini{display:block}
 .tone-cover{--tone:#5c7386}.tone-warn{--tone:#6b7c8a}.tone-avg{--tone:#1e3a5f}.tone-days{--tone:#4d6d7a}
 .card.stat,.grid>.stat{background:#fff;border-top:3px solid var(--tone,var(--accent))}
 .grid>.stat{border:1px solid var(--bd);border-top:3px solid var(--tone,var(--accent));border-radius:14px;padding:12px 14px}
@@ -333,6 +351,9 @@ body.scanning{overflow:hidden}
  .compare-wrap{display:none}
  .compare-cards{display:grid;gap:10px}
  .compare-card dl{grid-template-columns:1fr 1fr}
+ .pnl-wrap{display:none}
+ .pnl-cards{display:grid;gap:10px}
+ .pnl-card dl{grid-template-columns:1fr}
  .ph h1{font-size:24px}
  .week-table{display:none}
  .week-cards{display:grid;gap:12px}

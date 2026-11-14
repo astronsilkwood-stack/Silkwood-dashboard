@@ -68,7 +68,7 @@ Content-Type: application/json
 {"dataset": "<name>", "data": { ... }}
 ```
 
-`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`, `shift-exceptions`, `barcode-map`, `last-year-monthly`, `last-year-plu`, `pay-rates`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept. `pay-rates` is the exception: re-posting replaces the whole list.
+`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`, `shift-exceptions`, `barcode-map`, `last-year-monthly`, `last-year-plu`, `pay-rates`, `xero-pnl`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept. `pay-rates` is the exception: re-posting replaces the whole list. `xero-pnl` replaces the account rows for that month and keeps every other month.
 
 The body limit is 8,000,000 bytes. Send plain JSON, or gzip it and set `Content-Encoding: gzip`. The limit applies to the bytes on the wire and again to the JSON after gzip is decompressed. A barcode map of about 4,400 PLUs is about 400KB of JSON and fits either way.
 
@@ -389,6 +389,32 @@ Example only, not a real pay rate:
 ```
 
 `asOf` is optional (`YYYY-MM-DD`). If it is omitted, the portal uses today in Australia/Brisbane. `employees` may be empty, which clears every rate. Each employee needs `name`, `ordinary` (Mon–Fri, when the day is not a public holiday), `saturday`, `sunday`, `publicHoliday`, and `superRate`. Rates are dollars per hour, from 0 to 1000. `superRate` is a fraction from 0 to 1. `0.12` is the 12% super guarantee. Do not send `12` for 12%. The rate follows the day the shift started. A Queensland public holiday uses `publicHoliday`, including when it falls on a weekend. Christmas Eve uses `publicHoliday` only when the shift starts at or after 6pm. Anyone with hours and no matching name is shown as “No rate yet” and left out of the wage totals. A `200` body is `{"ok":true,"dataset":"pay-rates","asOf":"2026-11-11","employees":1}`.
+
+**xero-pnl** — one month of the Xero Profit and Loss, account by account. Xero has purchases and expenses. It does not have till sales. The Profit & Loss page (`/portal/pnl`) uses till fuel and shop, plus Bopple online gross, each divided by 1.1 so income is ex GST. Cost of sales and operating expenses are these Xero amounts, already ex GST. Purchases are by bill date, not stock used. Re-posting a month replaces that month. Other months stay. A month with no rows says “Xero P&L not loaded yet”.
+
+Wages and super on the page are the Xero accounts when the report includes them (names such as Wages and Salaries or Superannuation). Contract hours typed on Staff hours are not in Xero. The page adds them as their own line. It does not also add the portal’s employee wage cost when those Xero accounts are present.
+
+`tools/xero_pnl.py` converts a Xero report into this body. It accepts the row array, the sample file `tools/fixtures/xero-pnl-oct-2026-sample.txt` (a short preamble, then the JSON array), or the official report object (`Reports[0].Rows`, PascalCase or camelCase). Pass the month. A report pulled on 14 November for October is still `--month 2026-10`. One amount column only. Summary rows, gross profit, and net profit are left out. The tool prints JSON. It does not read `PORTAL_INGEST_KEY` and it does not post.
+
+```
+python3 tools/xero_pnl.py tools/fixtures/xero-pnl-oct-2026-sample.txt --month 2026-10
+```
+
+Post that body with the existing ingest key. Do not put the key in the file or on the command line of the converter.
+
+```json
+{"dataset":"xero-pnl","data":{
+  "month":"2026-10",
+  "asOf":"2026-10-31",
+  "source":"Xero Profit and Loss",
+  "accounts":[
+    {"section":"Less Cost of Sales","accountName":"Purchases - Fuel","accountId":"6db74470-bcc1-4f6d-bb5a-8fb739bea54c","amount":79072.96},
+    {"section":"Less Operating Expenses","accountName":"Wages and Salaries","accountId":"9fc02881-ac9b-4703-bf81-f5e933541891","amount":21199.73}
+  ]
+}}
+```
+
+`month` is `YYYY-MM`. `asOf` is optional (`YYYY-MM-DD`). If it is omitted, the portal uses the last day of that month. `source` is optional. `accounts` is required and must not be empty. `section` is the Xero section title, such as `Less Cost of Sales` or `Less Operating Expenses`. `accountName` is the account name. `accountId` is the Xero account id. `amount` is the ex-GST dollars Xero prints, and may be negative. Do not send a field named `account`. That name is reserved for bank details and the upload is rejected. A `200` body is `{"ok":true,"dataset":"xero-pnl","asOf":"2026-10-31","month":"2026-10","accounts":13}`. `accounts` is how many rows this upload stored.
 
 ### Staff hours read
 

@@ -16,7 +16,7 @@ DATASETS = (
     "sales", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices",
     "product-search", "retail-pricing", "till-price-changes", "shifts", "last-year", "cost-overrides",
     "stock-movements", "online-orders", "shift-exceptions", "barcode-map", "last-year-monthly",
-    "last-year-plu", "pay-rates",
+    "last-year-plu", "pay-rates", "xero-pnl",
 )
 INGEST_MAX = 8_000_000
 FORM_MAX = 100_000
@@ -77,6 +77,7 @@ NAV = [
     ("/portal/till-prices", "Till price changes", "till"),
     ("/portal/departments", "Departments & products", "departments"),
     ("/portal/kitchen", "Kitchen", "kitchen"),
+    ("/portal/pnl", "Profit & Loss", "pnl"),
     ("/portal/purchases", "Purchases", "purchases"),
     ("/portal/dips", "Pumps & dips", "dips"),
     ("/portal/shifts", "Shift balancing", "shifts"),
@@ -196,6 +197,11 @@ CREATE TABLE IF NOT EXISTS portal_ly_monthly(
   source TEXT, note TEXT, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS portal_ly_plu(
   month TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS portal_xero_pnl(
+  month TEXT NOT NULL, account_id TEXT NOT NULL, section TEXT NOT NULL, account_name TEXT NOT NULL,
+  amount REAL NOT NULL, sort_order INTEGER NOT NULL, source_as_of TEXT,
+  PRIMARY KEY(month, account_id));
+CREATE INDEX IF NOT EXISTS ix_portal_xero_pnl_month ON portal_xero_pnl(month, sort_order);
 CREATE TABLE IF NOT EXISTS portal_contractors(
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, hourly_rate REAL,
   active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -227,6 +233,11 @@ def exceptions():
 def compare():
     import portal_compare
     return portal_compare
+
+
+def pnl():
+    import portal_pnl
+    return portal_pnl
 
 
 def chat():
@@ -1522,6 +1533,7 @@ APPLIERS = {
     "last-year-monthly": apply_last_year_monthly,
     "last-year-plu": lambda c, data: compare().apply(c, data),
     "pay-rates": apply_pay_rates,
+    "xero-pnl": lambda c, data: pnl().apply_xero_pnl(c, data),
 }
 
 
@@ -2308,6 +2320,7 @@ def _icon(key):
         "dips": '<path d="M12 3c4 4 6 7 6 10a6 6 0 0 1-12 0c0-3 2-6 6-10z"/>',
         "commission": '<path d="M5 19V9M12 19V5M19 19v-7"/>',
         "fuel": '<path d="M6 20V6h8v14M14 9h3l2 2v6a2 2 0 0 1-2 2h-3M8 10h4"/>',
+        "pnl": '<path d="M4 19h16M7 16l3-5 3 3 4-7"/>',
         "purchases": '<path d="M6 7h12l-1 12H7L6 7zM9 7V5h6v2"/>',
         "invoices": '<path d="M7 3h8l4 4v14H7zM15 3v5h5M9 13h6M9 17h4"/>',
         "shifts": '<path d="M8 7V5h8v2M6 7h12v12H6zM12 11v4l2 1"/>',
@@ -2323,7 +2336,7 @@ def layout(title, active, body, user, when):
         ("Trading", ("overview", "daily", "online", "exceptions", "products", "kitchen", "departments")),
         ("Price and stock", ("pricing", "till", "stock")),
         ("Fuel", ("dips", "commission", "fuel")),
-        ("Money", ("purchases", "invoices")),
+        ("Money", ("pnl", "purchases", "invoices")),
         ("Team", ("shifts", "hours")),
         ("Reference", ("notes",)),
     )
@@ -5243,6 +5256,8 @@ def handle_get(handler, parsed):
             html = layout("Departments", "departments", parity().page_departments(c, query), user, _srv().now())
         elif path == "/portal/kitchen":
             html = layout("Kitchen", "kitchen", parity().page_kitchen(c, query), user, _srv().now())
+        elif path == "/portal/pnl":
+            html = layout("Profit & Loss", "pnl", pnl().page(c, query), user, _srv().now())
         elif path == "/portal/purchases":
             html = layout("Purchases", "purchases", page_purchases(c, query), user, _srv().now())
         elif path == "/portal/fuel":
