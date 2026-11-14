@@ -217,6 +217,16 @@ CREATE INDEX IF NOT EXISTS ix_portal_contract_date ON portal_contract_entries(wo
 CREATE TABLE IF NOT EXISTS portal_rent_rates(
   effective_from TEXT PRIMARY KEY, daily_inc REAL NOT NULL,
   updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
+-- Owner-entered P&L lines for the portal Profit & Loss only. Not sent to Xero.
+-- Nightly xero-pnl ingest does not write this table. seed_key is set for a
+-- seeded line and is null for a line the owner typed. Several null keys are allowed.
+CREATE TABLE IF NOT EXISTS portal_pnl_adjustments(
+  id INTEGER PRIMARY KEY, month TEXT NOT NULL, label TEXT NOT NULL, section TEXT NOT NULL,
+  account_name TEXT NOT NULL, amount REAL NOT NULL, note TEXT NOT NULL, seed_key TEXT,
+  sort_order INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  created_by TEXT NOT NULL, updated_by TEXT NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_portal_pnl_adj_seed ON portal_pnl_adjustments(seed_key);
+CREATE INDEX IF NOT EXISTS ix_portal_pnl_adj_month ON portal_pnl_adjustments(month, sort_order, id);
 """
 
 
@@ -5702,27 +5712,40 @@ def clean_name(value):
 
 
 def handle_pnl_post(handler, user, form):
-    """Save a portal rent rate. This does not write Xero or any ingest dataset."""
+    """Save portal rent or a manual P&L line. This does not write Xero or any ingest dataset."""
     action = form.get("action") or ""
     month = form.get("month") or ""
-    if action != "save_rent_rate":
+    if action not in ("save_rent_rate", "save_pnl_adjustment", "delete_pnl_adjustment"):
         handler.send(400, {"error": "bad action"})
         return
+    error_id = "pnl-rent-error" if action == "save_rent_rate" else "pnl-adjustment-error"
     c = db()
     try:
         try:
-            pnl().save_rent_rate(c, user["username"], form)
+            if action == "save_rent_rate":
+                pnl().save_rent_rate(c, user["username"], form)
+                ok = "rent"
+            elif action == "save_pnl_adjustment":
+                pnl().save_adjustment(c, user["username"], form)
+                ok = "adjustment"
+            else:
+                pnl().delete_adjustment(c, user["username"], form)
+                ok = "adjustment-deleted"
         except ValueError as ex:
             query = {"month": month} if re.fullmatch(r"\d{4}-\d{2}", month or "") else {}
-            html = layout("Profit & Loss", "pnl", pnl().page(c, query, user, str(ex)[:180]), user, _srv().now())
+            html = layout(
+                "Profit & Loss", "pnl",
+                pnl().page(c, query, user, str(ex)[:180], error_id),
+                user, _srv().now(),
+            )
             send_portal(handler, 400, html, user)
             return
         c.commit()
     finally:
         c.close()
-    dest = "/portal/pnl?ok=rent"
+    dest = "/portal/pnl?ok=" + ok
     if re.fullmatch(r"\d{4}-\d{2}", month or ""):
-        dest = "/portal/pnl?month=" + month + "&ok=rent"
+        dest = "/portal/pnl?month=" + month + "&ok=" + ok
     handler.redirect(dest)
 
 
@@ -6071,6 +6094,7 @@ def install():
         ensure_invoice_columns(c)
         ensure_online_order_columns(c)
         compare().seed(c)
+        pnl().seed(c)
         c.commit()
     finally:
         c.close()

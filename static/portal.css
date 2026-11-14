@@ -298,7 +298,13 @@ td.nowrap{white-space:nowrap}
 .pnl-table td:first-child,.pnl-table th:first-child{text-align:left;position:sticky;left:0;background:#fff;z-index:1}
 .pnl-table tr.pnl-section td{font-weight:800;text-align:left;background:#eef3f7;border-top:2px solid var(--nav)}
 .pnl-table tr.pnl-total td{font-weight:800;border-top:2px solid var(--bd)}
+.pnl-table tr.pnl-manual td{background:#f8f4ea}
+.pnl-table tr.pnl-manual td:first-child{background:#f8f4ea}
 .pnl-table .mini{display:block}
+.pnl-card.manual{border-left-color:#8a6d3b}
+.pnl-adj{border-top:1px solid var(--bd);margin-top:14px;padding-top:14px}
+.pnl-adj .row{align-items:end}
+.pnl-adj-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
 .tone-cover{--tone:#5c7386}.tone-warn{--tone:#6b7c8a}.tone-avg{--tone:#1e3a5f}.tone-days{--tone:#4d6d7a}
 .card.stat,.grid>.stat{background:#fff;border-top:3px solid var(--tone,var(--accent))}
 .grid>.stat{border:1px solid var(--bd);border-top:3px solid var(--tone,var(--accent));border-radius:14px;padding:12px 14px}
