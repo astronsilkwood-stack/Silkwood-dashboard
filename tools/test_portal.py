@@ -62,6 +62,7 @@ class PortalTest(unittest.TestCase):
         c.execute("DELETE FROM portal_xero_pnl")
         c.execute("DELETE FROM portal_snapshots WHERE dataset='xero-pnl'")
         c.execute("DELETE FROM portal_meta WHERE k='xero-pnl'")
+        c.execute("DELETE FROM portal_rent_rates")
         c.execute("DELETE FROM portal_invoice_payments")
         c.execute("UPDATE portal_users SET password_hash=? WHERE username='astron'", (ORIGINAL_HASH,))
         c.commit(); c.close()
@@ -3181,6 +3182,8 @@ class PortalTest(unittest.TestCase):
         self.assertEqual(august["wage_mode"], "xero")
         self.assertEqual(august["contract"], Decimal("80.00"))
         self.assertEqual(august["expenses"], Decimal("354.00"))
+        self.assertEqual(august["rent"], Decimal("0.00"))
+        self.assertEqual(august["rent_days"], 0)
         self.assertEqual(august["net"], Decimal("1546.00"))
         self.assertEqual(august["margin"], Decimal("49.9"))
         self.assertFalse(august["prev_loaded"])
@@ -3214,6 +3217,8 @@ class PortalTest(unittest.TestCase):
         contract = august_page.split('id="pnl-contract"', 1)[1].split("</tr>", 1)[0]
         self.assertIn("$80.00", contract)
         self.assertIn("Not in Xero", contract)
+        self.assertNotIn('id="pnl-rent"', august_page)
+        self.assertNotIn('id="pnl-rent-fuel"', august_page)
         self.assertIn("Wages and Salaries", august_page)
         self.assertNotIn("$286.72", august_page)
         self.assertNotIn('id="pnl-portal-wages"', august_page)
@@ -3238,9 +3243,203 @@ class PortalTest(unittest.TestCase):
         self.assertIn("Wages and Salaries", october)
         self.assertIn("$21,199.73", october)
         self.assertIn("Xero purchases are by bill date, not stock used.", october)
+        rent = october.split('id="pnl-rent"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("Rent (portal, $321.13/day inc GST)", rent)
+        self.assertIn("$9,050.14", rent)
+        self.assertIn("321.13 / 1.1", rent)
+        self.assertIn("$291.94", rent)
+        self.assertIn("1 Oct 2026 to 31 Oct 2026", rent)
+        self.assertIn("31 days", rent)
+        self.assertIn("Every day of the month is counted.", rent)
+        self.assertIn("removed from Purchases - Fuel", rent)
+        fuel_rent = october.split('id="pnl-rent-fuel"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("Less rent included in United fuel debits", fuel_rent)
+        self.assertIn("-$9,050.14", fuel_rent)
+        self.assertIn("already include this daily rent", fuel_rent)
+        self.assertIn("total costs and net profit do not change", fuel_rent)
+        cos = october.split('id="pnl-cos"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("$124,296.71", cos)
+        opex = october.split('id="pnl-opex"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("$37,301.77", opex)
+        self.assertIn('id="rent-setting"', october)
+        self.assertIn('value="321.13"', october)
+        self.assertIn('value="2026-07-01"', october)
         still = self.authed("GET", "/portal/pnl")[2].decode()
         self.assertIn('id="xero-pnl-empty"', still)
+        self.assertNotIn('id="pnl-rent"', still)
         self.assertIn("month to date", still.split('id="pnl-period"', 1)[1].split("</p>", 1)[0])
+
+    def test_portal_daily_rent(self):
+        """Portal rent is ex GST, and the same amount is removed from Purchases - Fuel."""
+        from datetime import date
+        from decimal import Decimal
+        import portal_pnl
+        self.login()
+        daily = portal_pnl.daily_ex_gst(Decimal("321.13"))
+        self.assertEqual(daily, Decimal("291.94"))
+        october_rent = daily * 31
+        november_rent = daily * 11
+        self.assertEqual(october_rent, Decimal("9050.14"))
+        self.assertEqual(november_rent, Decimal("3211.34"))
+
+        def accounts(fuel, cleaning, extra=None):
+            rows = [
+                {"section": "Less Cost of Sales", "accountName": "Purchases - Fuel", "accountId": "fuel", "amount": fuel},
+                {"section": "Less Operating Expenses", "accountName": "Cleaning", "accountId": "clean", "amount": cleaning},
+            ]
+            if extra:
+                rows.append(extra)
+            return rows
+
+        self.assertEqual(self.ingest("xero-pnl", {"month": "2026-02", "accounts": accounts(800, 50)})[0], 200)
+        self.assertEqual(self.ingest("xero-pnl", {"month": "2026-10", "accounts": accounts(1000, 40)})[0], 200)
+        self.assertEqual(self.ingest("xero-pnl", {"month": "2026-11", "accounts": accounts(500, 20)})[0], 200)
+
+        c = server.db()
+        try:
+            february = portal_pnl.build(c, date(2026, 2, 1), date(2026, 11, 11))
+            october = portal_pnl.build(c, date(2026, 10, 1), date(2026, 11, 11))
+            november = portal_pnl.build(c, date(2026, 11, 1), date(2026, 11, 11))
+        finally:
+            c.close()
+        self.assertEqual(february["rent"], Decimal("0.00"))
+        self.assertEqual(february["cost"], Decimal("800.00"))
+        self.assertEqual(february["expenses"], Decimal("50.00"))
+        self.assertFalse(october["mtd"])
+        self.assertEqual(october["rent"], october_rent)
+        self.assertEqual(october["rent_days"], 31)
+        self.assertEqual(october["cost"], Decimal("1000.00") - october_rent)
+        self.assertEqual(october["expenses"], Decimal("40.00") + october_rent)
+        self.assertEqual(october["cost"] + october["expenses"], Decimal("1040.00"))
+        self.assertTrue(november["mtd"])
+        self.assertEqual(november["end"], date(2026, 11, 11))
+        self.assertEqual(november["rent"], november_rent)
+        self.assertEqual(november["rent_days"], 11)
+        self.assertEqual(november["prev_rent"], october_rent)
+        self.assertEqual(november["cost"], Decimal("500.00") - november_rent)
+        self.assertEqual(november["expenses"], Decimal("20.00") + november_rent)
+        self.assertEqual(november["cost"] + november["expenses"], Decimal("520.00"))
+        self.assertEqual(november["prev_expenses"], Decimal("40.00") + october_rent)
+
+        page = self.authed("GET", "/portal/pnl?month=2026-11")[2].decode()
+        self.assertIn("through 11 Nov 2026", page)
+        rent = page.split('id="pnl-rent"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("Rent (portal, $321.13/day inc GST)", rent)
+        self.assertIn("$3,211.34", rent)
+        self.assertIn("$9,050.14", rent)
+        self.assertIn("1 Nov 2026 to 11 Nov 2026", rent)
+        self.assertIn("11 days", rent)
+        self.assertIn("same month-to-date date this page uses for sales", rent)
+        self.assertIn("1 Oct 2026 to 31 Oct 2026", rent)
+        fuel = page.split('id="pnl-rent-fuel"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("Less rent included in United fuel debits", fuel)
+        self.assertIn("-$3,211.34", fuel)
+        self.assertIn("-$9,050.14", fuel)
+        self.assertIn("United Petroleum direct debits", fuel)
+        self.assertIn('title="', rent)
+
+        skipped = self.ingest("xero-pnl", {"month": "2026-10", "accounts": accounts(1000, 40, {
+            "section": "Less Operating Expenses", "accountName": "Rent & Lease", "accountId": "xero-rent", "amount": 5000,
+        })})
+        self.assertEqual(skipped[0], 200)
+        c = server.db()
+        try:
+            held = portal_pnl.build(c, date(2026, 10, 1), date(2026, 11, 11))
+        finally:
+            c.close()
+        self.assertTrue(held["rent_skipped"])
+        self.assertEqual(held["rent"], Decimal("0.00"))
+        self.assertEqual(held["cost"], Decimal("1000.00"))
+        self.assertEqual(held["expenses"], Decimal("5040.00"))
+        held_page = self.authed("GET", "/portal/pnl?month=2026-10")[2].decode()
+        self.assertIn("Rent &amp; Lease", held_page)
+        self.assertIn("$1,000.00", held_page)
+        self.assertNotIn('id="pnl-rent"', held_page)
+        self.assertNotIn("-$9,050.14", held_page)
+        warning = held_page.split('id="pnl-rent-xero"', 1)[1].split("</div>", 1)[0]
+        self.assertIn("portal daily rent line is not added", warning)
+        self.assertIn("Purchases - Fuel is left as Xero recorded it", warning)
+        self.assertIn("Rent &amp; Lease", warning)
+        compared = self.authed("GET", "/portal/pnl?month=2026-11")[2].decode()
+        rent_row = compared.split('id="pnl-rent"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("In Xero", rent_row)
+        self.assertIn("$3,211.34", rent_row)
+        self.assertNotIn("$9,050.14", rent_row)
+        fuel_row = compared.split('id="pnl-rent-fuel"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("Left in fuel", fuel_row)
+        self.assertIn("-$3,211.34", fuel_row)
+        self.assertNotIn("-$9,050.14", fuel_row)
+
+        rental = self.ingest("xero-pnl", {"month": "2026-10", "accounts": accounts(1000, 40, {
+            "section": "Less Operating Expenses", "accountName": "Equipment Rental", "accountId": "rental", "amount": 15,
+        })})
+        self.assertEqual(rental[0], 200)
+        c = server.db()
+        try:
+            restored = portal_pnl.build(c, date(2026, 10, 1), date(2026, 11, 11))
+        finally:
+            c.close()
+        self.assertFalse(restored["rent_skipped"])
+        self.assertEqual(restored["rent"], october_rent)
+        self.assertEqual(restored["cost"], Decimal("1000.00") - october_rent)
+        self.assertEqual(restored["expenses"], Decimal("55.00") + october_rent)
+
+        token = self.csrf_from(self.authed("GET", "/portal/pnl?month=2026-10")[2].decode())
+        bad = self.authed("POST", "/portal/pnl", urlencode({
+            "csrf": token, "action": "save_rent_rate", "month": "2026-10",
+            "daily_inc": "nope", "effective_from": "2026-11-01",
+        }))
+        self.assertEqual(bad[0], 400)
+        self.assertIn("daily rent including GST", bad[2].decode())
+        saved = self.authed("POST", "/portal/pnl", urlencode({
+            "csrf": token, "action": "save_rent_rate", "month": "2026-10",
+            "daily_inc": "220.00", "effective_from": "2026-11-01",
+        }))
+        self.assertEqual(saved[0], 302)
+        self.assertIn("month=2026-10", saved[1].get("Location", ""))
+        self.assertIn("ok=rent", saved[1].get("Location", ""))
+        changed = self.authed("GET", saved[1]["Location"])[2].decode()
+        self.assertIn("Saved. The rent rate is stored on this portal only.", changed)
+        self.assertIn("$220.00 from 1 Nov 2026", changed)
+        c = server.db()
+        try:
+            october_after = portal_pnl.build(c, date(2026, 10, 1), date(2026, 11, 11))
+            november_after = portal_pnl.build(c, date(2026, 11, 1), date(2026, 11, 11))
+        finally:
+            c.close()
+        self.assertEqual(october_after["rent"], october_rent)
+        self.assertEqual(october_after["cost"] + october_after["expenses"], Decimal("1000.00") + Decimal("55.00"))
+        self.assertEqual(november_after["rent"], Decimal("200.00") * 11)
+        self.assertEqual(november_after["cost"] + november_after["expenses"], Decimal("520.00"))
+        november_page = self.authed("GET", "/portal/pnl?month=2026-11")[2].decode()
+        november_label = november_page.split('id="pnl-rent"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn("Rent (portal, $220.00/day inc GST)", november_label)
+        self.assertIn("$2,200.00", november_label)
+        self.assertIn("-$2,200.00", november_page.split('id="pnl-rent-fuel"', 1)[1].split("</tr>", 1)[0])
+
+        token = self.csrf_from(november_page)
+        mixed = self.authed("POST", "/portal/pnl", urlencode({
+            "csrf": token, "action": "save_rent_rate", "month": "2026-10",
+            "daily_inc": "440.00", "effective_from": "2026-10-16",
+        }))
+        self.assertEqual(mixed[0], 302)
+        c = server.db()
+        try:
+            split = portal_pnl.build(c, date(2026, 10, 1), date(2026, 11, 11))
+        finally:
+            c.close()
+        split_rent = (Decimal("291.94") * 15) + (Decimal("400.00") * 16)
+        self.assertEqual(split_rent, Decimal("10779.10"))
+        self.assertEqual(split["rent"], split_rent)
+        self.assertEqual(split["rent_days"], 31)
+        self.assertEqual(split["cost"] + split["expenses"], Decimal("1055.00"))
+        split_page = self.authed("GET", "/portal/pnl?month=2026-10")[2].decode()
+        split_row = split_page.split('id="pnl-rent"', 1)[1].split("</tr>", 1)[0]
+        self.assertIn(">Rent (portal)<", split_row)
+        self.assertIn("1 Oct 2026 to 15 Oct 2026", split_row)
+        self.assertIn("16 Oct 2026 to 31 Oct 2026", split_row)
+        self.assertIn("440.00 / 1.1", split_row)
+        self.assertIn("-$10,779.10", split_page.split('id="pnl-rent-fuel"', 1)[1].split("</tr>", 1)[0])
 
     def tearDown(self):
         # The barcode-map test is the only one that writes this dataset. Clearing it here

@@ -4,7 +4,11 @@ Income is the portal's own till sales plus Bopple, ex GST. Cost of sales and
 operating expenses are the Xero P&L for that month, already ex GST. Xero does
 not hold sales. Wages and super stay on the Xero lines when that report has
 them. Contract hours are typed on Staff hours and are not in Xero, so they are
-an extra line and are not added on top of the Xero wage accounts.
+an extra line and are not added on top of the Xero wage accounts. Daily rent is typed on this page and is not entered in Xero. United Petroleum
+direct debits coded to Purchases - Fuel already include that rent, so the page
+shows the rent as an operating expense and removes the same ex-GST amount from
+fuel purchases. The two lines offset. A Xero rent account means both lines are
+left out.
 """
 import re
 from datetime import date, timedelta
@@ -23,8 +27,32 @@ NOTE = (
     "Contract hours are typed on Staff hours, are not in Xero, and are added as their own line. "
     "Employee wages already in Xero are not added again. "
     "Change is this month minus the previous month. "
-    "The current month is month to date. The previous column is the whole previous month."
+    "The current month is month to date. The previous column is the whole previous month. "
+    "Portal rent is typed on this page and is not entered in Xero. "
+    "The typed amount includes GST and each day is that amount divided by 1.1. "
+    "A finished month counts every day. This month counts the days through the same date as sales. "
+    "United Petroleum direct debits that Xero codes to Purchases - Fuel already include this daily rent. "
+    "The page removes that same ex-GST amount from fuel purchases and shows it as rent. "
+    "Those two lines offset, so total costs and net profit do not change. "
+    "If that month's Xero report already has a Rent or Rent & Lease account, both portal lines are left out."
 )
+
+FUEL_RENT_LABEL = "Less rent included in United fuel debits"
+FUEL_RENT_LEAD = (
+    "United Petroleum direct debits that Xero codes to Purchases - Fuel already include this daily rent. "
+    "This removes the same ex-GST amount from fuel purchases for the same days the rent line counts. "
+    "The operating-expense rent line shows that amount as rent. "
+    "The two lines offset, so total costs and net profit do not change."
+)
+RENT_OFFSET_LEAD = (
+    "The same amount is removed from Purchases - Fuel, because those United direct debits already include this rent."
+)
+
+# Owner Astron's daily rent, GST inclusive. The page shows it ex GST.
+# A saved row with the same effective date replaces that step. Later dates do not.
+DEFAULT_RENT_INC = Decimal("321.13")
+DEFAULT_RENT_FROM = date(2026, 7, 1)
+_RENT_WORD = re.compile(r"(?<![a-z])rent(?![a-z])")
 
 
 def _month_key(value, label):
@@ -177,6 +205,300 @@ def _contract(c, start, end):
     return sum((portal._cents(row["cost"]) for row in portal.contract_between(c, start, end)), Decimal("0.00"))
 
 
+def _default_rent():
+    return {"daily_inc": DEFAULT_RENT_INC, "effective_from": DEFAULT_RENT_FROM, "saved": False}
+
+
+def load_rent_rates(c):
+    """Saved daily rates, oldest first, with the 1 Jul 2026 default unless that date is saved."""
+    found = portal.rows(c.execute(
+        "SELECT effective_from, daily_inc FROM portal_rent_rates ORDER BY effective_from"
+    ))
+    saved = []
+    for row in found:
+        saved.append({
+            "daily_inc": portal._cents(row["daily_inc"]),
+            "effective_from": date.fromisoformat(row["effective_from"]),
+            "saved": True,
+        })
+    if not any(row["effective_from"] == DEFAULT_RENT_FROM for row in saved):
+        saved.append(_default_rent())
+        saved.sort(key=lambda row: row["effective_from"])
+    return saved
+
+
+def rate_for_day(rates, day):
+    """Latest rate whose effective date is on or before day, or None."""
+    chosen = None
+    for row in rates:
+        if row["effective_from"] <= day:
+            chosen = row
+        else:
+            break
+    return chosen
+
+
+def daily_ex_gst(daily_inc):
+    """One day's rent ex GST. The stored rate includes GST, so divide by 1.1 and round to cents."""
+    return portal._cents(portal._cents(daily_inc) / portal.GST_DIVISOR)
+
+
+def rent_coverage(rates, start, end):
+    """Ex-GST rent for each inclusive stretch that shares one rate. Days with no rate are left out."""
+    stretches = []
+    day = start
+    while day <= end:
+        rate = rate_for_day(rates, day)
+        if stretches and stretches[-1]["rate"] is rate:
+            stretches[-1]["end"] = day
+        else:
+            stretches.append({"rate": rate, "start": day, "end": day})
+        day += timedelta(days=1)
+    segments = []
+    total = Decimal("0.00")
+    days = 0
+    for stretch in stretches:
+        if stretch["rate"] is None:
+            continue
+        count = (stretch["end"] - stretch["start"]).days + 1
+        ex = daily_ex_gst(stretch["rate"]["daily_inc"])
+        amount = portal._cents(ex * count)
+        segments.append({
+            "daily_inc": stretch["rate"]["daily_inc"],
+            "daily_ex": ex,
+            "start": stretch["start"],
+            "end": stretch["end"],
+            "days": count,
+            "amount": amount,
+        })
+        total += amount
+        days += count
+    return {"segments": segments, "amount": total, "days": days}
+
+
+def xero_rent_names(rows):
+    """Account names that already are Rent or Rent & Lease, so the portal line must not be added."""
+    names = []
+    for row in rows:
+        text = " ".join((row["account_name"] or "").casefold().replace("&", " and ").replace("/", " ").split())
+        if _RENT_WORD.search(text):
+            names.append(row["account_name"])
+    return names
+
+
+def _plain_money(amount):
+    return format(portal._cents(amount), "f")
+
+
+def _segment_note(seg):
+    inc = _plain_money(seg["daily_inc"])
+    ex = portal.money(seg["daily_ex"])
+    start = portal.fmt_date(seg["start"].isoformat())
+    finish = portal.fmt_date(seg["end"].isoformat())
+    unit = "day" if seg["days"] == 1 else "days"
+    return (
+        f"${inc} a day includes GST. This line is ex GST, {inc} / 1.1 = {ex} a day. "
+        f"Counted {start} to {finish} ({seg['days']} {unit})."
+    )
+
+
+def _coverage_note(coverage, month_start, end, mtd):
+    if not coverage["segments"]:
+        return ""
+    text = " ".join(_segment_note(seg) for seg in coverage["segments"])
+    if mtd:
+        return text + " The end date is the same month-to-date date this page uses for sales."
+    last = portal.month_last_day(month_start)
+    span = (last - month_start).days + 1
+    if coverage["days"] == span and end == last:
+        text += " Every day of the month is counted."
+    return text
+
+
+def _rent_side(rates, month_start, end, rows, loaded, mtd):
+    empty = {
+        "loaded": False, "skipped": False, "names": [], "show": False,
+        "amount": None, "text": None, "note": "", "label_rate": None,
+        "included": Decimal("0.00"), "days": 0,
+    }
+    if not loaded:
+        return empty
+    names = xero_rent_names(rows)
+    if names:
+        return {
+            "loaded": True, "skipped": True, "names": names, "show": False,
+            "amount": None, "text": "In Xero", "note": "", "label_rate": None,
+            "included": Decimal("0.00"), "days": 0,
+        }
+    coverage = rent_coverage(rates, month_start, end)
+    show = coverage["days"] > 0
+    single = {seg["daily_inc"] for seg in coverage["segments"]}
+    return {
+        "loaded": True, "skipped": False, "names": [], "show": show,
+        "amount": coverage["amount"] if show else Decimal("0.00"),
+        "text": None,
+        "note": _coverage_note(coverage, month_start, end, mtd) if show else "",
+        "label_rate": next(iter(single)) if len(single) == 1 else None,
+        "included": coverage["amount"],
+        "days": coverage["days"],
+    }
+
+
+def _rent_label(rate):
+    return f"Rent (portal, {portal.money(rate)}/day inc GST)"
+
+
+def _rent_warning(month_label, names):
+    if len(names) == 2:
+        shown = " and ".join(names)
+    else:
+        shown = ", ".join(names)
+    return (
+        f"{month_label} already has {shown} in the Xero report, "
+        "so the portal daily rent line is not added and Purchases - Fuel is left as Xero recorded it."
+    )
+
+
+def rent_warnings(current, previous, prev_loaded, month_label, prev_label):
+    warnings = []
+    if current["rent"]["skipped"]:
+        warnings.append(_rent_warning(month_label, current["rent"]["names"]))
+    if prev_loaded and previous["rent"]["skipped"]:
+        warnings.append(_rent_warning(prev_label, previous["rent"]["names"]))
+    return warnings
+
+
+def _rent_visible(current, previous, prev_loaded):
+    return current["rent"]["show"] or (prev_loaded and previous["rent"]["show"])
+
+
+def _day_notes(current, previous, prev_loaded):
+    notes = []
+    if current["rent"]["note"]:
+        notes.append(current["rent"]["note"])
+    if prev_loaded and previous["rent"]["note"]:
+        notes.append("Previous month: " + previous["rent"]["note"])
+    return " ".join(notes)
+
+
+def _signed_rent_cells(current, previous, prev_loaded, sign):
+    """sign is 1 for the rent expense and -1 for the fuel-purchase reduction."""
+    def cell(side):
+        if side["skipped"]:
+            return None, "In Xero" if sign > 0 else "Left in fuel"
+        amount = side["amount"] if side["amount"] is not None else Decimal("0.00")
+        if sign < 0:
+            amount = -amount
+        return amount, None
+
+    this_amount, this_text = cell(current["rent"])
+    if not prev_loaded:
+        return this_amount, this_text, None, None
+    prev_amount, prev_text = cell(previous["rent"])
+    return this_amount, this_text, prev_amount, prev_text
+
+
+def _append_fuel_rent_line(rows, current, previous, prev_loaded):
+    if not _rent_visible(current, previous, prev_loaded):
+        return
+    hint = FUEL_RENT_LEAD
+    days = _day_notes(current, previous, prev_loaded)
+    if days:
+        hint = hint + " " + days
+    this_amount, this_text, prev_amount, prev_text = _signed_rent_cells(current, previous, prev_loaded, -1)
+    rows.append(_line(
+        FUEL_RENT_LABEL, this_amount, prev_amount, row_id="pnl-rent-fuel", hint=hint, title=hint,
+        this_text=this_text, prev_text=prev_text,
+    ))
+
+
+def _append_rent_line(rows, current, previous, prev_loaded):
+    if not _rent_visible(current, previous, prev_loaded):
+        return
+    cur, prev = current["rent"], previous["rent"]
+    show_prev = prev_loaded and prev["show"]
+    if cur["show"] and cur["label_rate"] is not None:
+        label = _rent_label(cur["label_rate"])
+    elif show_prev and prev["label_rate"] is not None and not cur["show"]:
+        label = _rent_label(prev["label_rate"])
+    else:
+        label = "Rent (portal)"
+    hint = RENT_OFFSET_LEAD
+    days = _day_notes(current, previous, prev_loaded)
+    if days:
+        hint = hint + " " + days
+    this_amount, this_text, prev_amount, prev_text = _signed_rent_cells(current, previous, prev_loaded, 1)
+    rows.append(_line(
+        label, this_amount, prev_amount, row_id="pnl-rent", hint=hint, title=hint,
+        this_text=this_text, prev_text=prev_text,
+    ))
+
+
+def _rates_help(rates):
+    saved = [row for row in rates if row["saved"]]
+    default_saved = any(row["saved"] and row["effective_from"] == DEFAULT_RENT_FROM for row in rates)
+    bits = []
+    if saved:
+        shown = "; ".join(
+            f"{portal.money(row['daily_inc'])} from {portal.fmt_date(row['effective_from'].isoformat())}"
+            for row in saved
+        )
+        bits.append(f"Saved rates: {shown}.")
+    if not default_saved:
+        bits.append(
+            f"Unless a rate is saved for {portal.fmt_date(DEFAULT_RENT_FROM.isoformat())}, "
+            f"the page uses {portal.money(DEFAULT_RENT_INC)} a day including GST from that date."
+        )
+    bits.append(
+        "Saving the same effective date replaces that rate. "
+        "A new date leaves earlier months on the rate that applied then. Nothing is sent to Xero."
+    )
+    return " ".join(bits)
+
+
+def _rate_to_edit(rates, today_d):
+    chosen = rate_for_day(rates, today_d)
+    return chosen or rates[0]
+
+
+def save_rent_rate(c, actor, form):
+    """Insert or replace one daily rent rate. Other effective dates stay."""
+    amount = portal._money_input(
+        form.get("daily_inc"), "daily rent including GST", True, Decimal("0.01"), Decimal("100000"),
+    )
+    try:
+        effective = date.fromisoformat(portal.need_date(form.get("effective_from"), "effective from"))
+    except ValueError:
+        raise ValueError("Effective from must be a date.")
+    if effective < date(2024, 1, 1) or effective > date(2100, 12, 31):
+        raise ValueError("Choose an effective date from 2024 through 2100.")
+    c.execute(
+        """INSERT INTO portal_rent_rates(effective_from, daily_inc, updated_at, updated_by)
+           VALUES(?,?,?,?)
+           ON CONFLICT(effective_from) DO UPDATE SET daily_inc=excluded.daily_inc,
+             updated_at=excluded.updated_at, updated_by=excluded.updated_by""",
+        (effective.isoformat(), float(amount), portal.stamp(), actor),
+    )
+
+
+def _rent_settings(c, user, month):
+    rates = load_rent_rates(c)
+    current = _rate_to_edit(rates, portal.today())
+    return f'''<section class="card" id="rent-setting"><h2>Portal rent</h2>
+<p class="help">Daily rent for this Profit &amp; Loss page only. It is not entered in Xero. The amount includes GST. The line divides it by 1.1, then multiplies by the days covered. A finished month counts every day. This month counts through the same date the page uses for sales. United Petroleum direct debits coded to Purchases - Fuel already include this rent, so the page also removes the same ex-GST amount from fuel purchases. The two lines offset.</p>
+<p class="help" id="rent-rates">{portal.h(_rates_help(rates))}</p>
+<form method="post" action="/portal/pnl" id="rent-form">
+<input type="hidden" name="csrf" value="{portal.h(user["csrf"])}">
+<input type="hidden" name="action" value="save_rent_rate">
+<input type="hidden" name="month" value="{month.strftime("%Y-%m")}">
+<div class="row">
+<label class="f">Daily rent, including GST<input name="daily_inc" id="rent-daily" inputmode="decimal" required value="{portal.h(portal._amount_value(current["daily_inc"]))}"></label>
+<label class="f">Effective from<input type="date" name="effective_from" id="rent-effective" required value="{current["effective_from"].isoformat()}" min="2024-01-01" max="2100-12-31"></label>
+</div>
+<button class="btn" type="submit">Save rent rate</button>
+</form></section>'''
+
+
 def _portal_wages(c, start, end, rows, loaded):
     """Portal employee wages only when this month's Xero report has no wage or super account."""
     if not loaded:
@@ -224,12 +546,13 @@ def _delta(this, prev, places="0.01"):
     return (Decimal(this) - Decimal(prev)).quantize(Decimal(places), rounding=ROUND_HALF_UP)
 
 
-def _line(label, this, prev, kind="line", hint="", row_id="", percent=False, this_text=None, prev_text=None):
+def _line(label, this, prev, kind="line", hint="", row_id="", percent=False, this_text=None, prev_text=None, title=""):
     places = "0.1" if percent else "0.01"
     return {
         "kind": kind,
         "label": label,
         "hint": hint,
+        "title": title,
         "this": this,
         "prev": prev,
         "change": None if this_text or prev_text else _delta(this, prev, places),
@@ -255,23 +578,28 @@ def _wage_cell(mode, amount):
     return amount, None
 
 
-def _expense_total(rows, contract, wage_mode, wage_amount, loaded):
+def _expense_total(rows, contract, wage_mode, wage_amount, rent_included, loaded):
     if not loaded:
         return None
-    total = _sum_rows(rows) + contract
+    total = _sum_rows(rows) + contract + rent_included
     if wage_mode == "amount" and wage_amount is not None:
         total += wage_amount
     return total
 
 
-def _side_figures(c, month_start, end, rows, loaded):
+def _side_figures(c, month_start, end, rows, loaded, rates, mtd):
     income = income_for(c, month_start, end)
     kinds = _by_kind(rows) if loaded else {"cost": [], "expense": [], "income": [], "other": []}
     cost = _sum_rows(kinds["cost"]) if loaded else None
     other = _sum_rows(kinds["other"]) if loaded else None
     contract = _contract(c, month_start, end) if loaded else None
     wage_mode, wage_amount = _portal_wages(c, month_start, end, rows, loaded)
-    expense = _expense_total(kinds["expense"], contract or Decimal("0.00"), wage_mode, wage_amount, loaded)
+    rent = _rent_side(rates, month_start, end, rows, loaded, mtd)
+    if cost is not None:
+        cost = cost - rent["included"]
+    expense = _expense_total(
+        kinds["expense"], contract or Decimal("0.00"), wage_mode, wage_amount, rent["included"], loaded,
+    )
     if not loaded or income["total"] is None or cost is None:
         gross = None
         gp_pct = None
@@ -292,6 +620,7 @@ def _side_figures(c, month_start, end, rows, loaded):
         "contract": contract,
         "wage_mode": wage_mode,
         "wage_amount": wage_amount,
+        "rent": rent,
         "expense": expense,
         "gross": gross,
         "gp_pct": gp_pct,
@@ -312,9 +641,12 @@ def build(c, month_start, today_d):
     previous_rows = _rows(c, prev_month)
     loaded = bool(current_rows)
     prev_loaded = bool(previous_rows)
-    current = _side_figures(c, month_start, end, current_rows, loaded)
-    previous = _side_figures(c, prev_start, prev_end, previous_rows, prev_loaded)
+    rates = load_rent_rates(c)
+    current = _side_figures(c, month_start, end, current_rows, loaded, rates, mtd)
+    previous = _side_figures(c, prev_start, prev_end, previous_rows, prev_loaded, rates, False)
     rows = _statement_rows(current, previous, loaded, prev_loaded)
+    month_label = _month_name(month_start)
+    prev_label = _month_name(prev_start)
     return {
         "month": month,
         "prev_month": prev_month,
@@ -335,13 +667,19 @@ def build(c, month_start, today_d):
         "contract": current["contract"],
         "portal_wages": current["wage_amount"] if current["wage_mode"] == "amount" else None,
         "wage_mode": current["wage_mode"],
+        "rent": current["rent"]["included"] if loaded else None,
+        "rent_days": current["rent"]["days"] if loaded else 0,
+        "rent_skipped": current["rent"]["skipped"] if loaded else False,
         "expenses": current["expense"],
         "net": current["net"],
         "margin": current["margin"],
         "prev_income": previous["income"]["total"],
         "prev_net": previous["net"],
+        "prev_rent": previous["rent"]["included"] if prev_loaded else None,
+        "prev_expenses": previous["expense"],
         "rows": rows,
         "notes": _notes(current["income"]),
+        "rent_warnings": rent_warnings(current, previous, prev_loaded, month_label, prev_label),
     }
 
 
@@ -374,6 +712,7 @@ def _statement_rows(current, previous, loaded, prev_loaded):
         rows.extend(_account_lines(current["kinds"]["income"], previous["kinds"]["income"], prev_loaded))
     rows.append(_section("Cost of sales"))
     rows.extend(_account_lines(current["kinds"]["cost"], previous["kinds"]["cost"], prev_loaded))
+    _append_fuel_rent_line(rows, current, previous, prev_loaded)
     rows.append(_line("Total cost of sales", current["cost"], previous["cost"] if prev_loaded else None, kind="total", row_id="pnl-cos"))
     rows.append(_line("Gross profit", current["gross"], previous["gross"] if prev_loaded else None, kind="total", row_id="pnl-gross-row"))
     rows.append(_line(
@@ -398,6 +737,7 @@ def _statement_rows(current, previous, loaded, prev_loaded):
         "Contract hours", current["contract"], previous["contract"] if prev_loaded else None,
         row_id="pnl-contract", hint="Not in Xero",
     ))
+    _append_rent_line(rows, current, previous, prev_loaded)
     rows.append(_line(
         "Total operating expenses", current["expense"], previous["expense"] if prev_loaded else None,
         kind="total", row_id="pnl-opex",
@@ -475,8 +815,11 @@ def _table(rows):
         if negative:
             cls = (cls + " negative").strip()
         klass = f' class="{cls}"' if cls else ""
+        label = portal.h(row["label"])
+        if row.get("title"):
+            label = f'<span title="{portal.h(row["title"])}">{label}</span>'
         body.append(
-            f'<tr{klass}{ident}><td>{portal.h(row["label"])}{hint}</td>'
+            f'<tr{klass}{ident}><td>{label}{hint}</td>'
             f'<td class="num">{_show(row, "this")}</td>'
             f'<td class="num">{_show(row, "prev")}</td>'
             f'<td class="num">{_show(row, "change")}</td></tr>'
@@ -492,8 +835,9 @@ def _cards(rows, this_head, prev_head):
             continue
         hint = f'<span class="mini">{portal.h(row["hint"])}</span>' if row.get("hint") else ""
         cls = "pnl-card total" if row["kind"] in ("total", "pct") else "pnl-card"
+        title = f' title="{portal.h(row["title"])}"' if row.get("title") else ""
         parts.append(
-            f'<article class="{cls}"><h3>{portal.h(row["label"])}{hint}</h3><dl>'
+            f'<article class="{cls}"><h3{title}>{portal.h(row["label"])}{hint}</h3><dl>'
             f'<div><dt>{portal.h(this_head)}</dt><dd><b>{_show(row, "this")}</b></dd></div>'
             f'<div><dt>{portal.h(prev_head)}</dt><dd><b>{_show(row, "prev")}</b></dd></div>'
             f'<div><dt>Change</dt><dd><b>{_show(row, "change")}</b></dd></div>'
@@ -529,9 +873,9 @@ def _form(month, today_d):
 </div></form>'''
 
 
-def page(c, query):
+def page(c, query, user=None, error=""):
     today_d = portal.today()
-    month, error = _selected_month(query, today_d)
+    month, month_error = _selected_month(query, today_d)
     statement = build(c, month, today_d)
     mtd = " month to date" if statement["mtd"] else ""
     period = _month_name(month) + mtd
@@ -541,8 +885,18 @@ def page(c, query):
         period += ", " + portal.fmt_date(statement["start"].isoformat()) + " to " + portal.fmt_date(statement["end"].isoformat())
     prev_name = _month_name(date(int(statement["prev_month"][:4]), int(statement["prev_month"][5:]), 1))
     this_head = _month_name(month) + (" month to date" if statement["mtd"] else "")
-    alert = f'<p class="alert" id="pnl-error">{portal.h(error)}</p>' if error else ""
+    alert = f'<p class="alert" id="pnl-error">{portal.h(month_error)}</p>' if month_error else ""
+    if error:
+        alert += f'<p class="alert" id="pnl-rent-error">{portal.h(error)}</p>'
+    ok_text = ""
+    if (query or {}).get("ok") == "rent":
+        ok_text = '<p class="oknote" id="pnl-rent-saved">Saved. The rent rate is stored on this portal only. Nothing was sent to Xero.</p>'
+    warnings = ""
+    if statement["rent_warnings"]:
+        items = "".join(f"<p>{portal.h(text)}</p>" for text in statement["rent_warnings"])
+        warnings = f'<div class="alert" id="pnl-rent-xero">{items}</div>'
     notes = "".join(f'<p class="help">{portal.h(note)}</p>' for note in statement["notes"])
+    settings = _rent_settings(c, user, month) if user else ""
     if statement["loaded"]:
         gp_span = portal.pct_text(statement["gp_pct"]) + " of income" if statement["gp_pct"] is not None else "Share of income"
         margin_span = portal.pct_text(statement["margin"]) + " of income" if statement["margin"] is not None else "Share of income"
@@ -565,8 +919,9 @@ def page(c, query):
 <div class="pnl-cards">{_cards(statement["rows"], this_head, prev_name)}</div>'''
     return f'''<div class="ph"><h1>Profit &amp; Loss</h1>
 <p class="through" id="pnl-period">{portal.h(period)}. Compared with {portal.h(prev_name)}.</p></div>
-{alert}{_form(month, today_d)}
+{alert}{ok_text}{_form(month, today_d)}
 {stats}
 <section class="card" id="pnl-statement"><h2>{portal.h(_month_name(month))}</h2>
-{notes}{missing}{table}
-<p class="help" id="pnl-note">{portal.h(NOTE)}</p></section>'''
+{notes}{warnings}{missing}{table}
+<p class="help" id="pnl-note">{portal.h(NOTE)}</p></section>
+{settings}'''

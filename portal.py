@@ -212,6 +212,11 @@ CREATE TABLE IF NOT EXISTS portal_contract_entries(
   hours REAL, hourly_rate REAL, flat_amount REAL, cost REAL NOT NULL, notes TEXT,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL, created_by TEXT NOT NULL, updated_by TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_portal_contract_date ON portal_contract_entries(work_date);
+-- Owner-entered daily rent for the portal Profit & Loss. Not sent to Xero.
+-- Nightly ingest does not write this table. A new effective_from keeps earlier rates.
+CREATE TABLE IF NOT EXISTS portal_rent_rates(
+  effective_from TEXT PRIMARY KEY, daily_inc REAL NOT NULL,
+  updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
 """
 
 
@@ -5257,7 +5262,7 @@ def handle_get(handler, parsed):
         elif path == "/portal/kitchen":
             html = layout("Kitchen", "kitchen", parity().page_kitchen(c, query), user, _srv().now())
         elif path == "/portal/pnl":
-            html = layout("Profit & Loss", "pnl", pnl().page(c, query), user, _srv().now())
+            html = layout("Profit & Loss", "pnl", pnl().page(c, query, user), user, _srv().now())
         elif path == "/portal/purchases":
             html = layout("Purchases", "purchases", page_purchases(c, query), user, _srv().now())
         elif path == "/portal/fuel":
@@ -5532,6 +5537,8 @@ def handle_post(handler):
         return handle_password(handler, user, form)
     if path == "/portal/hours":
         return handle_hours_post(handler, user, form)
+    if path == "/portal/pnl":
+        return handle_pnl_post(handler, user, form)
     if path == "/portal/stock":
         return handle_stock_post(handler, user, form)
     if path == "/portal/products":
@@ -5692,6 +5699,31 @@ def clean_name(value):
     if not name or len(name) > 60 or not re.search(r"[A-Za-z]", name):
         raise ValueError("name")
     return name
+
+
+def handle_pnl_post(handler, user, form):
+    """Save a portal rent rate. This does not write Xero or any ingest dataset."""
+    action = form.get("action") or ""
+    month = form.get("month") or ""
+    if action != "save_rent_rate":
+        handler.send(400, {"error": "bad action"})
+        return
+    c = db()
+    try:
+        try:
+            pnl().save_rent_rate(c, user["username"], form)
+        except ValueError as ex:
+            query = {"month": month} if re.fullmatch(r"\d{4}-\d{2}", month or "") else {}
+            html = layout("Profit & Loss", "pnl", pnl().page(c, query, user, str(ex)[:180]), user, _srv().now())
+            send_portal(handler, 400, html, user)
+            return
+        c.commit()
+    finally:
+        c.close()
+    dest = "/portal/pnl?ok=rent"
+    if re.fullmatch(r"\d{4}-\d{2}", month or ""):
+        dest = "/portal/pnl?month=" + month + "&ok=rent"
+    handler.redirect(dest)
 
 
 def handle_hours_post(handler, user, form):
