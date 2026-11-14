@@ -785,7 +785,7 @@ def november_2025(c):
 def last_year_section(c, sales_days):
     month = november_2025(c)
     if not month:
-        return '<section class="card" id="last-year"><h2>November 2025</h2><p class="help">No 2025 comparison has been loaded. Quantity and sales ex GST only. No cost or GP is stored for 2025.</p></section>'
+        return '<section class="card" id="last-year"><h2>November 2025</h2><p class="help">The product file for November 2025 is not loaded. That file is quantity and sales ex GST. No cost or GP is stored for 2025. Monthly totals for the last year comparison are separate.</p></section>'
     nov = [row for row in sales_days if str(row["date"]).startswith("2026-11")]
     n = len(nov)
     full_days = month.get("days") or 30
@@ -2383,6 +2383,7 @@ def page_notes(c):
         ("cost-overrides", "Cost overrides"),
         ("last-year", "November 2025"),
         ("last-year-monthly", "Last-year monthly totals"),
+        ("last-year-plu", "Last year comparison"),
         ("shifts", "Shift balancing"),
         ("pay-rates", "Pay rates"),
     ):
@@ -2399,6 +2400,7 @@ def page_notes(c):
 <li>A product with an override is marked Cost override. A $0 till cost is not warned on 2025, and a 2026 row with an override is not treated as missing a cost.</li>
 <li>November 2025 is quantity, sales ex GST, and fuel litres for the whole month. It has no cost, GP, GP% or coverage.</li>
 <li>The overview month lines are till only: shop sales inc GST, kitchen food sales inc GST, and fuel litres. Bopple is not included. A past month shows its loaded total. The current month projects the month-end from the daily average, or from the same weekday when that sample exists. Same-month last year comes from the last-year-monthly upload. A blank field there is missing, not zero.</li>
+<li>Last year comparison is one calendar month of till sales, inc GST, against the same month last year. This year is the loaded days. Last year is a stored SwiftPOS monthly total. Same days is that total’s daily average, because the file is not day by day. A month that has not been stored says last year not loaded yet and is not shown as zero.</li>
 <li>Employee wage costs use the pay-rates upload. The rate follows the day the shift started: weekday, Saturday, Sunday, or a Queensland public holiday. Super is that employee's super rate. Contract hours are typed on Staff hours, have no super, and are not in the hours CSV or the staff-hours feed.</li>
 <li>Wages vs sales on the overview is employee wages including super, plus contract costs, divided by till sales excluding GST. Shop and fuel on the daysheet are inc GST, so each is divided by 1.1. A dash means hours, a pay rate, or till sales are missing.</li>
 <li>The portal does not pay invoices. Mark as paid only stores a record of a payment already made. It does not set pump prices, or write SwiftPOS prices or costs. Staff hours are not sent to Xero.</li>

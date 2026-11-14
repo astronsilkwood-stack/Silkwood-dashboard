@@ -68,7 +68,7 @@ Content-Type: application/json
 {"dataset": "<name>", "data": { ... }}
 ```
 
-`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`, `shift-exceptions`, `barcode-map`, `last-year-monthly`, `pay-rates`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept. `pay-rates` is the exception: re-posting replaces the whole list.
+`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`, `shift-exceptions`, `barcode-map`, `last-year-monthly`, `last-year-plu`, `pay-rates`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept. `pay-rates` is the exception: re-posting replaces the whole list.
 
 The body limit is 8,000,000 bytes. Send plain JSON, or gzip it and set `Content-Encoding: gzip`. The limit applies to the bytes on the wire and again to the JSON after gzip is decompressed. A barcode map of about 4,400 PLUs is about 400KB of JSON and fits either way.
 
@@ -141,7 +141,7 @@ Send `invoiceId` instead of `supplier` and `invoiceNumber` when you have the Xer
 
 **Purchases filters.** `/portal/purchases` has This week, This month, Last month, and a custom From/To. The supplier checklist is every supplier in the purchases data, All suppliers by default, with a search box and Clear. Totals, the supplier table, the previous-period table, the bill list, and the weekly chart follow both filters. Shop sales in the weekly chart stay the whole shop. The query string is the bookmark.
 
-**Daily summary.** `/portal/day` is one day (date picker, previous day, next day). It opens on the latest loaded sales day. It shows that day's till, online, and combined sales, fuel, shop, and food, commission and GP, fuel litres and tank dips, staff hours, till exceptions, closing checklist and hot-box activity when those rows exist, and invoices dated that day. A missing feed says there is no data. Overview keeps the month totals, last-year card, fuel target, and insights, plus a today/yesterday card that links here.
+**Daily summary.** `/portal/day` is one day (date picker, previous day, next day). It opens on the latest loaded sales day. It shows that day's till, online, and combined sales, fuel, shop, and food, commission and GP, fuel litres and tank dips, staff hours, till exceptions, closing checklist and hot-box activity when those rows exist, and invoices dated that day. A missing feed says there is no data. Overview keeps the month totals, last year comparison, last-year product card, fuel target, and insights, plus a today/yesterday card that links here.
 
 **sales** also keeps `periods[]` `weekdays`, `departments`, `top`, `low`, and `summary`, plus `products` (code to name), `kitchen`, `window`, `olderMonths`, and the commission header (`planDaily`, `neededDaily`, `missingDates`, `october`, …). `searchPack` is ignored. Optional `lastYear` is rejected if it contains cost, GP, coverage, or a missing-cost field.
 
@@ -191,6 +191,44 @@ Send `invoiceId` instead of `supplier` and `invoiceNumber` when you have the Xer
 ```
 
 One month can be the data object itself: `{"month":"2025-11","shop_sales_inc":182430.50,"food_sales_inc":null,"fuel_litres":null,"source":"","note":""}`. `month` is `YYYY-MM`. `shop_sales_inc` and `food_sales_inc` are numbers or null (inc GST, till only, not Bopple). `fuel_litres` is a number or null. `source` and `note` are optional text. A `200` body is `{"ok":true,"dataset":"last-year-monthly","asOf":"2025-11-30","months":2}`. `months` is how many rows this upload wrote.
+
+**last-year-plu** — the overview Last year comparison. This is separate from `last-year` (product file, ex GST) and from `last-year-monthly` (the shop, food, and fuel-litre lines). One row is one whole calendar month from a SwiftPOS PLU Sales Total. Dollars are inc GST. Fuel litres are the grade quantities. Re-posting a month replaces that month. Other months stay. A null figure is blank on the page. It is not shown as zero. A month with no row says “Last year not loaded yet”.
+
+The comparison follows the month picker on the overview (or the month of the date range when the picker is left alone). This year is the loaded till days for that month: total, fuel, and shop from the daysheet, fuel litres and grade dollars from the fuel-commission file, and shop departments from the nightly sales snapshot when that snapshot covers the same first and last loaded day. Same days last year is the stored month’s daily average times the number of loaded days. It is not a day-by-day file. The full month is shown beside it. Online orders are not included.
+
+November 2025 is seeded from `tools/fixtures/ly-plu-months.json` the first time the server starts, and only when that month is not already stored. A later ingest of November 2025 is kept across restarts.
+
+To add another month, copy one object in that file and POST it. No new environment variable. The numbers in the sample below show the shape. They are not October’s figures.
+
+```json
+{"dataset":"last-year-plu","data":{"months":[
+  {"month":"2025-10","label":"October 2025","fromDate":"2025-10-01","toDate":"2025-10-31","days":31,
+   "tradingWindow":"1/10/2025 6:00:00 AM to 1/11/2025 5:59:59 AM",
+   "source":"SwiftPOS PLU Sales Total","note":"Whole month. Same-days figures are the daily average.",
+   "totalInc":360000.00,"totalEx":330000.00,"shopInc":160000.00,"shopEx":150000.00,
+   "fuelInc":200000.00,"fuelEx":180000.00,"fuelLitres":110000.00,
+   "fuelGrades":[
+     {"grade":"DIS","name":"Diesel","litres":60000.00,"salesInc":110000.00,"salesEx":100000.00},
+     {"grade":"ULP","name":"Unleaded","litres":40000.00,"salesInc":75000.00,"salesEx":68000.00},
+     {"grade":"P95","name":"Premium 95","litres":10000.00,"salesInc":15000.00,"salesEx":12000.00}
+   ],
+   "departments":[
+     {"name":"Roadhouse","salesInc":60000.00,"salesEx":59000.00,"qty":10000},
+     {"name":"Beverages","salesInc":50000.00,"salesEx":46000.00,"qty":9000},
+     {"name":"A Fuel","salesInc":200000.00,"salesEx":180000.00,"qty":110000.00,"fuel":true}
+   ]}
+]}}
+```
+
+`month` is `YYYY-MM`. `days` is how many days the monthly total covers (use the calendar length when the report is the whole month). `totalInc` is the report total inc GST. `shopInc` is total minus fuel. `fuelGrades[].grade` is `DIS`, `ULP`, or `P95`. Department `name` must match this year’s sales file (`Roadhouse`, `Beverages`, `Tobacco`, `Confectionery`, and the other SwiftPOS group names). Set `"fuel": true` on the fuel group so it stays in the fuel block. Any money or litre field may be null. Do not send cost, GP, coverage, or a card number. The upload is rejected and nothing from it is stored.
+
+From the PLU Sales Total PDF, use each group total’s Sales Inc as `salesInc`, Sales Ex as `salesEx`, and the quantity as `qty`. Fuel grade rows are the diesel, unleaded, and premium lines. The printed report total is `totalInc` / `totalEx`.
+
+A `200` body is `{"ok":true,"dataset":"last-year-plu","asOf":"2025-10-31","months":1}`. `months` is how many rows this upload wrote. Optional `asOf` is `YYYY-MM-DD`. If it is omitted, the portal uses the last day of the latest month in the payload.
+
+To keep the month for the next empty database, add the same object to `tools/fixtures/ly-plu-months.json`. The server inserts a seeded month only when that month is not already in the database. It does not replace a month you have already posted.
+
+November 2025 in the seed file is the PLU report for 1 Nov 2025 6:00am to 1 Dec 2025 5:59am: total $397,328.81 inc GST ($368,303.31 ex), fuel $213,140.10 over 115,281.947 L, shop $184,188.71. The main Confectionery group is $5,406.36. A separate SwiftPOS group 7, also named Confectionery on the report ($38.87), is stored as `Confectionery (group 7)` so the two are not added together. Group sales ex GST on that report add to one cent more than the printed report total. The stored total uses the printed report total.
 
 **stock-movements** — units only, for products the owner is tracking. Re-posting the same product, date, and source replaces that row. Other rows are left as they are. `source` is `till-sales` (units sold) or `supplier-invoice` (units received). `sold` and `received` are zero or positive. `reference` is optional (an invoice number). A sample is `tools/fixtures/stock-movements.json`.
 

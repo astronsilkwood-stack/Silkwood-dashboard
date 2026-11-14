@@ -239,6 +239,23 @@ td.nowrap{white-space:nowrap}
 .line-metrics b{display:block;font:600 22px var(--mono);letter-spacing:-.02em;margin:2px 0;font-variant-numeric:tabular-nums}
 .line-metrics b.ly-missing{font:700 15px/1.35 system-ui,sans-serif;letter-spacing:0;color:var(--sl2)}
 .line-metrics .trend{margin-top:4px}
+.compare-cards{display:none}
+.compare-card{border:1px solid var(--bd);border-left:4px solid var(--nav);border-radius:12px;padding:12px 14px;background:#fff}
+.compare-card h3{margin:0;font-size:16px;color:var(--nav)}
+.compare-card dl{display:grid;gap:8px;margin:8px 0 0}
+.compare-card dt{font:700 11px var(--mono);letter-spacing:.04em;text-transform:uppercase;color:var(--sl)}
+.compare-card dd{margin:0}
+.compare-card dd b{display:block;font:600 18px var(--mono);letter-spacing:-.02em}
+.compare-card dd b.ly-missing{font:700 14px/1.35 system-ui,sans-serif;letter-spacing:0;color:var(--sl2)}
+.compare-kicker{margin:8px 0 0;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--sl)}
+.compare-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.compare-table{width:100%;min-width:720px;border-collapse:collapse}
+.compare-table th,.compare-table td{padding:8px 10px;border-bottom:1px solid var(--bd);vertical-align:top}
+.compare-table th{text-align:right;font-size:12px}
+.compare-table td{text-align:right}
+.compare-table tr:not(.compare-group) td:first-child,.compare-table tr:not(.compare-group) th:first-child{text-align:left;position:sticky;left:0;background:#fff;z-index:1}
+.compare-table caption{caption-side:bottom;text-align:left;padding-top:8px}
+.compare-group td{font-weight:800;text-align:left;background:#eef3f7;border-top:2px solid var(--nav)}
 .tone-cover{--tone:#5c7386}.tone-warn{--tone:#6b7c8a}.tone-avg{--tone:#1e3a5f}.tone-days{--tone:#4d6d7a}
 .card.stat,.grid>.stat{background:#fff;border-top:3px solid var(--tone,var(--accent))}
 .grid>.stat{border:1px solid var(--bd);border-top:3px solid var(--tone,var(--accent));border-radius:14px;padding:12px 14px}
@@ -288,6 +305,9 @@ body.scanning{overflow:hidden}
  .g4,.g3,.g2{grid-template-columns:1fr}
  .line-metrics{grid-template-columns:1fr 1fr}
  .line-metrics b{font-size:18px}
+ .compare-wrap{display:none}
+ .compare-cards{display:grid;gap:10px}
+ .compare-card dl{grid-template-columns:1fr 1fr}
  .ph h1{font-size:24px}
  .week-table{display:none}
  .week-cards{display:grid;gap:12px}

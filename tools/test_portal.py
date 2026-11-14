@@ -1,6 +1,7 @@
 """Owner portal: login, ingest, pages, invoices, and staff hours. Uses a temp SQLite file."""
 import gzip, http.client, http.server, json, os, re, sys, tempfile, threading, unittest
 from datetime import datetime, date
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -2662,6 +2663,156 @@ class PortalTest(unittest.TestCase):
                 c.execute("DELETE FROM portal_stock_movements WHERE code=?", (code,))
                 c.execute("DELETE FROM portal_stock_audit WHERE code=?", (code,))
             c.commit()
+            c.close()
+
+    def test_last_year_plu_comparison(self):
+        """November 2025 from the PLU report, and a month with nothing stored."""
+        import portal_compare
+        portal._ingest_hits.clear()
+        self.login()
+        self.addCleanup(self._restore_ly_plu)
+
+        c = server.db()
+        raw = c.execute("SELECT payload FROM portal_ly_plu WHERE month='2025-11'").fetchone()["payload"]
+        c.close()
+        stored = json.loads(raw)
+        self.assertEqual(stored["totalInc"], 397328.81)
+        self.assertEqual(stored["totalEx"], 368303.31)
+        self.assertEqual(stored["shopInc"], 184188.71)
+        self.assertEqual(stored["fuelInc"], 213140.10)
+        self.assertEqual(stored["fuelLitres"], 115281.947)
+        self.assertEqual(stored["days"], 30)
+        grades = {row["grade"]: row for row in stored["fuelGrades"]}
+        self.assertEqual(grades["DIS"]["salesInc"], 125029.59)
+        self.assertEqual(grades["DIS"]["litres"], 66848.947)
+        self.assertEqual(grades["ULP"]["salesInc"], 72443.88)
+        self.assertEqual(grades["ULP"]["litres"], 40269.06)
+        self.assertEqual(grades["P95"]["salesInc"], 15666.63)
+        self.assertEqual(grades["P95"]["litres"], 8163.94)
+        departments = {row["name"]: row["salesInc"] for row in stored["departments"]}
+        self.assertEqual(departments["Roadhouse"], 64707.18)
+        self.assertEqual(departments["Beverages"], 55078.72)
+        self.assertEqual(departments["Tobacco"], 35896.78)
+        self.assertEqual(departments["Confectionery"], 5406.36)
+        self.assertEqual(departments["Ice Cream"], 3866.61)
+        self.assertEqual(departments["Cafe"], 3167.47)
+        self.assertEqual(departments["Ice"], 2420.15)
+        self.assertAlmostEqual(sum(departments.values()), 397328.81, places=2)
+        self.assertNotEqual(departments["Confectionery"], 5445.23)
+
+        self.assertEqual(self.ingest("last-year-plu", {"month": "2025-10", "totalInc": 1}, key="nope")[0], 401)
+        self.assertEqual(self.ingest("last-year-plu", {"months": [{"month": "2025-13", "totalInc": 1}]})[0], 400)
+        self.assertEqual(self.ingest("last-year-plu", {"month": "2025-10", "months": [{"month": "2025-10"}]})[0], 400)
+        pan = "4111111111111111"
+        leaked = self.ingest("last-year-plu", {"month": "2025-10", "totalInc": 1, "note": pan})
+        self.assertEqual(leaked[0], 400)
+        self.assertNotIn(pan.encode(), leaked[2])
+        self.assertEqual(self.ingest("last-year-plu", {"month": "2025-10", "totalInc": 1, "gp": 1})[0], 400)
+
+        self.assertEqual(self.ingest("sales", load("sales.json"))[0], 200)
+        self.assertEqual(self.ingest("fuel-commission", load("fuel-commission.json"))[0], 200)
+        c = server.db()
+        report = portal_compare.build(c, date(2026, 11, 1))
+        c.close()
+        self.assertTrue(report["loaded"])
+        self.assertEqual(report["daysThis"], 10)
+        self.assertEqual(report["daysLast"], 30)
+        by_key = {row["key"]: row for row in report["rows"]}
+        self.assertEqual(by_key["total"]["this"], Decimal("167270.80"))
+        self.assertEqual(by_key["total"]["full"], Decimal("397328.81"))
+        self.assertEqual(by_key["total"]["same"], portal_compare.prorate("397328.81", 10, 30))
+        self.assertEqual(by_key["shop"]["full"], Decimal("184188.71"))
+        self.assertEqual(by_key["fuel"]["full"], Decimal("213140.10"))
+        self.assertEqual(by_key["dis"]["full"], Decimal("125029.59"))
+        self.assertEqual(by_key["ulp"]["full"], Decimal("72443.88"))
+        self.assertEqual(by_key["p95"]["full"], Decimal("15666.63"))
+        self.assertEqual(by_key["dept-roadhouse"]["full"], Decimal("64707.18"))
+        self.assertEqual(by_key["dept-roadhouse"]["this"], Decimal("21621.95"))
+        self.assertNotIn("dept-confectionery-group-7", by_key)
+        self.assertEqual(by_key["dept-confectionery"]["full"], Decimal("5406.36"))
+
+        page = self.authed("GET", "/portal")[2].decode()
+        section = page.split('id="year-compare"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("November 2026 vs November 2025", section)
+        self.assertIn('value="2026-11"', section)
+        self.assertIn("daily average", section)
+        self.assertIn("10 loaded days", section)
+        self.assertIn("compare-cards", section)
+        self.assertIn("compare-wrap", section)
+        for amount in (
+            "397328.81", "213140.10", "184188.71", "125029.59", "72443.88", "15666.63",
+            "64707.18", "55078.72", "35896.78", "5406.36", "3866.61", "3167.47", "2420.15",
+            "167270.80",
+        ):
+            self.assertIn(portal.money(amount), section)
+        self.assertIn(portal.litres("115281.947"), section)
+        self.assertIn(portal.litres("66848.947"), section)
+        self.assertIn(portal.money(by_key["total"]["same"]), section)
+        self.assertIn(portal.money(by_key["dept-roadhouse"]["same"]), section)
+        self.assertIn("% above", section)
+        self.assertNotIn("Last year not loaded yet", section)
+        self.assertNotIn("$5,445.23", section)
+
+        september = self.authed("GET", "/portal?compare=2026-09")[2].decode()
+        empty = september.split('id="year-compare"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("September 2026 vs September 2025", empty)
+        self.assertIn("Last year not loaded yet", empty)
+        self.assertIn("September 2025", empty)
+        self.assertNotIn("$0.00", empty)
+        self.assertNotIn("0.00 L", empty)
+        self.assertIn("November 2026 · month-end projection", september)
+
+        october = self.authed("GET", "/portal?period=lastmonth")[2].decode()
+        oct_section = october.split('id="year-compare"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("October 2026 vs October 2025", oct_section)
+        self.assertIn("Last year not loaded yet", oct_section)
+        same = oct_section.split('id="yc-total-same"', 1)[1].split("</div>", 1)[0]
+        self.assertNotIn("$0.00", same)
+        self.assertNotIn("0.00 L", same)
+
+        code, _, raw, _ = self.ingest("last-year-plu", {
+            "month": "2025-10", "days": 31, "totalInc": 100, "shopInc": 40, "fuelInc": 60,
+            "fuelLitres": 10, "source": "test sheet",
+            "fuelGrades": [{"grade": "DIS", "name": "Diesel", "litres": 6, "salesInc": 30}],
+            "departments": [{"name": "Roadhouse", "salesInc": 25}],
+        })
+        self.assertEqual(code, 200, raw)
+        self.assertEqual(json.loads(raw)["months"], 1)
+        c = server.db()
+        still = json.loads(c.execute("SELECT payload FROM portal_ly_plu WHERE month='2025-11'").fetchone()["payload"])
+        oct_row = json.loads(c.execute("SELECT payload FROM portal_ly_plu WHERE month='2025-10'").fetchone()["payload"])
+        c.close()
+        self.assertEqual(still["totalInc"], 397328.81)
+        self.assertEqual(oct_row["totalInc"], 100)
+        self.assertEqual(oct_row["shopInc"], 40)
+
+        self.ingest("last-year-plu", {"month": "2025-11", "days": 30, "totalInc": 1, "shopInc": 1, "fuelInc": 1})
+        c = server.db()
+        portal_compare.seed(c)
+        c.commit()
+        kept = json.loads(c.execute("SELECT payload FROM portal_ly_plu WHERE month='2025-11'").fetchone()["payload"])
+        october_kept = json.loads(c.execute("SELECT payload FROM portal_ly_plu WHERE month='2025-10'").fetchone()["payload"])
+        c.close()
+        self.assertEqual(kept["totalInc"], 1)
+        self.assertEqual(october_kept["totalInc"], 100)
+
+        compared = self.authed("GET", "/portal?period=lastmonth")[2].decode()
+        oct_now = compared.split('id="year-compare"', 1)[1].split("</section>", 1)[0]
+        self.assertIn(portal.money(100), oct_now)
+        self.assertNotIn("Last year not loaded yet", oct_now)
+        self.assertIn("daily average", oct_now)
+
+    def _restore_ly_plu(self):
+        import portal_compare
+        c = server.db()
+        try:
+            c.execute("DELETE FROM portal_ly_plu")
+            c.execute("DELETE FROM portal_meta WHERE k='last-year-plu'")
+            c.execute("DELETE FROM portal_snapshots WHERE dataset='last-year-plu'")
+            c.commit()
+            portal_compare.seed(c)
+            c.commit()
+        finally:
             c.close()
 
     def tearDown(self):

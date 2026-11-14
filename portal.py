@@ -16,7 +16,7 @@ DATASETS = (
     "sales", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices",
     "product-search", "retail-pricing", "till-price-changes", "shifts", "last-year", "cost-overrides",
     "stock-movements", "online-orders", "shift-exceptions", "barcode-map", "last-year-monthly",
-    "pay-rates",
+    "last-year-plu", "pay-rates",
 )
 INGEST_MAX = 8_000_000
 FORM_MAX = 100_000
@@ -194,6 +194,8 @@ CREATE INDEX IF NOT EXISTS ix_portal_shift_exceptions_date ON portal_shift_excep
 CREATE TABLE IF NOT EXISTS portal_ly_monthly(
   month TEXT PRIMARY KEY, shop_sales_inc REAL, food_sales_inc REAL, fuel_litres REAL,
   source TEXT, note TEXT, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS portal_ly_plu(
+  month TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS portal_contractors(
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, hourly_rate REAL,
   active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -218,6 +220,11 @@ def daypage():
 def exceptions():
     import portal_exceptions
     return portal_exceptions
+
+
+def compare():
+    import portal_compare
+    return portal_compare
 
 
 def chat():
@@ -1511,6 +1518,7 @@ APPLIERS = {
     "online-orders": apply_online_orders,
     "shift-exceptions": lambda c, data: exceptions().apply_shift_exceptions(c, data),
     "last-year-monthly": apply_last_year_monthly,
+    "last-year-plu": lambda c, data: compare().apply(c, data),
     "pay-rates": apply_pay_rates,
 }
 
@@ -2980,6 +2988,7 @@ def page_overview(c, query):
 </section>
 {wages_vs_sales_section(c)}
 {month_lines_section(c, start, end)}
+{compare().section(c, active, start, end, query)}
 {exceptions().overview_card(c)}
 {insights_box(latest_insight(c))}
 <section class="card"><h2>Fuel vs shop</h2>
@@ -5490,6 +5499,7 @@ def install():
         c.executescript(SCHEMA)
         ensure_invoice_columns(c)
         ensure_online_order_columns(c)
+        compare().seed(c)
         c.commit()
     finally:
         c.close()
