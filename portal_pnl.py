@@ -8,7 +8,9 @@ an extra line and are not added on top of the Xero wage accounts. Daily rent is 
 direct debits coded to Purchases - Fuel already include that rent, so the page
 shows the rent as an operating expense and removes the same ex-GST amount from
 fuel purchases. The two lines offset. A Xero rent account means both lines are
-left out.
+left out. Manual adjustment lines are typed on this page and stored here only.
+A cost of sales line is added to the Xero cost accounts before that rent
+reduction, so rent inside a fuel debit is still removed once.
 """
 import re
 from datetime import date, timedelta
@@ -34,8 +36,31 @@ NOTE = (
     "United Petroleum direct debits that Xero codes to Purchases - Fuel already include this daily rent. "
     "The page removes that same ex-GST amount from fuel purchases and shows it as rent. "
     "Those two lines offset, so total costs and net profit do not change. "
-    "If that month's Xero report already has a Rent or Rent & Lease account, both portal lines are left out."
+    "If that month's Xero report already has a Rent or Rent & Lease account, both portal lines are left out. "
+    "Manual adjustments typed on this page are stored on this portal only. "
+    "They are not from Xero, and the nightly Xero upload does not change them. "
+    "A cost of sales adjustment is included before the United fuel rent line, so rent already removed by that line is not removed again."
 )
+
+MANUAL_LEAD = "Manual portal adjustment, not from Xero."
+SECTIONS = (
+    ("cost", "Cost of sales"),
+    ("expense", "Operating expenses"),
+    ("income", "Income"),
+    ("other", "Other"),
+)
+SECTION_KEYS = {key for key, _name in SECTIONS}
+# October 2026 United direct debits for day sheets 1–20. Xero's bank feed starts
+# on 22 Oct, and the 15 Oct debit is coded to balance-sheet account 627, so
+# neither is in Purchases - Fuel. The amount is the advice total divided by 1.1.
+# It still includes the daily rent. The rent line below removes that rent once.
+FUEL_SEED_KEY = "united-fuel-debits-2026-10-01-20"
+FUEL_SEED_LABEL = "United fuel debits 1–20 Oct (missing from Xero)"
+FUEL_SEED_NOTE = (
+    "From United direct debit advices CSJR765–779 incl. 15 Oct debit coded to 627; $193,539.02 inc GST"
+)
+FUEL_SEED_AMOUNT = Decimal("175944.56")
+SEED_META = "pnl-adjustment-seeds"
 
 FUEL_RENT_LABEL = "Less rent included in United fuel debits"
 FUEL_RENT_LEAD = (
@@ -74,7 +99,10 @@ def _text(value, label, limit):
 
 
 def apply_xero_pnl(c, data):
-    """Replace one month of Xero P&L account rows. Other months stay."""
+    """Replace one month of Xero P&L account rows. Other months stay.
+
+    Manual portal adjustments live in portal_pnl_adjustments and are not touched.
+    """
     if not isinstance(data, dict):
         raise ValueError("xero-pnl must be an object")
     portal.reject_sensitive(data, "xero-pnl")
@@ -499,6 +527,200 @@ def _rent_settings(c, user, month):
 </form></section>'''
 
 
+def _limited(value, label, limit, required):
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be text")
+    text = " ".join(value.split())
+    if required and not text:
+        raise ValueError(f"Enter the {label}.")
+    if len(text) > limit:
+        raise ValueError(f"The {label} is too long.")
+    return text
+
+
+def _month_on_page(value):
+    month = _month_key(value, "month")
+    year, mon = int(month[:4]), int(month[5:])
+    chosen = date(year, mon, 1)
+    current = portal.today().replace(day=1)
+    if chosen.year < 2024 or chosen > current:
+        raise ValueError("Choose a month from 2024 through this month.")
+    return month
+
+
+def _seed_applied(c):
+    applied = portal.meta_get(c, SEED_META).get("applied") or []
+    if not isinstance(applied, list):
+        return []
+    return [key for key in applied if isinstance(key, str)]
+
+
+def _remember_seed(c, key):
+    if not key:
+        return
+    applied = _seed_applied(c)
+    if key in applied:
+        return
+    applied.append(key)
+    portal.meta_set(c, SEED_META, {"applied": applied})
+
+
+def load_adjustments(c, month):
+    return portal.rows(c.execute(
+        """SELECT id, month, label, section, account_name, amount, note, seed_key, sort_order
+           FROM portal_pnl_adjustments WHERE month=? ORDER BY sort_order, id""",
+        (month,),
+    ))
+
+
+def seed(c):
+    """Insert the October 2026 United fuel line once.
+
+    A second run does not add another row. Editing the row leaves the edit in
+    place. Deleting it records the seed as applied, so a later run does not
+    put the line back.
+    """
+    if portal.one(c.execute(
+        "SELECT id FROM portal_pnl_adjustments WHERE seed_key=?", (FUEL_SEED_KEY,)
+    )):
+        _remember_seed(c, FUEL_SEED_KEY)
+        return 0
+    if FUEL_SEED_KEY in _seed_applied(c):
+        return 0
+    now = portal.stamp()
+    c.execute(
+        """INSERT INTO portal_pnl_adjustments(
+             month,label,section,account_name,amount,note,seed_key,sort_order,
+             created_at,updated_at,created_by,updated_by)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "2026-10", FUEL_SEED_LABEL, "cost", "Purchases - Fuel", float(FUEL_SEED_AMOUNT),
+            FUEL_SEED_NOTE, FUEL_SEED_KEY, 0, now, now, "seed", "seed",
+        ),
+    )
+    _remember_seed(c, FUEL_SEED_KEY)
+    return 1
+
+
+def save_adjustment(c, actor, form):
+    """Insert or update one manual line for the month on the page. Nothing is sent to Xero."""
+    month = _month_on_page(form.get("month"))
+    label = _limited(form.get("label"), "label", 160, True)
+    section = form.get("section") or ""
+    if not isinstance(section, str) or section not in SECTION_KEYS:
+        raise ValueError("Choose a section.")
+    account = _limited(form.get("account_name"), "account", 160, False)
+    amount = portal._money_input(
+        form.get("amount"), "amount ex GST", True, Decimal("-10000000"), Decimal("10000000"),
+    )
+    note = _limited(form.get("note"), "note", 400, False)
+    raw_id = form.get("id")
+    now = portal.stamp()
+    if raw_id not in (None, ""):
+        row_id = portal.form_id(raw_id)
+        current = portal.one(c.execute("SELECT * FROM portal_pnl_adjustments WHERE id=?", (row_id,)))
+        if not current or current["month"] != month:
+            raise ValueError("That adjustment was not found.")
+        c.execute(
+            """UPDATE portal_pnl_adjustments
+               SET label=?, section=?, account_name=?, amount=?, note=?, updated_at=?, updated_by=?
+               WHERE id=?""",
+            (label, section, account, float(amount), note, now, actor, current["id"]),
+        )
+        return current["id"]
+    count = portal.one(c.execute(
+        "SELECT COUNT(*) AS n FROM portal_pnl_adjustments WHERE month=?", (month,)
+    ))["n"]
+    if count >= 40:
+        raise ValueError("This month already has 40 manual lines.")
+    nxt = portal.one(c.execute(
+        "SELECT COALESCE(MAX(sort_order),0)+1 AS n FROM portal_pnl_adjustments WHERE month=?",
+        (month,),
+    ))["n"]
+    row = portal.one(c.execute(
+        """INSERT INTO portal_pnl_adjustments(
+             month,label,section,account_name,amount,note,seed_key,sort_order,
+             created_at,updated_at,created_by,updated_by)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id""",
+        (month, label, section, account, float(amount), note, None, nxt, now, now, actor, actor),
+    ))
+    return row["id"]
+
+
+def delete_adjustment(c, actor, form):
+    """Remove one manual line. A seeded line stays deleted on the next seed run."""
+    month = _month_on_page(form.get("month"))
+    current = portal.one(c.execute(
+        "SELECT * FROM portal_pnl_adjustments WHERE id=?", (portal.form_id(form.get("id")),)
+    ))
+    if not current or current["month"] != month:
+        raise ValueError("That adjustment was not found.")
+    c.execute("DELETE FROM portal_pnl_adjustments WHERE id=?", (current["id"],))
+    _remember_seed(c, current.get("seed_key"))
+    return current["id"]
+
+
+def _section_select(selected, ident):
+    options = []
+    for key, name in SECTIONS:
+        mark = " selected" if key == selected else ""
+        options.append(f'<option value="{key}"{mark}>{portal.h(name)}</option>')
+    return f'<select name="section" id="{ident}" required>{"".join(options)}</select>'
+
+
+def _adjustment_form(user, month, row):
+    editing = row is not None
+    label = row["label"] if editing else ""
+    section = row["section"] if editing else "cost"
+    account = row["account_name"] if editing else ""
+    amount = portal._amount_value(row["amount"]) if editing else ""
+    note = row["note"] if editing else ""
+    ident = f'pnl-adj-form-{row["id"]}' if editing else "pnl-adj-add"
+    section_id = f'pnl-adj-section-{row["id"]}' if editing else "pnl-adj-section-add"
+    hidden_id = f'<input type="hidden" name="id" value="{row["id"]}">' if editing else ""
+    button = "Save adjustment" if editing else "Add adjustment"
+    delete = ""
+    if editing:
+        delete = f'''<form method="post" action="/portal/pnl" id="pnl-adj-delete-{row["id"]}">
+<input type="hidden" name="csrf" value="{portal.h(user["csrf"])}">
+<input type="hidden" name="action" value="delete_pnl_adjustment">
+<input type="hidden" name="month" value="{month.strftime("%Y-%m")}">
+<input type="hidden" name="id" value="{row["id"]}">
+<button class="btn danger" type="submit">Delete</button>
+</form>'''
+    marker = '<p class="mini">Manual portal adjustment, not from Xero.</p>' if editing else ""
+    return f'''<div class="pnl-adj" id="{ident}">{marker}
+<form method="post" action="/portal/pnl">
+<input type="hidden" name="csrf" value="{portal.h(user["csrf"])}">
+<input type="hidden" name="action" value="save_pnl_adjustment">
+<input type="hidden" name="month" value="{month.strftime("%Y-%m")}">
+{hidden_id}
+<div class="row">
+<label class="f">Label<input name="label" required maxlength="160" value="{portal.h(label)}"></label>
+<label class="f">Section{_section_select(section, section_id)}</label>
+<label class="f">Account<input name="account_name" maxlength="160" value="{portal.h(account)}" placeholder="Purchases - Fuel"></label>
+<label class="f">Amount ex GST<input name="amount" inputmode="decimal" required value="{portal.h(amount)}"></label>
+</div>
+<label class="f">Note<input name="note" maxlength="400" value="{portal.h(note)}"></label>
+<div class="pnl-adj-actions"><button class="btn" type="submit">{button}</button></div>
+</form>
+{delete}</div>'''
+
+
+def _adjustment_settings(c, user, month):
+    lines = load_adjustments(c, month.strftime("%Y-%m"))
+    forms = "".join(_adjustment_form(user, month, row) for row in lines)
+    empty = "" if lines else '<p class="help" id="pnl-adjustment-empty">No manual lines for this month yet.</p>'
+    return f'''<section class="card" id="pnl-adjustments"><h2>Manual adjustments</h2>
+<p class="help" id="pnl-adjustment-help">Lines added here are stored on this portal only. They are not in Xero, and the nightly Xero upload does not change or remove them. A positive amount increases that section, including the month totals and the previous-month column. Cost of sales is added before the United fuel rent line, so rent that is already inside a fuel debit is not counted twice. The amount is for the whole month. Cost, expense, and other lines appear on the statement once that month’s Xero P&amp;L is loaded.</p>
+{empty}{forms}
+<h3>Add a line</h3>
+{_adjustment_form(user, month, None)}
+</section>'''
+
+
 def _portal_wages(c, start, end, rows, loaded):
     """Portal employee wages only when this month's Xero report has no wage or super account."""
     if not loaded:
@@ -546,7 +768,7 @@ def _delta(this, prev, places="0.01"):
     return (Decimal(this) - Decimal(prev)).quantize(Decimal(places), rounding=ROUND_HALF_UP)
 
 
-def _line(label, this, prev, kind="line", hint="", row_id="", percent=False, this_text=None, prev_text=None, title=""):
+def _line(label, this, prev, kind="line", hint="", row_id="", percent=False, this_text=None, prev_text=None, title="", manual=False):
     places = "0.1" if percent else "0.01"
     return {
         "kind": kind,
@@ -560,6 +782,7 @@ def _line(label, this, prev, kind="line", hint="", row_id="", percent=False, thi
         "percent": percent,
         "this_text": this_text,
         "prev_text": prev_text,
+        "manual": manual,
     }
 
 
@@ -578,6 +801,91 @@ def _wage_cell(mode, amount):
     return amount, None
 
 
+def _adj_amount(row):
+    return portal._cents(row["amount"])
+
+
+def _adj_sum(adjustments, section):
+    return sum((_adj_amount(row) for row in adjustments if row["section"] == section), Decimal("0.00"))
+
+
+def _pair_key(row):
+    account = " ".join((row.get("account_name") or "").casefold().split())
+    label = " ".join((row.get("label") or "").casefold().split())
+    return account, label
+
+
+def _paired_adjustments(current_rows, previous_rows, prev_known, section):
+    """Match manual lines across the two months by account and label."""
+    current = [row for row in current_rows if row["section"] == section]
+    previous = [row for row in previous_rows if row["section"] == section] if prev_known else []
+    buckets = {}
+    for row in previous:
+        buckets.setdefault(_pair_key(row), []).append(row)
+    used = set()
+    paired = []
+    for row in current:
+        match = None
+        for candidate in buckets.get(_pair_key(row), []):
+            if candidate["id"] not in used:
+                match = candidate
+                used.add(candidate["id"])
+                break
+        if not prev_known:
+            prev = None
+        elif match is None:
+            prev = Decimal("0.00")
+        else:
+            prev = _adj_amount(match)
+        paired.append({
+            "row": row,
+            "account": row.get("account_name") or "",
+            "this": _adj_amount(row),
+            "prev": prev,
+        })
+    if prev_known:
+        for row in previous:
+            if row["id"] in used:
+                continue
+            paired.append({
+                "row": row,
+                "account": row.get("account_name") or "",
+                "this": Decimal("0.00"),
+                "prev": _adj_amount(row),
+            })
+    return paired
+
+
+def _manual_line(item):
+    row = item["row"]
+    note = " ".join((row.get("note") or "").split())
+    hint = MANUAL_LEAD if not note else MANUAL_LEAD + " " + note
+    return _line(
+        row["label"], item["this"], item["prev"],
+        row_id=f'pnl-adj-{row["id"]}', hint=hint, title=hint, manual=True,
+    )
+
+
+def _place_adjustments(account_lines, items):
+    """Keep each manual line directly after the account it names. The rest follow those accounts."""
+    pending = list(items)
+    placed = []
+    for line in account_lines:
+        placed.append(line)
+        name = " ".join(line["label"].casefold().split())
+        rest = []
+        for item in pending:
+            target = " ".join((item["account"] or "").casefold().split())
+            if target and target == name:
+                placed.append(_manual_line(item))
+            else:
+                rest.append(item)
+        pending = rest
+    for item in pending:
+        placed.append(_manual_line(item))
+    return placed
+
+
 def _expense_total(rows, contract, wage_mode, wage_amount, rent_included, loaded):
     if not loaded:
         return None
@@ -587,19 +895,31 @@ def _expense_total(rows, contract, wage_mode, wage_amount, rent_included, loaded
     return total
 
 
-def _side_figures(c, month_start, end, rows, loaded, rates, mtd):
+def _side_figures(c, month_start, end, rows, loaded, rates, mtd, adjustments):
     income = income_for(c, month_start, end)
+    # An income line counts whenever till or online income is already a number.
+    # It does not invent a total when those feeds are missing.
+    income_extra = _adj_sum(adjustments, "income")
+    if income_extra and income["total"] is not None:
+        income = dict(income)
+        income["total"] = income["total"] + income_extra
     kinds = _by_kind(rows) if loaded else {"cost": [], "expense": [], "income": [], "other": []}
     cost = _sum_rows(kinds["cost"]) if loaded else None
     other = _sum_rows(kinds["other"]) if loaded else None
     contract = _contract(c, month_start, end) if loaded else None
     wage_mode, wage_amount = _portal_wages(c, month_start, end, rows, loaded)
     rent = _rent_side(rates, month_start, end, rows, loaded, mtd)
+    # Add the manual cost first, then remove rent. A United debit that still
+    # includes the daily rent is reduced once by the rent line, not twice.
     if cost is not None:
-        cost = cost - rent["included"]
+        cost = cost + _adj_sum(adjustments, "cost") - rent["included"]
     expense = _expense_total(
         kinds["expense"], contract or Decimal("0.00"), wage_mode, wage_amount, rent["included"], loaded,
     )
+    if expense is not None:
+        expense += _adj_sum(adjustments, "expense")
+    if other is not None:
+        other += _adj_sum(adjustments, "other")
     if not loaded or income["total"] is None or cost is None:
         gross = None
         gp_pct = None
@@ -621,6 +941,7 @@ def _side_figures(c, month_start, end, rows, loaded, rates, mtd):
         "wage_mode": wage_mode,
         "wage_amount": wage_amount,
         "rent": rent,
+        "adjustments": adjustments,
         "expense": expense,
         "gross": gross,
         "gp_pct": gp_pct,
@@ -642,8 +963,10 @@ def build(c, month_start, today_d):
     loaded = bool(current_rows)
     prev_loaded = bool(previous_rows)
     rates = load_rent_rates(c)
-    current = _side_figures(c, month_start, end, current_rows, loaded, rates, mtd)
-    previous = _side_figures(c, prev_start, prev_end, previous_rows, prev_loaded, rates, False)
+    current_adj = load_adjustments(c, month)
+    previous_adj = load_adjustments(c, prev_month)
+    current = _side_figures(c, month_start, end, current_rows, loaded, rates, mtd, current_adj)
+    previous = _side_figures(c, prev_start, prev_end, previous_rows, prev_loaded, rates, False, previous_adj)
     rows = _statement_rows(current, previous, loaded, prev_loaded)
     month_label = _month_name(month_start)
     prev_label = _month_name(prev_start)
@@ -698,20 +1021,29 @@ def _account_lines(current_rows, previous_rows, prev_loaded):
 
 def _statement_rows(current, previous, loaded, prev_loaded):
     cur_in, prev_in = current["income"], previous["income"]
-    rows = [
-        _section("Income"),
-        _line("Fuel", cur_in["fuel"], prev_in["fuel"], row_id="pnl-fuel"),
-        _line("Shop", cur_in["shop"], prev_in["shop"], row_id="pnl-shop"),
-        _line("Online (Bopple)", cur_in["online"], prev_in["online"], row_id="pnl-online"),
-        _line("Total income", cur_in["total"], prev_in["total"], kind="total", row_id="pnl-income-row"),
-    ]
+    cur_adj = current.get("adjustments") or []
+    prev_adj = previous.get("adjustments") or []
+    income_lines = _place_adjustments(
+        [
+            _line("Fuel", cur_in["fuel"], prev_in["fuel"], row_id="pnl-fuel"),
+            _line("Shop", cur_in["shop"], prev_in["shop"], row_id="pnl-shop"),
+            _line("Online (Bopple)", cur_in["online"], prev_in["online"], row_id="pnl-online"),
+        ],
+        _paired_adjustments(cur_adj, prev_adj, True, "income"),
+    )
+    rows = [_section("Income")]
+    rows.extend(income_lines)
+    rows.append(_line("Total income", cur_in["total"], prev_in["total"], kind="total", row_id="pnl-income-row"))
     if not loaded:
         return rows
     if current["kinds"]["income"] or (prev_loaded and previous["kinds"]["income"]):
         rows.append(_section("Xero income (not included)"))
         rows.extend(_account_lines(current["kinds"]["income"], previous["kinds"]["income"], prev_loaded))
     rows.append(_section("Cost of sales"))
-    rows.extend(_account_lines(current["kinds"]["cost"], previous["kinds"]["cost"], prev_loaded))
+    rows.extend(_place_adjustments(
+        _account_lines(current["kinds"]["cost"], previous["kinds"]["cost"], prev_loaded),
+        _paired_adjustments(cur_adj, prev_adj, prev_loaded, "cost"),
+    ))
     _append_fuel_rent_line(rows, current, previous, prev_loaded)
     rows.append(_line("Total cost of sales", current["cost"], previous["cost"] if prev_loaded else None, kind="total", row_id="pnl-cos"))
     rows.append(_line("Gross profit", current["gross"], previous["gross"] if prev_loaded else None, kind="total", row_id="pnl-gross-row"))
@@ -720,8 +1052,13 @@ def _statement_rows(current, previous, loaded, prev_loaded):
         kind="pct", row_id="pnl-gp-pct", percent=True,
     ))
     rows.append(_section("Operating expenses"))
-    for line in _merge(current["kinds"]["expense"], previous["kinds"]["expense"] if prev_loaded else [], prev_loaded):
-        rows.append(_line(line["label"], line["this"], line["prev"]))
+    expense_lines = [
+        _line(line["label"], line["this"], line["prev"])
+        for line in _merge(current["kinds"]["expense"], previous["kinds"]["expense"] if prev_loaded else [], prev_loaded)
+    ]
+    rows.extend(_place_adjustments(
+        expense_lines, _paired_adjustments(cur_adj, prev_adj, prev_loaded, "expense"),
+    ))
     if _show_wages(current, previous, prev_loaded):
         this_amount, this_text = _wage_cell(current["wage_mode"], current["wage_amount"])
         if prev_loaded:
@@ -742,10 +1079,15 @@ def _statement_rows(current, previous, loaded, prev_loaded):
         "Total operating expenses", current["expense"], previous["expense"] if prev_loaded else None,
         kind="total", row_id="pnl-opex",
     ))
-    if current["kinds"]["other"] or (prev_loaded and previous["kinds"]["other"]):
+    other_lines = _place_adjustments(
+        _account_lines(current["kinds"]["other"], previous["kinds"]["other"], prev_loaded) if (
+            current["kinds"]["other"] or (prev_loaded and previous["kinds"]["other"])
+        ) else [],
+        _paired_adjustments(cur_adj, prev_adj, prev_loaded, "other"),
+    )
+    if other_lines:
         rows.append(_section("Other"))
-        for line in _merge(current["kinds"]["other"], previous["kinds"]["other"] if prev_loaded else [], prev_loaded):
-            rows.append(_line(line["label"], line["this"], line["prev"]))
+        rows.extend(other_lines)
     rows.append(_line("Net profit", current["net"], previous["net"] if prev_loaded else None, kind="total", row_id="pnl-net-row"))
     rows.append(_line(
         "Net margin", current["margin"], previous["margin"] if prev_loaded else None,
@@ -811,6 +1153,8 @@ def _table(rows):
         hint = f'<small class="mini">{portal.h(row["hint"])}</small>' if row.get("hint") else ""
         ident = f' id="{row["id"]}"' if row.get("id") else ""
         cls = "pnl-total" if row["kind"] in ("total", "pct") else ""
+        if row.get("manual"):
+            cls = (cls + " pnl-manual").strip()
         negative = row.get("this") is not None and not row.get("percent") and row["this"] < 0 and row["kind"] == "total"
         if negative:
             cls = (cls + " negative").strip()
@@ -835,6 +1179,8 @@ def _cards(rows, this_head, prev_head):
             continue
         hint = f'<span class="mini">{portal.h(row["hint"])}</span>' if row.get("hint") else ""
         cls = "pnl-card total" if row["kind"] in ("total", "pct") else "pnl-card"
+        if row.get("manual"):
+            cls += " manual"
         title = f' title="{portal.h(row["title"])}"' if row.get("title") else ""
         parts.append(
             f'<article class="{cls}"><h3{title}>{portal.h(row["label"])}{hint}</h3><dl>'
@@ -873,7 +1219,7 @@ def _form(month, today_d):
 </div></form>'''
 
 
-def page(c, query, user=None, error=""):
+def page(c, query, user=None, error="", error_id="pnl-rent-error"):
     today_d = portal.today()
     month, month_error = _selected_month(query, today_d)
     statement = build(c, month, today_d)
@@ -887,16 +1233,25 @@ def page(c, query, user=None, error=""):
     this_head = _month_name(month) + (" month to date" if statement["mtd"] else "")
     alert = f'<p class="alert" id="pnl-error">{portal.h(month_error)}</p>' if month_error else ""
     if error:
-        alert += f'<p class="alert" id="pnl-rent-error">{portal.h(error)}</p>'
+        if error_id not in ("pnl-rent-error", "pnl-adjustment-error"):
+            error_id = "pnl-rent-error"
+        alert += f'<p class="alert" id="{error_id}">{portal.h(error)}</p>'
+    ok_flag = (query or {}).get("ok")
+    if isinstance(ok_flag, list):
+        ok_flag = ok_flag[0]
     ok_text = ""
-    if (query or {}).get("ok") == "rent":
+    if ok_flag == "rent":
         ok_text = '<p class="oknote" id="pnl-rent-saved">Saved. The rent rate is stored on this portal only. Nothing was sent to Xero.</p>'
+    elif ok_flag == "adjustment":
+        ok_text = '<p class="oknote" id="pnl-adjustment-saved">Saved. This adjustment is stored on this portal only. Nothing was sent to Xero.</p>'
+    elif ok_flag == "adjustment-deleted":
+        ok_text = '<p class="oknote" id="pnl-adjustment-deleted">Deleted. Nothing was sent to Xero.</p>'
     warnings = ""
     if statement["rent_warnings"]:
         items = "".join(f"<p>{portal.h(text)}</p>" for text in statement["rent_warnings"])
         warnings = f'<div class="alert" id="pnl-rent-xero">{items}</div>'
     notes = "".join(f'<p class="help">{portal.h(note)}</p>' for note in statement["notes"])
-    settings = _rent_settings(c, user, month) if user else ""
+    settings = (_rent_settings(c, user, month) + _adjustment_settings(c, user, month)) if user else ""
     if statement["loaded"]:
         gp_span = portal.pct_text(statement["gp_pct"]) + " of income" if statement["gp_pct"] is not None else "Share of income"
         margin_span = portal.pct_text(statement["margin"]) + " of income" if statement["margin"] is not None else "Share of income"

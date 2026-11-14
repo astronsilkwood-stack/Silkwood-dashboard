@@ -63,6 +63,8 @@ class PortalTest(unittest.TestCase):
         c.execute("DELETE FROM portal_snapshots WHERE dataset='xero-pnl'")
         c.execute("DELETE FROM portal_meta WHERE k='xero-pnl'")
         c.execute("DELETE FROM portal_rent_rates")
+        c.execute("DELETE FROM portal_pnl_adjustments")
+        c.execute("DELETE FROM portal_meta WHERE k='pnl-adjustment-seeds'")
         c.execute("DELETE FROM portal_invoice_payments")
         c.execute("UPDATE portal_users SET password_hash=? WHERE username='astron'", (ORIGINAL_HASH,))
         c.commit(); c.close()
@@ -3440,6 +3442,330 @@ class PortalTest(unittest.TestCase):
         self.assertIn("16 Oct 2026 to 31 Oct 2026", split_row)
         self.assertIn("440.00 / 1.1", split_row)
         self.assertIn("-$10,779.10", split_page.split('id="pnl-rent-fuel"', 1)[1].split("</tr>", 1)[0])
+
+    def test_manual_pnl_adjustments(self):
+        """Portal-only P&L lines, including the October 2026 United fuel seed."""
+        import csv
+        from datetime import date
+        from decimal import Decimal, ROUND_HALF_UP
+        import portal_pnl
+        self.login()
+        advice_path = ROOT / "tools" / "fixtures" / "oct-2026-united-advices.csv"
+        with advice_path.open(encoding="utf-8") as advice_file:
+            advice_rows = list(csv.DictReader(advice_file))
+        advice_inc = sum((Decimal(row["amount_inc"]) for row in advice_rows), Decimal("0"))
+        advice_ex = (advice_inc / Decimal("1.1")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        self.assertEqual(len(advice_rows), 20)
+        self.assertEqual(advice_inc, Decimal("193539.02"))
+        self.assertEqual(advice_ex, Decimal("175944.56"))
+        self.assertEqual(portal_pnl.FUEL_SEED_AMOUNT, advice_ex)
+        fifteenth = next(row for row in advice_rows if row["day_sheet_date"] == "2026-10-15")
+        self.assertEqual(fifteenth["amount_inc"], "9459.91")
+        self.assertEqual(fifteenth["doc"], "DS000560243")
+        days = sorted(row["day_sheet_date"] for row in advice_rows)
+        self.assertEqual(days[0], "2026-10-01")
+        self.assertEqual(days[-1], "2026-10-20")
+        self.assertEqual(len(set(days)), 20)
+
+        sales = load("sales.json")
+        october_sales = next(period["daily"] for period in sales["periods"] if period.get("id") == "lastmonth")
+        october_online = [day for day in load("online-orders.json")["daily"] if str(day["date"]).startswith("2026-10")]
+        self.assertEqual(len(october_sales), 31)
+        c = server.db()
+        try:
+            saved_sales = portal.rows(c.execute(
+                "SELECT * FROM portal_sales_days WHERE date>='2026-10-01' AND date<='2026-10-31'"
+            ))
+            saved_online = portal.rows(c.execute(
+                "SELECT * FROM portal_online_days WHERE date>='2026-10-01' AND date<='2026-10-31'"
+            ))
+            saved_meta = portal.one(c.execute("SELECT v FROM portal_meta WHERE k='online-orders'"))
+        finally:
+            c.close()
+
+        def _restore_october():
+            c = server.db()
+            try:
+                c.execute("DELETE FROM portal_sales_days WHERE date>='2026-10-01' AND date<='2026-10-31'")
+                c.execute("DELETE FROM portal_online_days WHERE date>='2026-10-01' AND date<='2026-10-31'")
+                for row in saved_sales:
+                    c.execute(
+                        """INSERT INTO portal_sales_days(date,total,shop,fuel,gp,gp_pct,coverage,missing,products,covered_ex,source_as_of)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                        (row["date"], row["total"], row["shop"], row["fuel"], row["gp"], row["gp_pct"], row["coverage"],
+                         row["missing"], row["products"], row["covered_ex"], row["source_as_of"]),
+                    )
+                for row in saved_online:
+                    c.execute(
+                        """INSERT INTO portal_online_days(date,orders,total,fees,refunds,net,source_as_of)
+                           VALUES(?,?,?,?,?,?,?)""",
+                        (row["date"], row["orders"], row["total"], row["fees"], row["refunds"], row["net"], row["source_as_of"]),
+                    )
+                if saved_meta:
+                    c.execute(
+                        "INSERT INTO portal_meta(k,v) VALUES('online-orders',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                        (saved_meta["v"],),
+                    )
+                else:
+                    c.execute("DELETE FROM portal_meta WHERE k='online-orders'")
+                c.commit()
+            finally:
+                c.close()
+
+        self.addCleanup(_restore_october)
+        c = server.db()
+        try:
+            c.execute("DELETE FROM portal_sales_days WHERE date>='2026-10-01' AND date<='2026-10-31'")
+            c.execute("DELETE FROM portal_online_days WHERE date>='2026-10-01' AND date<='2026-10-31'")
+            for day in october_sales:
+                c.execute(
+                    """INSERT INTO portal_sales_days(date,total,shop,fuel,gp,gp_pct,coverage,missing,products,covered_ex,source_as_of)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (day["date"], day["total"], day["shop"], day["fuel"], day.get("gp") or 0, day.get("gpPct") or 0,
+                     day.get("coverage") or 0, day.get("missing") or 0, day.get("products") or 0,
+                     day.get("coveredEx") or 0, "2026-10-31"),
+                )
+            for day in october_online:
+                c.execute(
+                    """INSERT INTO portal_online_days(date,orders,total,fees,refunds,net,source_as_of)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (day["date"], day["orders"], day["total"], day["fees"], day["refunds"], day["net"], "2026-10-31"),
+                )
+            portal.meta_set(c, "online-orders", {"asOf": "2026-10-31", "source": "test"})
+            c.commit()
+        finally:
+            c.close()
+
+        sys.path.insert(0, str(ROOT / "tools"))
+        import xero_pnl
+        sample = xero_pnl.ingest_data((ROOT / "tools" / "fixtures" / "xero-pnl-oct-2026-sample.txt").read_text(), "2026-10")
+        self.assertEqual(self.ingest("xero-pnl", sample)[0], 200)
+        c = server.db()
+        try:
+            before = portal_pnl.build(c, date(2026, 10, 1), date(2026, 11, 11))
+            self.assertEqual(portal_pnl.seed(c), 1)
+            self.assertEqual(portal_pnl.seed(c), 0)
+            c.commit()
+            after = portal_pnl.build(c, date(2026, 10, 1), date(2026, 11, 11))
+            stored = portal.rows(c.execute("SELECT * FROM portal_pnl_adjustments WHERE month='2026-10'"))
+        finally:
+            c.close()
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["label"], portal_pnl.FUEL_SEED_LABEL)
+        self.assertEqual(stored[0]["section"], "cost")
+        self.assertEqual(stored[0]["account_name"], "Purchases - Fuel")
+        self.assertEqual(stored[0]["note"], portal_pnl.FUEL_SEED_NOTE)
+        self.assertEqual(portal._cents(stored[0]["amount"]), Decimal("175944.56"))
+        seeded_id = stored[0]["id"]
+        self.assertEqual(before["income"], Decimal("464282.42"))
+        self.assertEqual(before["cost"], Decimal("124296.71"))
+        self.assertEqual(before["gross"], Decimal("339985.71"))
+        self.assertEqual(before["expenses"], Decimal("37301.77"))
+        self.assertEqual(before["rent"], Decimal("9050.14"))
+        self.assertEqual(before["net"], Decimal("302683.94"))
+        self.assertEqual(after["income"], before["income"])
+        self.assertEqual(after["rent"], before["rent"])
+        self.assertEqual(after["expenses"], before["expenses"])
+        self.assertEqual(after["cost"], Decimal("300241.27"))
+        self.assertEqual(after["gross"], Decimal("164041.15"))
+        self.assertEqual(after["net"], Decimal("126739.38"))
+        self.assertEqual(before["net"] - after["net"], Decimal("175944.56"))
+        self.assertEqual(after["cost"] - before["cost"], Decimal("175944.56"))
+
+        page = self.authed("GET", "/portal/pnl?month=2026-10")[2].decode()
+        statement = page.split('id="pnl-statement"', 1)[1].split('id="pnl-note"', 1)[0]
+        self.assertLess(statement.index("Purchases - Fuel"), statement.index(portal_pnl.FUEL_SEED_LABEL))
+        self.assertLess(statement.index(portal_pnl.FUEL_SEED_LABEL), statement.index("Less rent included in United fuel debits"))
+        fuel_row = statement.split("Purchases - Fuel", 1)[1].split("</tr>", 1)[0]
+        self.assertIn("$79,072.96", fuel_row)
+        self.assertNotIn("175,944.56", fuel_row)
+        manual = statement.split(portal_pnl.FUEL_SEED_LABEL, 1)[1].split("</tr>", 1)[0]
+        self.assertIn("$175,944.56", manual)
+        self.assertIn("Manual portal adjustment, not from Xero.", manual)
+        self.assertIn("CSJR765", manual)
+        self.assertIn("193,539.02", manual)
+        self.assertIn("627", manual)
+        self.assertIn('class="pnl-manual"', statement)
+        self.assertIn("-$9,050.14", statement.split('id="pnl-rent-fuel"', 1)[1].split("</tr>", 1)[0])
+        self.assertIn("$300,241.27", statement.split('id="pnl-cos"', 1)[1].split("</tr>", 1)[0])
+        self.assertIn("$164,041.15", statement.split('id="pnl-gross-row"', 1)[1].split("</tr>", 1)[0])
+        self.assertIn("$126,739.38", statement.split('id="pnl-net-row"', 1)[1].split("</tr>", 1)[0])
+        self.assertIn("$37,301.77", statement.split('id="pnl-opex"', 1)[1].split("</tr>", 1)[0])
+        editor = page.split('id="pnl-adjustments"', 1)[1]
+        self.assertIn("Manual portal adjustment, not from Xero.", editor)
+        self.assertIn("175944.56", editor)
+        self.assertIn(portal_pnl.FUEL_SEED_NOTE, editor)
+        self.assertIn("not in Xero", editor)
+        self.assertIn('id="pnl-adj-delete-%s"' % seeded_id, editor)
+
+        self.assertEqual(self.ingest("xero-pnl", sample)[0], 200)
+        c = server.db()
+        try:
+            kept = portal.rows(c.execute("SELECT amount, seed_key FROM portal_pnl_adjustments WHERE month='2026-10'"))
+            held = portal_pnl.build(c, date(2026, 10, 1), date(2026, 11, 11))
+        finally:
+            c.close()
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(portal._cents(kept[0]["amount"]), Decimal("175944.56"))
+        self.assertEqual(held["net"], Decimal("126739.38"))
+
+        self.assertEqual(self.ingest("xero-pnl", {"month": "2026-11", "accounts": [
+            {"section": "Less Cost of Sales", "accountName": "Purchases - Fuel", "accountId": "fuel-nov", "amount": 10},
+        ]})[0], 200)
+        c = server.db()
+        try:
+            november = portal_pnl.build(c, date(2026, 11, 1), date(2026, 11, 11))
+        finally:
+            c.close()
+        self.assertEqual(november["prev_net"], after["net"])
+        self.assertEqual(november["prev_net"], Decimal("126739.38"))
+        compared = self.authed("GET", "/portal/pnl?month=2026-11")[2].decode()
+        compared_statement = compared.split('id="pnl-statement"', 1)[1].split('id="pnl-note"', 1)[0]
+        compared_row = compared_statement.split(portal_pnl.FUEL_SEED_LABEL, 1)[1].split("</tr>", 1)[0]
+        self.assertIn("$0.00", compared_row)
+        self.assertIn("$175,944.56", compared_row)
+        self.assertIn("Manual portal adjustment, not from Xero.", compared_row)
+        self.assertIn("$300,241.27", compared_statement.split('id="pnl-cos"', 1)[1].split("</tr>", 1)[0])
+
+        token = self.csrf_from(page)
+        edited = self.authed("POST", "/portal/pnl", urlencode({
+            "csrf": token, "action": "save_pnl_adjustment", "month": "2026-10", "id": str(seeded_id),
+            "label": portal_pnl.FUEL_SEED_LABEL, "section": "cost", "account_name": "Purchases - Fuel",
+            "amount": "1.00", "note": portal_pnl.FUEL_SEED_NOTE,
+        }))
+        self.assertEqual(edited[0], 302)
+        self.assertIn("ok=adjustment", edited[1].get("Location", ""))
+        c = server.db()
+        try:
+            self.assertEqual(portal_pnl.seed(c), 0)
+            c.commit()
+            changed = portal.one(c.execute("SELECT amount, seed_key FROM portal_pnl_adjustments WHERE id=?", (seeded_id,)))
+        finally:
+            c.close()
+        self.assertEqual(portal._cents(changed["amount"]), Decimal("1.00"))
+        self.assertEqual(changed["seed_key"], portal_pnl.FUEL_SEED_KEY)
+        saved_page = self.authed("GET", edited[1]["Location"])[2].decode()
+        self.assertIn("This adjustment is stored on this portal only. Nothing was sent to Xero.", saved_page)
+
+        removed = self.authed("POST", "/portal/pnl", urlencode({
+            "csrf": self.csrf_from(saved_page), "action": "delete_pnl_adjustment", "month": "2026-10", "id": str(seeded_id),
+        }))
+        self.assertEqual(removed[0], 302)
+        self.assertIn("ok=adjustment-deleted", removed[1].get("Location", ""))
+        c = server.db()
+        try:
+            self.assertEqual(portal_pnl.seed(c), 0)
+            c.commit()
+            gone = portal.one(c.execute("SELECT id FROM portal_pnl_adjustments WHERE month='2026-10'"))
+        finally:
+            c.close()
+        self.assertIsNone(gone)
+        deleted_page = self.authed("GET", removed[1]["Location"])[2].decode()
+        self.assertIn("Deleted. Nothing was sent to Xero.", deleted_page)
+        self.assertNotIn(portal_pnl.FUEL_SEED_LABEL, deleted_page.split('id="pnl-statement"', 1)[1].split('id="pnl-note"', 1)[0])
+
+        self.assertEqual(self.ingest("xero-pnl", {"month": "2026-04", "accounts": [
+            {"section": "Less Cost of Sales", "accountName": "Purchases - Fuel", "accountId": "fuel-apr", "amount": 100},
+            {"section": "Less Operating Expenses", "accountName": "Cleaning", "accountId": "clean-apr", "amount": 20},
+        ]})[0], 200)
+        c = server.db()
+        try:
+            c.execute(
+                """INSERT INTO portal_sales_days(date,total,shop,fuel,gp,gp_pct,coverage,missing,products,covered_ex,source_as_of)
+                   VALUES('2026-04-02',110,110,0,0,0,1,0,1,0,'2026-04-02')"""
+            )
+            c.commit()
+        finally:
+            c.close()
+        self.addCleanup(self._delete_april_sale)
+        april_page = self.authed("GET", "/portal/pnl?month=2026-04")[2].decode()
+        bad = self.authed("POST", "/portal/pnl", urlencode({
+            "csrf": self.csrf_from(april_page), "action": "save_pnl_adjustment", "month": "2026-04",
+            "label": "Shop tidy", "section": "nope", "account_name": "", "amount": "5", "note": "",
+        }))
+        self.assertEqual(bad[0], 400)
+        self.assertIn("Choose a section.", bad[2].decode())
+        self.assertIn('id="pnl-adjustment-error"', bad[2].decode())
+        bad_amount = self.authed("POST", "/portal/pnl", urlencode({
+            "csrf": self.csrf_from(bad[2].decode()), "action": "save_pnl_adjustment", "month": "2026-04",
+            "label": "Shop tidy", "section": "expense", "account_name": "Cleaning", "amount": "nope", "note": "",
+        }))
+        self.assertEqual(bad_amount[0], 400)
+        self.assertIn("amount ex GST", bad_amount[2].decode())
+        added = self.authed("POST", "/portal/pnl", urlencode({
+            "csrf": self.csrf_from(bad_amount[2].decode()), "action": "save_pnl_adjustment", "month": "2026-04",
+            "label": "<b>Shop tidy</b>", "section": "expense", "account_name": "Cleaning", "amount": "12.50", "note": "Portal only",
+        }))
+        self.assertEqual(added[0], 302)
+        tidy = self.authed("GET", added[1]["Location"])[2].decode()
+        self.assertIn("&lt;b&gt;Shop tidy&lt;/b&gt;", tidy)
+        self.assertNotIn("<b>Shop tidy</b>", tidy)
+        c = server.db()
+        try:
+            april = portal_pnl.build(c, date(2026, 4, 1), date(2026, 11, 11))
+            tidy_row = portal.one(c.execute("SELECT id FROM portal_pnl_adjustments WHERE month='2026-04'"))
+        finally:
+            c.close()
+        self.assertEqual(april["cost"], Decimal("100.00"))
+        self.assertEqual(april["expenses"], Decimal("32.50"))
+        self.assertEqual(april["income"], Decimal("100.00"))
+        self.assertEqual(april["net"], Decimal("-32.50"))
+        self.assertLess(
+            tidy.split('id="pnl-statement"', 1)[1].index("Cleaning"),
+            tidy.split('id="pnl-statement"', 1)[1].index("Shop tidy"),
+        )
+        fuel_added = self.authed("POST", "/portal/pnl", urlencode({
+            "csrf": self.csrf_from(tidy), "action": "save_pnl_adjustment", "month": "2026-04",
+            "label": "Extra fuel", "section": "cost", "account_name": "Purchases - Fuel", "amount": "40", "note": "",
+        }))
+        self.assertEqual(fuel_added[0], 302)
+        c = server.db()
+        try:
+            with_fuel = portal_pnl.build(c, date(2026, 4, 1), date(2026, 11, 11))
+        finally:
+            c.close()
+        self.assertEqual(with_fuel["cost"], Decimal("140.00"))
+        self.assertEqual(with_fuel["expenses"], Decimal("32.50"))
+        self.assertEqual(with_fuel["net"], Decimal("-72.50"))
+        fuel_page = self.authed("GET", "/portal/pnl?month=2026-04")[2].decode()
+        fuel_statement = fuel_page.split('id="pnl-statement"', 1)[1].split('id="pnl-note"', 1)[0]
+        self.assertLess(fuel_statement.index("Purchases - Fuel"), fuel_statement.index("Extra fuel"))
+        self.assertNotIn('id="pnl-rent-fuel"', fuel_statement)
+        updated = self.authed("POST", "/portal/pnl", urlencode({
+            "csrf": self.csrf_from(fuel_page), "action": "save_pnl_adjustment", "month": "2026-04", "id": str(tidy_row["id"]),
+            "label": "Shop tidy", "section": "expense", "account_name": "Cleaning", "amount": "10", "note": "",
+        }))
+        self.assertEqual(updated[0], 302)
+        c = server.db()
+        try:
+            edited_april = portal_pnl.build(c, date(2026, 4, 1), date(2026, 11, 11))
+        finally:
+            c.close()
+        self.assertEqual(edited_april["expenses"], Decimal("30.00"))
+        self.assertEqual(edited_april["net"], Decimal("-70.00"))
+        gone_april = self.authed("POST", "/portal/pnl", urlencode({
+            "csrf": self.csrf_from(self.authed("GET", "/portal/pnl?month=2026-04")[2].decode()),
+            "action": "delete_pnl_adjustment", "month": "2026-04", "id": str(tidy_row["id"]),
+        }))
+        self.assertEqual(gone_april[0], 302)
+        c = server.db()
+        try:
+            after_delete = portal_pnl.build(c, date(2026, 4, 1), date(2026, 11, 11))
+            left = portal.rows(c.execute("SELECT label FROM portal_pnl_adjustments WHERE month='2026-04'"))
+        finally:
+            c.close()
+        self.assertEqual([row["label"] for row in left], ["Extra fuel"])
+        self.assertEqual(after_delete["cost"], Decimal("140.00"))
+        self.assertEqual(after_delete["expenses"], Decimal("20.00"))
+        self.assertEqual(after_delete["net"], Decimal("-60.00"))
+
+    def _delete_april_sale(self):
+        c = server.db()
+        try:
+            c.execute("DELETE FROM portal_sales_days WHERE date='2026-04-02'")
+            c.commit()
+        finally:
+            c.close()
 
     def tearDown(self):
         # The barcode-map test is the only one that writes this dataset. Clearing it here
