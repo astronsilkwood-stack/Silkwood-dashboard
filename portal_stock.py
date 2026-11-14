@@ -9,6 +9,10 @@ Barcodes are read from a saved owner link, then the till catalog (product-search
 then retail-pricing), then a manual product, then the barcode-map upload. That map
 is the full PLU list, including products that have not sold recently. A product can
 have several barcodes. Linking a barcode does not change movements or the on-hand figure.
+
+Each product can have one supplier. The owner saves it on the portal. A delivery whose
+invoice number matches a purchase bill or an invoice can suggest a supplier until then.
+The nightly upload does not replace a saved supplier.
 """
 import json
 import re
@@ -218,16 +222,22 @@ def tracked_rows(c):
 
 
 def tracked_payload(c):
+    manual = portal.manual_supplier_map(c)
+    suggested = portal.suggested_supplier_map(c)
+    products = []
+    for row in tracked_rows(c):
+        state = portal.supplier_state(row["code"], manual, suggested)
+        item = {key: row[key] for key in (
+            "code", "name", "group", "department", "barcode", "baselineDate", "baselineAt",
+            "openingQty", "soldSince", "receivedSince", "onHand", "daysCover", "lastUpdated", "note", "manual",
+        )}
+        item["supplier"] = state["name"] or None
+        item["supplierSource"] = state["source"] or None
+        products.append(item)
     return {
         "timezone": "Australia/Brisbane",
         "baselineRule": BASELINE_RULE,
-        "products": [
-            {key: row[key] for key in (
-                "code", "name", "group", "department", "barcode", "baselineDate", "baselineAt",
-                "openingQty", "soldSince", "receivedSince", "onHand", "daysCover", "lastUpdated", "note", "manual",
-            )}
-            for row in tracked_rows(c)
-        ],
+        "products": products,
     }
 
 
@@ -397,6 +407,8 @@ def add_manual(c, user, form):
     if not form.get("baseline_time"):
         form["baseline_time"] = "23:59"
     save_count(c, user, form)
+    if (form.get("supplier") or "").strip():
+        portal.assign_product_supplier(c, user, code, form.get("supplier"))
     return code
 
 
@@ -423,6 +435,8 @@ def edit_manual(c, user, form):
         c.execute("UPDATE portal_stock_counts SET code=? WHERE code=?", (code, old))
         c.execute("UPDATE portal_stock_audit SET code=? WHERE code=?", (code, old))
         c.execute("UPDATE portal_product_barcodes SET code=? WHERE code=?", (code, old))
+        c.execute("DELETE FROM portal_product_suppliers WHERE code=?", (code,))
+        c.execute("UPDATE portal_product_suppliers SET code=? WHERE code=?", (code, old))
         c.execute("DELETE FROM portal_stock_items WHERE code=?", (old,))
     when = portal.stamp()
     c.execute(
@@ -432,6 +446,8 @@ def edit_manual(c, user, form):
              manual=1, active=excluded.active, updated_at=excluded.updated_at, updated_by=excluded.updated_by""",
         (code, name, barcode, group, item["active"], item["created_at"], when, user["username"]),
     )
+    if "supplier" in form:
+        portal.assign_product_supplier(c, user, code, form.get("supplier"))
     _audit(c, user["username"], "edit", code, {"from": old, "name": name, "barcode": barcode, "group": group})
     return code
 
@@ -786,7 +802,10 @@ def _matches(row, needle):
     if not needle:
         return True
     extra = " ".join(row.get("linkedBarcodes") or [])
-    hay = f"{row['code']} {row['name']} {row['group']} {row['department']} {row.get('barcode') or ''} {extra}".casefold()
+    hay = (
+        f"{row['code']} {row['name']} {row['group']} {row['department']} "
+        f"{row.get('barcode') or ''} {extra} {row.get('supplier') or ''}"
+    ).casefold()
     return needle in hay
 
 
@@ -809,12 +828,42 @@ def _paint_class(row):
     return "ok"
 
 
+def _stock_href(mode, needle, selected, filtering, **overrides):
+    from urllib.parse import urlencode
+    current_sort = overrides.pop("sort", "")
+    fields = {
+        "filter": overrides.pop("filter", mode or "all"),
+        "q": overrides.pop("q", needle or ""),
+        "sort": "" if current_sort in ("", "name") else current_sort,
+        "arrange": overrides.pop("arrange", "") or "",
+        "link": overrides.pop("link", "") or "",
+    }
+    fields.update(overrides)
+    drop_supplier = fields.pop("drop_supplier", False)
+    pairs = [(key, value) for key, value in fields.items() if value not in ("", None)]
+    if filtering and not drop_supplier:
+        pairs.extend(("supplier", name) for name in selected)
+    return "/portal/stock?" + urlencode(pairs)
+
+
 def page_stock(c, user, query, error=""):
+    manual = portal.manual_supplier_map(c)
+    suggested = portal.suggested_supplier_map(c)
+    supplier_names = portal.supplier_filter_names(c)
+    selected, filtering = portal.chosen_suppliers(query, supplier_names)
     rows = tracked_rows(c)
+    for row in rows:
+        state = portal.supplier_state(row["code"], manual, suggested)
+        row["supplierState"] = state
+        row["supplier"] = state["name"] if state["source"] else ""
     needle = (query.get("q") or "").strip()
     mode = query.get("filter") if query.get("filter") in ("low", "negative") else "all"
+    sort = query.get("sort") if query.get("sort") in ("name", "supplier", "onhand") else "name"
+    arrange = "supplier" if query.get("arrange") == "supplier" else ""
     shown = []
     for row in rows:
+        if not portal.supplier_kept(row["supplier"], selected, filtering):
+            continue
         if not _matches(row, needle.casefold()):
             continue
         if mode == "low" and _row_class(row["onHand"]) != "low":
@@ -822,8 +871,45 @@ def page_stock(c, user, query, error=""):
         if mode == "negative" and row["onHand"] >= 0:
             continue
         shown.append(row)
+    if sort == "supplier":
+        shown.sort(key=lambda row: (portal.supplier_rank(row["supplier"]), row["name"].casefold(), row["code"]))
+    elif sort == "onhand":
+        shown.sort(key=lambda row: (row["onHand"], row["name"].casefold(), row["code"]))
+    else:
+        shown.sort(key=lambda row: (row["name"].casefold(), row["code"]))
+    grouped = arrange == "supplier" or sort == "supplier"
+    if grouped and sort != "supplier":
+        shown.sort(key=lambda row: portal.supplier_rank(row["supplier"]))
+    sticky = {}
+    if needle:
+        sticky["q"] = needle
+    if mode != "all":
+        sticky["filter"] = mode
+    if sort != "name":
+        sticky["sort"] = sort
+    if arrange:
+        sticky["arrange"] = arrange
+    pick = (query.get("pick") or "").strip()
+    if pick:
+        sticky["pick"] = pick
+    edit_code = (query.get("edit") or "").strip()
+    if edit_code:
+        sticky["edit"] = edit_code
+    if filtering:
+        sticky["supplier"] = selected
+    back = portal.return_query(sticky, portal.STOCK_RETURN_KEYS)
     body = []
+    previous = None
     for row in shown:
+        if grouped and row["supplier"] != previous:
+            previous = row["supplier"]
+            label = previous or "Unassigned"
+            count = sum(1 for item in shown if item["supplier"] == previous)
+            noun = "product" if count == 1 else "products"
+            body.append(
+                f'<tr class="supplier-head"><td colspan="11">{portal.h(label)} '
+                f'<span class="mini">{count} {noun}</span></td></tr>'
+            )
         cls = _row_class(row["onHand"])
         flag = ""
         if row.get("manual"):
@@ -837,10 +923,12 @@ def page_stock(c, user, query, error=""):
         linked_note = ""
         if row.get("linkedBarcodes"):
             linked_note = '<div class="mini">' + portal.h(", ".join(row["linkedBarcodes"])) + "</div>"
-        hit = " scan-hit" if (query.get("pick") or "").strip() == row["code"] else ""
+        hit = " scan-hit" if pick == row["code"] else ""
+        supplier_cell = portal.supplier_editor(user, "/portal/stock", row["code"], row["supplierState"], back, row["name"])
         body.append(
             f'<tr id="stock-{portal.h(row["code"])}" class="{_paint_class(row)}{hit}"><td class="nowrap">{portal.h(row["code"])}</td>'
             f'<td>{portal.h(row["name"])}{flag}{linked_note}</td><td>{portal.h(row["group"] or "—")}</td>'
+            f'<td>{supplier_cell}</td>'
             f'<td class="num">{qty_text(row["openingQty"])}<div class="mini">end of {portal.h(portal.fmt_date(row["baselineDate"]))}</div></td>'
             f'<td class="num">{qty_text(row["soldSince"])}</td><td class="num">{qty_text(row["receivedSince"])}</td>'
             f'<td class="num">{qty_text(row["onHand"])}</td><td class="num">{portal.h(cover)}</td>'
@@ -851,17 +939,32 @@ def page_stock(c, user, query, error=""):
             f'<button class="btn ghost sm" type="submit">Stop tracking</button></form></td></tr>'
         )
     table = '<p class="empty">No tracked products yet. Set an opening count below. Only those products are updated from till sales and deliveries.</p>' if not rows else (
-        '<p class="empty">Nothing in this search.</p>' if not body else
-        '<div class="tw"><table><thead><tr><th>Code</th><th>Name</th><th>Group</th><th class="num">Opening</th><th class="num">Sold since</th><th class="num">Received since</th><th class="num">On hand</th><th class="num">Days of cover</th><th>Last updated</th><th></th></tr></thead><tbody>'
+        '<p class="empty">Nothing in this filter.</p>' if not body else
+        '<div class="tw"><table><thead><tr><th>Code</th><th>Name</th><th>Group</th><th>Supplier</th><th class="num">Opening</th><th class="num">Sold since</th><th class="num">Received since</th><th class="num">On hand</th><th class="num">Days of cover</th><th>Last updated</th><th></th></tr></thead><tbody>'
         + "".join(body) + "</tbody></table></div>"
     )
     pending = _pending_barcode(query.get("link"))
-    link_bit = f"&link={portal.h(pending)}" if pending else ""
     links = _links_by_code(c)
+
+    def stock_href(**overrides):
+        base = {"sort": sort, "arrange": arrange, "link": pending}
+        base.update(overrides)
+        return _stock_href(mode, needle, selected, filtering, **base)
+
     chips = []
     for key, label in (("all", "All"), ("low", "Low stock"), ("negative", "Negative")):
         cls = " on" if key == mode else ""
-        chips.append(f'<a class="chip{cls}" href="/portal/stock?filter={key}&q={portal.h(needle)}{link_bit}">{label}</a>')
+        chips.append(f'<a class="chip{cls}" href="{portal.h(stock_href(filter=key))}">{label}</a>')
+    sort_chips = []
+    for key, label in (("name", "Name"), ("supplier", "Supplier"), ("onhand", "On hand")):
+        cls = " on" if key == sort else ""
+        sort_chips.append(f'<a class="chip{cls}" href="{portal.h(stock_href(sort="" if key == "name" else key))}">{label}</a>')
+    group_on = arrange == "supplier"
+    group_chip = (
+        f'<a class="chip{" on" if group_on else ""}" href="{portal.h(stock_href(arrange="" if group_on else "supplier"))}">'
+        "Group by supplier</a>"
+    )
+    clear_href = stock_href(drop_supplier=True)
     catalog = catalog_index(c)
     matches = []
     if needle and catalog:
@@ -894,7 +997,7 @@ def page_stock(c, user, query, error=""):
     match_html = []
     for item in matches:
         match_html.append(
-            f'<a class="chip" href="/portal/stock?pick={portal.h(item["code"])}&q={portal.h(needle)}{link_bit}">{portal.h(item["name"])} · {portal.h(item["code"])}</a>'
+            f'<a class="chip" href="{portal.h(stock_href(pick=item["code"]))}">{portal.h(item["name"])} · {portal.h(item["code"])}</a>'
         )
     now = portal._srv().now()
     default_date = now.date().isoformat()
@@ -917,6 +1020,8 @@ def page_stock(c, user, query, error=""):
         ok = '<p class="oknote">Barcode linked. Enter the opening count and save.</p>'
     elif query.get("ok") == "1":
         ok = '<p class="oknote">Opening count saved. Earlier counts stay in the history.</p>'
+    elif query.get("ok") == "supplier":
+        ok = '<p class="oknote" id="supplier-saved">Supplier saved. The nightly upload will not replace it.</p>'
     else:
         ok = ""
     banner = ""
@@ -944,6 +1049,11 @@ def page_stock(c, user, query, error=""):
     editing = stored.get((query.get("edit") or "").strip()) if query.get("edit") else None
     edit_html = ""
     if editing and editing["manual"]:
+        saved_name = manual.get(editing["code"], "")
+        hint = suggested.get(editing["code"], "")
+        supplier_note = ""
+        if hint and hint.casefold() != saved_name.casefold():
+            supplier_note = f'<p class="help">Invoices suggest {portal.h(hint)}. Type that name and save to keep it.</p>'
         edit_html = f"""<section class="card" id="stock-edit"><h2>Edit {portal.h(editing["name"])}</h2>
 <form method="post" action="/portal/stock">
 <input type="hidden" name="csrf" value="{portal.h(user['csrf'])}"><input type="hidden" name="action" value="edit_manual">
@@ -953,9 +1063,11 @@ def page_stock(c, user, query, error=""):
 <label class="f">Code / PLU<input name="code" value="{portal.h(editing['code'])}" maxlength="40"></label>
 <label class="f">Barcode<input name="barcode" value="{portal.h(editing['barcode'] or '')}" maxlength="32"></label>
 <label class="f">Group<input name="group" value="{portal.h(editing['group_name'] or '')}" maxlength="80"></label>
+<label class="f">Supplier<input name="supplier" list="known-suppliers" value="{portal.h(saved_name)}" maxlength="120" autocomplete="off" placeholder="Optional"></label>
 </div>
 <button class="btn" type="submit">Save product</button></form>
-<p class="help">Changing the code keeps the opening counts and deliveries already stored.</p></section>"""
+{supplier_note}
+<p class="help">Changing the code keeps the opening counts, deliveries, and saved supplier. Leave supplier blank to clear a saved name. A suggestion comes back when the invoices still point at one.</p></section>"""
     history = []
     for row in portal.rows(c.execute("SELECT * FROM portal_stock_audit ORDER BY id DESC LIMIT 20")):
         history.append(
@@ -975,18 +1087,28 @@ def page_stock(c, user, query, error=""):
         )
     return f"""<div class="ph"><h1>Stock on hand</h1>
 <p>Enter an opening count. After that, till sales reduce it and supplier deliveries increase it. Products without a count are not tracked. Counts and units only. No cost or gross profit on this page.</p>
-<p class="help">{portal.h(BASELINE_RULE)} A count during the day should use yesterday’s date if tonight’s sales should still come off it.</p></div>
+<p class="help">{portal.h(BASELINE_RULE)} A count during the day should use yesterday’s date if tonight’s sales should still come off it. A supplier saved here stays when the nightly upload runs. If a delivery matches an invoice we already have, that supplier is filled in as a suggestion until you save your own.</p></div>
 {alert}{ok}{banner}
 <form class="period" id="stock-search" method="get" action="/portal/stock">
 <div class="chips">{''.join(chips)}</div>
-<div class="row"><label class="f">Search code, name, group or barcode<input name="q" value="{portal.h(needle)}" maxlength="80"></label>
+<div class="chips" id="stock-arrange">{''.join(sort_chips)}{group_chip}
+<button class="btn ghost" type="button" data-print>Print list</button></div>
+<div class="row"><label class="f">Search code, name, group, supplier or barcode<input name="q" value="{portal.h(needle)}" maxlength="80"></label>
 <input type="hidden" name="filter" value="{portal.h(mode)}">
+<input type="hidden" name="sort" value="{portal.h(sort)}">
+<input type="hidden" name="arrange" value="{portal.h(arrange)}">
 {hidden_link}
 <button class="btn" type="submit">Search</button>
 <button class="btn" type="button" id="stock-scan">Scan barcode</button></div>
-<p class="help">Scan uses the rear camera. Search by name or PLU still works. An unknown barcode can be linked to a product and is remembered on every device.</p></form>
+<div class="row supplier-row">
+<div class="f"><span>Suppliers</span>{portal.supplier_filter_box(supplier_names, selected, filtering)}</div>
+<button class="btn" type="submit">Apply suppliers</button>
+<a class="btn ghost" href="{portal.h(clear_href)}">Clear</a>
+</div>
+<p class="help">Scan uses the rear camera. Search by name or PLU still works. An unknown barcode can be linked to a product and is remembered on every device. All suppliers is the default. Unassigned is products with no saved supplier and no invoice suggestion. Group by supplier, or sort by Supplier, for an order list. Clear drops the supplier choice.</p></form>
 <section class="card" id="stock-list">{table}
-<p class="help">Low means {qty_text(LOW_AT)} or fewer on hand, and still zero or above. Negative is below zero. Days of cover uses till sales on the recent days after the count.</p></section>
+<p class="help">Low means {qty_text(LOW_AT)} or fewer on hand, and still zero or above. Negative is below zero. Days of cover uses till sales on the recent days after the count. Suggested is not saved until you press Save on that row.</p></section>
+{portal.supplier_datalist(portal.known_supplier_names(c))}
 <section class="card" id="stock-count"><h2>Set or reset an opening count</h2>
 <p class="help">This is a stocktake. It starts a fresh baseline from the end of the date you enter. The previous count stays in the history.</p>
 <div class="chips">{''.join(match_html) or ('<p class="empty">Type a name, PLU or barcode to search the product catalog.</p>' if not needle else '<p class="empty">No catalog match.</p>')}</div>
@@ -1014,6 +1136,7 @@ def page_stock(c, user, query, error=""):
 <label class="f">Code / PLU<input name="code" maxlength="40" placeholder="Optional"></label>
 <label class="f">Barcode<input name="barcode" maxlength="32" placeholder="Optional"></label>
 <label class="f">Group<input name="group" maxlength="80" placeholder="Optional"></label>
+<label class="f">Supplier<input name="supplier" list="known-suppliers" maxlength="120" placeholder="Optional" autocomplete="off"></label>
 </div>
 <div class="row">
 <label class="f">Opening count<input name="qty" inputmode="decimal" min="0" step="any" required></label>

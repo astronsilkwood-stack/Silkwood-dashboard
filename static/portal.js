@@ -52,6 +52,10 @@
   if (toggle) toggle.addEventListener("click", function () { setNav(!document.body.classList.contains("nav-open")); });
   if (backdrop) backdrop.addEventListener("click", function () { setNav(false); });
 
+  document.querySelectorAll("[data-print]").forEach(function (btn) {
+    btn.addEventListener("click", function () { window.print(); });
+  });
+
   document.querySelectorAll("[data-supplier-filter]").forEach(function (box) {
     var search = box.querySelector("input[type=search]");
     if (!search) return;
