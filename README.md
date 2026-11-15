@@ -68,7 +68,7 @@ Content-Type: application/json
 {"dataset": "<name>", "data": { ... }}
 ```
 
-`dataset` is one of `sales`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`, `shift-exceptions`, `barcode-map`, `last-year-monthly`, `last-year-plu`, `pay-rates`, `xero-pnl`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept. `pay-rates` is the exception: re-posting replaces the whole list. `xero-pnl` replaces the account rows for that month and keeps every other month.
+`dataset` is one of `sales`, `sales-today`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`, `shift-exceptions`, `barcode-map`, `last-year-monthly`, `last-year-plu`, `pay-rates`, `xero-pnl`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. `sales-today` uses an ISO time in `asOf` and also returns `date`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept. `pay-rates` is the exception: re-posting replaces the whole list. `xero-pnl` replaces the account rows for that month and keeps every other month. `sales-today` replaces that one trading day and leaves every other day.
 
 The body limit is 8,000,000 bytes. Send plain JSON, or gzip it and set `Content-Encoding: gzip`. The limit applies to the bytes on the wire and again to the JSON after gzip is decompressed. A barcode map of about 4,400 PLUs is about 400KB of JSON and fits either way.
 
@@ -78,7 +78,27 @@ No new environment variable is required for these pages.
 
 `data` shapes:
 
-**sales** — the `dashboard-data.json` object. Rows are upserted by `daily[].date`. Fields read: `asOf`, `latestSalesDate`, `periods[].daily[]` (`date`, `total`, `shop`, `fuel`, `gp`, `gpPct`, `coverage`, `coveredEx`, `missing`, `products`), and `commission` (`month`, `target`, `amount`, `october`, `daily[]` with `date`, `amount`, `status`, `ulpL`, `ulpCpl`, `dieselL`, `dieselCpl`, `pulpL`, `pulpCpl`). `products`, `searchPack`, and `kitchen` are stored with the snapshot and are not shown.
+**sales** — the `dashboard-data.json` object. Rows are upserted by `daily[].date`. Fields read: `asOf`, `latestSalesDate`, `periods[].daily[]` (`date`, `total`, `shop`, `fuel`, `gp`, `gpPct`, `coverage`, `coveredEx`, `missing`, `products`), and `commission` (`month`, `target`, `amount`, `october`, `daily[]` with `date`, `amount`, `status`, `ulpL`, `ulpCpl`, `dieselL`, `dieselCpl`, `pulpL`, `pulpCpl`). `products`, `searchPack`, and `kitchen` are stored with the snapshot and are not shown. A date in this file is the completed day. It takes precedence over `sales-today` for that date, and the Today so far card rolls on to the next day.
+
+**sales-today** — today's till, so far, posted through the day (hourly is enough). Same ingest URL and bearer key. No new environment variable. Each post replaces that `date` and leaves other dates. It does not write `portal_sales_days` and it does not change the completed-day totals. When the nightly `sales` file includes that date, the portal uses the nightly row and the Today card stops showing the hourly figures.
+
+```json
+{"dataset":"sales-today","data":{
+  "date":"2026-11-11",
+  "asOf":"2026-11-11T15:04:00+10:00",
+  "receipts":120,
+  "totalIncGst":8450.20,
+  "shopIncGst":2100.00,
+  "fuelIncGst":6350.20,
+  "byHour":[{"hour":6,"receipts":10,"totalIncGst":400.00}],
+  "topItems":[{"code":"804040","description":"Bacon egg muffin","qty":12,"incGst":96.00}],
+  "tenders":[{"name":"Cash","count":40,"amount":800.00}]
+}}
+```
+
+`date` is the trading day, `YYYY-MM-DD`, Australia/Brisbane. `asOf` is the time of the latest till receipt, ISO-8601. A `Z` suffix is UTC. A time with no zone is read as Brisbane. The card shows it as `Updated HH:MM` in Brisbane. `receipts` is a whole number. `totalIncGst`, `shopIncGst`, and `fuelIncGst` are inc GST. `byHour` is required and may be empty. `hour` is 0–23. A repeated hour keeps the later row. `topItems` and `tenders` are optional; leaving them out clears them for that day. A `200` body is `{"ok":true,"dataset":"sales-today","asOf":"2026-11-11T15:04:00+10:00","date":"2026-11-11","receipts":120}`.
+
+The Sales overview shows Today so far for the latest hourly day that the nightly file does not have yet. If that date is already a completed sales day, the card says the nightly file has taken over. Same weekday last week is the completed sales day seven days earlier, when that day is already stored. Shop and fuel on the card are the hourly figures, not the nightly daysheet.
 
 **purchases** — the `purchases-data.json` object. Each bill is `[supplierIndex, date, invoiceNumber, exGst, incGst, status, dueDate, amountDue, shopShare, note]`. `supplierIndex` points at `suppliers`. Upsert key is supplier + invoice number + bill date.
 
@@ -140,6 +160,23 @@ Send `invoiceId` instead of `supplier` and `invoiceNumber` when you have the Xer
 `matchedAt` is Australia/Brisbane, `YYYY-MM-DD HH:MM:SS`. Posting again returns the stored reference and `"alreadyMatched": true`. Missing key is `503`. Wrong key is `401`. No matching owner record is `404`. This does not create a payment in Xero.
 
 **Purchases filters.** `/portal/purchases` has This week, This month, Last month, and a custom From/To. The supplier checklist is every supplier in the purchases data, All suppliers by default, with a search box and Clear. Totals, the supplier table, the previous-period table, the bill list, and the weekly chart follow both filters. Shop sales in the weekly chart stay the whole shop. The query string is the bookmark.
+
+**Purchases by category.** The Purchases section has By supplier, By category, and Invoices. By category uses the same dates and suppliers. Each invoice line is filed from its item code, description, or Xero account code, so one Campbells or Distributors bill can land in Tobacco, Drinks, Confectionery/Snacks, Dairy/Grocery and Kitchen at once. The seven categories are Kitchen, Drinks, Tobacco, Confectionery/Snacks, Dairy/Grocery, Fuel, and Other. Their inc-GST totals add up to the Purchases total for that range and those suppliers. Open a category to see the lines: item, quantity, amount, supplier, and bill number.
+
+Freight, GST and rounding lines are not their own category. Their amount is shared across the other lines on the same bill, in proportion to those lines. A bill that is only freight stays in Other. A line that still does not match uses the supplier category. A bill with no lines uses the supplier category for the whole amount. The page says how many bills in the range have no lines.
+
+The rules live in `portal_categories.py`. Saving a category on an item remembers it by the item code, or by the description when there is no code. Saving a supplier category is only the fallback. Choose Automatic to forget either one. The nightly upload does not change a saved category.
+
+The current purchases file does not include line items. The shop computer already caches the Xero lines under `xero/raw/lines/`. Put those lines on the nightly purchases upload. Either set the 11th value of a bill to the line list, or send a top-level `lines` list. A Xero line can use its cached names (`Description`, `ItemCode`, `Quantity`, `AccountCode`, `LineAmount`, `TaxAmount`). `LineAmount` plus `TaxAmount` is the inc-GST amount. The same list also accepts `description`, `itemCode`, `qty`, `accountCode`, `accountName`, and `incGst`.
+
+```json
+{"supplier":"CAMPBELLS CAIRNS","invoice":"12345","date":"2026-11-10","LineItems":[
+  {"Description":"Winfield Blue 25s","ItemCode":"WIN25","Quantity":10,"AccountCode":"310","LineAmount":100.00,"TaxAmount":10.00},
+  {"Description":"Freight","Quantity":1,"AccountCode":"310","LineAmount":9.09,"TaxAmount":0.91}
+]}
+```
+
+`lines` entries use `supplier` (or `supplierIndex`), `invoice`, `date`, and `LineItems` or `items`. United Petroleum direct debits stay out of the bill total. The Fuel category shows them beside the bills, and the rent note follows the Profit & Loss page (the same daily rent, removed only when that month's Xero report is loaded and has no rent account).
 
 **Daily summary.** `/portal/day` is one day (date picker, previous day, next day). It opens on the latest loaded sales day. It shows that day's till, online, and combined sales, fuel, shop, and food, commission and GP, fuel litres and tank dips, staff hours, till exceptions, closing checklist and hot-box activity when those rows exist, and invoices dated that day. A missing feed says there is no data. Overview keeps the month totals, last year comparison, last-year product card, fuel target, and insights, plus a today/yesterday card that links here.
 
