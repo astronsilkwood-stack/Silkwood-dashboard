@@ -343,7 +343,8 @@ body.scanning{overflow:hidden}
 a.cat-card{display:grid;gap:2px;min-height:96px;padding:14px;border:1px solid var(--bd);border-top:3px solid var(--tile,var(--accent));border-radius:14px;background:#fff;text-decoration:none;color:var(--ink)}
 a.cat-card b{font:600 22px var(--mono);letter-spacing:-.02em}
 a.cat-card small{color:var(--sl2)}
-.cat-cards{display:none}
+.cat-cards,.vs-cards{display:none}
+.vs-note{display:block;font-weight:600}
 .cat-form{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin:0 0 10px}
 .cat-form .f{flex:1 1 180px;min-width:0}
 .cat-form .btn{flex:0 0 auto}
@@ -383,8 +384,8 @@ a.cat-card small{color:var(--sl2)}
  .break-head{display:none}
  .invoice-table{display:none}
  .invoice-cards{display:grid;gap:12px}
- .cat-table{display:none}
- .cat-cards{display:grid;gap:10px}
+ .cat-table,.vs-table{display:none}
+ .cat-cards,.vs-cards{display:grid;gap:10px}
  .section-tabs{margin:0 -14px 8px;padding:0 14px 12px}
  .hour-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
  .cat-form{display:grid}

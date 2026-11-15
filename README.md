@@ -68,7 +68,7 @@ Content-Type: application/json
 {"dataset": "<name>", "data": { ... }}
 ```
 
-`dataset` is one of `sales`, `sales-today`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`, `shift-exceptions`, `barcode-map`, `last-year-monthly`, `last-year-plu`, `pay-rates`, `xero-pnl`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. `sales-today` uses an ISO time in `asOf` and also returns `date`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept. `pay-rates` is the exception: re-posting replaces the whole list. `xero-pnl` replaces the account rows for that month and keeps every other month. `sales-today` replaces that one trading day and leaves every other day.
+`dataset` is one of `sales`, `sales-today`, `sales-by-department`, `purchases`, `fuel-commission`, `fuel-dips`, `insights`, `invoices`, `product-search`, `retail-pricing`, `till-price-changes`, `shifts`, `last-year`, `cost-overrides`, `stock-movements`, `online-orders`, `shift-exceptions`, `barcode-map`, `last-year-monthly`, `last-year-plu`, `pay-rates`, `xero-pnl`. A `200` body is `{"ok": true, "dataset": "...", "asOf": "YYYY-MM-DD", ...}`. `sales-today` uses an ISO time in `asOf` and also returns `date`. Missing or wrong key is `401`. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. The same payload posted again updates that date; older dates already stored are kept. `pay-rates` is the exception: re-posting replaces the whole list. `xero-pnl` replaces the account rows for that month and keeps every other month. `sales-today` replaces that one trading day and leaves every other day.
 
 The body limit is 8,000,000 bytes. Send plain JSON, or gzip it and set `Content-Encoding: gzip`. The limit applies to the bytes on the wire and again to the JSON after gzip is decompressed. A barcode map of about 4,400 PLUs is about 400KB of JSON and fits either way.
 
@@ -177,6 +177,31 @@ The current purchases file does not include line items. The shop computer alread
 ```
 
 `lines` entries use `supplier` (or `supplierIndex`), `invoice`, `date`, and `LineItems` or `items`. United Petroleum direct debits stay out of the bill total. The Fuel category shows them beside the bills, and the rent note follows the Profit & Loss page (the same daily rent, removed only when that month's Xero report is loaded and has no rent account).
+
+**Sales vs purchases.** `/portal/purchases?view=vs` uses the same date range and supplier filter. Each row is a portal category: till sales ex GST, till sales inc GST, purchases from the By category split, the gap (sales inc GST minus purchases), and purchases as a percent of sales inc GST. The total sales figure is the till daysheet for those dates. The total purchases figure is the Purchases total for those dates and suppliers. A supplier filter changes purchases only; till sales stay the whole till. The Fuel row is till fuel sales. United fuel direct debits are not in the Purchases total, so that row is not a fuel cost.
+
+The nightly sales file does not carry the till merchandising group on each day. Product archive rows name a department, but they are not a complete day-by-day file for an arbitrary range. Post `sales-by-department` for that. It is SaleType 0, the same basis as the daysheet. Re-posting a date replaces that date. Other dates stay. No new environment variable.
+
+`config/till_category_map.json` maps till master groups and a few inventory groups to portal categories. Send a master group id, an inventory group id, a group name, or a portal category. An inventory group in `groupOverrides` wins over its master group. An unknown group is filed under Other so the dollars are not dropped. `BBQ Gas` is named in that file because the till department is BBQ Gas and it is not one of the numbered master groups. If `salesEx` is omitted, the portal uses the inc-GST amount divided by 1.1.
+
+```json
+{"dataset":"sales-by-department","data":{
+  "asOf":"2026-11-10",
+  "basis":"SaleType 0",
+  "days":[
+    {"date":"2026-11-10","rows":[
+      {"masterGroup":"7400","salesInc":2200.00,"salesEx":2000.00},
+      {"group":"110","name":"Ice Bags","salesInc":40.00,"salesEx":36.36},
+      {"category":"BBQ Gas","salesInc":241.08,"salesEx":219.16},
+      {"masterGroup":"98","salesInc":8759.49,"salesEx":7963.17}
+    ]}
+  ]
+}}
+```
+
+A flat `rows` list is accepted too. Each row needs `date` when you use `rows`. `masterGroup` is the MasterProductGroupTable id (`7400` is Roadhouse, filed as Kitchen). `group` is the InventoryGrpTable id (`110` is Ice Bags, filed as Drinks). `category` is a portal category when the box has already added the groups up. A `200` body is `{"ok":true,"dataset":"sales-by-department","asOf":"2026-11-10","days":1,"rows":4}`. `rows` is how many category totals were stored after groups that share a category were added together.
+
+Without this file the page still opens and says “No department sales loaded yet.” The purchases column is still the By category split, and the total sales figure is the till daysheet, not split by department.
 
 **Daily summary.** `/portal/day` is one day (date picker, previous day, next day). It opens on the latest loaded sales day. It shows that day's till, online, and combined sales, fuel, shop, and food, commission and GP, fuel litres and tank dips, staff hours, till exceptions, closing checklist and hot-box activity when those rows exist, and invoices dated that day. A missing feed says there is no data. Overview keeps the month totals, last year comparison, last-year product card, fuel target, and insights, plus a today/yesterday card that links here.
 

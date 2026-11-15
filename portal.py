@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 DATASETS = (
-    "sales", "sales-today", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices",
+    "sales", "sales-today", "sales-by-department", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices",
     "product-search", "retail-pricing", "till-price-changes", "shifts", "last-year", "cost-overrides",
     "stock-movements", "online-orders", "shift-exceptions", "barcode-map", "last-year-monthly",
     "last-year-plu", "pay-rates", "xero-pnl",
@@ -127,6 +127,10 @@ CREATE TABLE IF NOT EXISTS portal_supplier_categories(
 CREATE TABLE IF NOT EXISTS portal_item_categories(
   item_key TEXT PRIMARY KEY, item_code TEXT NOT NULL, description TEXT NOT NULL, category TEXT NOT NULL,
   updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
+-- Till sales by portal category. SaleType 0. Nightly sales-by-department replaces the dates it sends.
+CREATE TABLE IF NOT EXISTS portal_dept_sales(
+  sale_date TEXT NOT NULL, category TEXT NOT NULL, sales_inc REAL NOT NULL, sales_ex REAL,
+  source_as_of TEXT, PRIMARY KEY(sale_date, category));
 -- Hourly till total for a trading day. Replaced by that day's nightly sales row on the page.
 CREATE TABLE IF NOT EXISTS portal_sales_today(
   date TEXT PRIMARY KEY, as_of TEXT NOT NULL, receipts INTEGER NOT NULL,
@@ -286,6 +290,11 @@ def categories():
 def todayfeed():
     import portal_today
     return portal_today
+
+
+def vs():
+    import portal_vs
+    return portal_vs
 
 
 def wants(path):
@@ -1575,6 +1584,7 @@ APPLIERS = {
     "pay-rates": apply_pay_rates,
     "xero-pnl": lambda c, data: pnl().apply_xero_pnl(c, data),
     "sales-today": lambda c, data: todayfeed().apply_sales_today(c, data),
+    "sales-by-department": lambda c, data: vs().apply_sales_by_department(c, data),
 }
 
 
@@ -2404,6 +2414,7 @@ def layout(title, active, body, user, when, query=None):
         ("Purchases", "purchases", "/portal/purchases", (
             ("purchases", "By supplier", "/portal/purchases", purchase_keep, ()),
             ("purchase-category", "By category", "/portal/purchases", purchase_keep + ("category",), (("view", "category"),)),
+            ("purchase-vs", "Sales vs purchases", "/portal/purchases", purchase_keep, (("view", "vs"),)),
             ("invoices", "Invoices", "/portal/invoices", ("supplier", "list"), ()),
         )),
         ("Stock", "stock", "/portal/stock", (
@@ -3716,8 +3727,8 @@ def _purchase_query(period, start, end, selected, filtering, view="", category="
         pairs.extend((("from", start.isoformat()), ("to", end.isoformat())))
     if filtering:
         pairs.extend(("supplier", name) for name in selected)
-    if view == "category":
-        pairs.append(("view", "category"))
+    if view in ("category", "vs"):
+        pairs.append(("view", view))
     if category:
         pairs.append(("category", category))
     return "/portal/purchases?" + urlencode(pairs)
@@ -3731,7 +3742,7 @@ def purchase_filter_form(active, start, end, names, selected, filtering, view=""
         chips.append(f'<a class="chip{cls}" href="{h(_purchase_query(key, start, end, selected, filtering, view, category))}">{label}</a>')
     keep = active if active != "custom" else "custom"
     clear_href = _purchase_query(keep, start, end, [], False, view, "")
-    hidden = '<input type="hidden" name="view" value="category">' if view == "category" else ""
+    hidden = f'<input type="hidden" name="view" value="{h(view)}">' if view in ("category", "vs") else ""
     if category:
         hidden += f'<input type="hidden" name="category" value="{h(category)}">'
     return f"""<form class="period" id="purchase-filters" method="get" action="/portal/purchases">
@@ -3772,7 +3783,7 @@ def page_purchases(c, query, user=None, form_error=""):
     names = named_suppliers(c, ("portal_bills", "portal_spend"))
     selected, filtering = chosen_suppliers(query, names)
     bills = bills_between(c, start, end, filtering, selected)
-    view = "category" if query.get("view") == "category" else ""
+    view = query.get("view") if query.get("view") in ("category", "vs") else ""
     category = query.get("category") if query.get("category") in categories().CATEGORIES else ""
     by_supplier = {}
     for bill in bills:
@@ -3803,6 +3814,10 @@ def page_purchases(c, query, user=None, form_error=""):
         main = categories().category_page(c, user, query, active, start, end, bills, filtering, selected, back)
         heading = "Purchases by category"
         lead = "Each category is the invoice lines for these dates and suppliers. The categories add up to the Purchases total. Fuel direct debits stay out of that total."
+    elif view == "vs":
+        main = vs().page(c, start, end, bills, filtering)
+        heading = "Sales vs purchases"
+        lead = "Till sales and purchases for the same dates, one row per department. Purchases are the By category split. Fuel sales are the till, not a fuel cost."
     else:
         main = f"""<section class="card" id="purchase-summary"><h2>{money(total_inc)} inc GST</h2>
 <p class="help">{len(bills)} bills. Shop sales in the same dates: {money(shop) if shop_rows else '—'}.{h(shop_note)}</p>{table}</section>
@@ -5396,7 +5411,7 @@ def handle_get(handler, parsed):
         elif path == "/portal/pnl":
             html = layout("Profit & Loss", "pnl", pnl().page(c, query, user), user, _srv().now(), query)
         elif path == "/portal/purchases":
-            purchase_active = "purchase-category" if query.get("view") == "category" else "purchases"
+            purchase_active = {"category": "purchase-category", "vs": "purchase-vs"}.get(query.get("view"), "purchases")
             html = layout("Purchases", purchase_active, page_purchases(c, query, user), user, _srv().now(), query)
         elif path == "/portal/fuel":
             html = layout("Fuel commission", "fuel", page_fuel(c, query), user, _srv().now(), query)
