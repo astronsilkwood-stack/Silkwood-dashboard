@@ -1,0 +1,20 @@
+{
+  "asOf": "2026-11-10",
+  "basis": "SaleType 0",
+  "days": [
+    {
+      "date": "2026-11-10",
+      "rows": [
+        {"masterGroup": "7400", "name": "Roadhouse", "salesInc": 2200.00, "salesEx": 2000.00},
+        {"masterGroup": "1800", "name": "Beverages", "salesInc": 1500.00, "salesEx": 1363.64},
+        {"group": "110", "masterGroup": "16", "name": "Ice Bags", "salesInc": 40.00, "salesEx": 36.36},
+        {"masterGroup": "8400", "name": "Tobacco", "salesInc": 1600.00, "salesEx": 1454.55},
+        {"masterGroup": "2400", "name": "Confectionery", "salesInc": 300.00, "salesEx": 272.73},
+        {"masterGroup": "4600", "name": "Grocery", "salesInc": 800.00, "salesEx": 727.27},
+        {"name": "BBQ Gas", "salesInc": 201.08, "salesEx": 182.80},
+        {"category": "Other", "salesInc": 300.00, "salesEx": 272.73},
+        {"masterGroup": "98", "name": "A Fuel", "salesInc": 8759.49, "salesEx": 7963.17}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,146 @@
+{
+  "asOf": "2026-11-15",
+  "exportedFrom": "PTServer QUICKFUEL, read-only, 15 Nov 2026",
+  "mapping": {
+    "note": "StockCategory joins CategoryTable (Inc GST, GST Free, Fuel, etc.) and is a tax flag, not the merchandising category. ProductTable.Product_Group joins InventoryGrpTable, which has MasterGroup -> MasterProductGroupTable (Tobacco, Beverages, Confectionery, Grocery, Roadhouse, \u2026). Portal filing uses that merchandising group.",
+    "masterGroups": {
+      "8400": {
+        "name": "Tobacco",
+        "portal": "Tobacco"
+      },
+      "33": {
+        "name": "Cigs/Tobacco Accessories",
+        "portal": "Tobacco"
+      },
+      "1800": {
+        "name": "Beverages",
+        "portal": "Drinks"
+      },
+      "9": {
+        "name": "Drinks",
+        "portal": "Drinks"
+      },
+      "4200": {
+        "name": "Frozen Drinks",
+        "portal": "Drinks"
+      },
+      "16": {
+        "name": "Ice",
+        "portal": "Drinks"
+      },
+      "2400": {
+        "name": "Confectionery",
+        "portal": "Confectionery/Snacks"
+      },
+      "7": {
+        "name": "Confectionery",
+        "portal": "Confectionery/Snacks"
+      },
+      "7600": {
+        "name": "Snack Food",
+        "portal": "Confectionery/Snacks"
+      },
+      "5": {
+        "name": "Chips / Nuts",
+        "portal": "Confectionery/Snacks"
+      },
+      "2800": {
+        "name": "Dairy",
+        "portal": "Dairy/Grocery"
+      },
+      "4600": {
+        "name": "Grocery",
+        "portal": "Dairy/Grocery"
+      },
+      "27": {
+        "name": "Fruit / Veg",
+        "portal": "Dairy/Grocery"
+      },
+      "7200": {
+        "name": "Produce",
+        "portal": "Dairy/Grocery"
+      },
+      "2000": {
+        "name": "Bread",
+        "portal": "Dairy/Grocery"
+      },
+      "5000": {
+        "name": "Ice Cream",
+        "portal": "Dairy/Grocery"
+      },
+      "7400": {
+        "name": "Roadhouse",
+        "portal": "Kitchen"
+      },
+      "3800": {
+        "name": "Food to Go",
+        "portal": "Kitchen"
+      },
+      "4": {
+        "name": "Cafe",
+        "portal": "Kitchen"
+      },
+      "8800": {
+        "name": "Pie Face",
+        "portal": "Kitchen"
+      },
+      "3": {
+        "name": "Bread",
+        "portal": "Kitchen"
+      },
+      "98": {
+        "name": "A Fuel",
+        "portal": "Fuel"
+      }
+    },
+    "groupOverrides": {
+      "100": {
+        "portal": "Other",
+        "name": "Health & Beauty"
+      },
+      "15": {
+        "portal": "Other",
+        "name": ""
+      },
+      "400001": {
+        "portal": "Other",
+        "name": "Firewood"
+      },
+      "400002": {
+        "portal": "Drinks",
+        "name": "Ice"
+      },
+      "400004": {
+        "portal": "Other",
+        "name": "Trailer Hire"
+      },
+      "880016": {
+        "portal": "Drinks",
+        "name": "Pie Face Water"
+      },
+      "880007": {
+        "portal": "Drinks",
+        "name": "Pie Face Coffee"
+      },
+      "880040": {
+        "portal": "Dairy/Grocery",
+        "name": "Pie Face Ice Cream Single Serv"
+      },
+      "110": {
+        "portal": "Drinks",
+        "name": "Ice Bags"
+      },
+      "180013": {
+        "portal": "Dairy/Grocery",
+        "name": "White Milk"
+      },
+      "14": {
+        "portal": "Kitchen",
+        "name": "Muffins / Crumpets"
+      }
+    },
+    "names": {
+      "BBQ Gas": "BBQ Gas"
+    }
+  }
+}
