@@ -30,6 +30,7 @@ CATEGORIES = (
     "Confectionery/Snacks",
     "Dairy/Grocery",
     "Fuel",
+    "BBQ Gas",
     "Other",
 )
 
@@ -80,9 +81,11 @@ SUPPLIER_RULES = (
         "united",
         "motorpass",
     )),
+    ("BBQ Gas", (
+        "elgas",
+    )),
     # Named here so a later phrase cannot pull a utility or a fee into food.
     ("Other", (
-        "elgas",
         "telstra",
         "origin energy",
         "origin",
@@ -139,6 +142,10 @@ LINE_RULES = (
     )),
     ("Fuel", (
         "diesel", "unleaded", "petroleum", "adblue", "ulp",
+    )),
+    # "&" in a description is folded to "and", so "swap & go" is "swap and go".
+    ("BBQ Gas", (
+        "elgas", "gas bottle", "swap and go", "lpg",
     )),
 )
 
