@@ -339,5 +339,5 @@ def glance(c):
     yesterday = today_d - timedelta(days=1)
     cards = _glance_card(c, "Yesterday", yesterday) + _glance_card(c, "Today", today_d)
     return f"""<section class="card" id="day-glance"><h2>Today and yesterday at a glance</h2>
-<p class="help">Opens the day on Daily summary. Today’s till sales wait for the 9:30pm Brisbane refresh.</p>
+<p class="help">Opens the day on Daily summary. Today so far, when the till has sent it, is the hourly total above. The nightly file replaces that day at 9:30pm Brisbane.</p>
 <div class="grid g2">{cards}</div></section>"""

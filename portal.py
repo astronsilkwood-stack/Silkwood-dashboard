@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 DATASETS = (
-    "sales", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices",
+    "sales", "sales-today", "purchases", "fuel-commission", "fuel-dips", "insights", "invoices",
     "product-search", "retail-pricing", "till-price-changes", "shifts", "last-year", "cost-overrides",
     "stock-movements", "online-orders", "shift-exceptions", "barcode-map", "last-year-monthly",
     "last-year-plu", "pay-rates", "xero-pnl",
@@ -117,8 +117,18 @@ CREATE TABLE IF NOT EXISTS portal_commission_days(
 CREATE TABLE IF NOT EXISTS portal_dip_days(date TEXT PRIMARY KEY, payload TEXT NOT NULL, source_as_of TEXT);
 CREATE TABLE IF NOT EXISTS portal_bills(
   bill_key TEXT PRIMARY KEY, supplier TEXT NOT NULL, invoice_no TEXT NOT NULL, bill_date TEXT NOT NULL,
-  ex_gst REAL, inc_gst REAL, status TEXT, due_date TEXT, amount_due REAL, shop_share REAL, note TEXT, source_as_of TEXT);
+  ex_gst REAL, inc_gst REAL, status TEXT, due_date TEXT, amount_due REAL, shop_share REAL, note TEXT, source_as_of TEXT,
+  lines TEXT);
 CREATE INDEX IF NOT EXISTS ix_portal_bills_date ON portal_bills(bill_date);
+-- Saved supplier category. Nightly purchases ingest does not write this table.
+CREATE TABLE IF NOT EXISTS portal_supplier_categories(
+  supplier_key TEXT PRIMARY KEY, supplier TEXT NOT NULL, category TEXT NOT NULL,
+  updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
+-- Hourly till total for a trading day. Replaced by that day's nightly sales row on the page.
+CREATE TABLE IF NOT EXISTS portal_sales_today(
+  date TEXT PRIMARY KEY, as_of TEXT NOT NULL, receipts INTEGER NOT NULL,
+  total_inc REAL NOT NULL, shop_inc REAL NOT NULL, fuel_inc REAL NOT NULL,
+  by_hour TEXT NOT NULL, top_items TEXT, tenders TEXT, received_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS portal_insights(
   date TEXT PRIMARY KEY, headline TEXT NOT NULL, bullets TEXT NOT NULL, source TEXT NOT NULL, received_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS portal_invoices(
@@ -263,6 +273,16 @@ def chat():
 def parity():
     import portal_parity
     return portal_parity
+
+
+def categories():
+    import portal_categories
+    return portal_categories
+
+
+def todayfeed():
+    import portal_today
+    return portal_today
 
 
 def wants(path):
@@ -927,15 +947,16 @@ def apply_purchases(c, data):
         due = need_date(str(b[6]), f"bills[{i}] due") if len(b) > 6 and b[6] else None
         key = supplier + "\n" + invoice_no + "\n" + bill_date
         c.execute(
-            """INSERT INTO portal_bills(bill_key,supplier,invoice_no,bill_date,ex_gst,inc_gst,status,due_date,amount_due,shop_share,note,source_as_of)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            """INSERT INTO portal_bills(bill_key,supplier,invoice_no,bill_date,ex_gst,inc_gst,status,due_date,amount_due,shop_share,note,source_as_of,lines)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(bill_key) DO UPDATE SET ex_gst=excluded.ex_gst, inc_gst=excluded.inc_gst, status=excluded.status,
                  due_date=excluded.due_date, amount_due=excluded.amount_due, shop_share=excluded.shop_share, note=excluded.note,
-                 source_as_of=excluded.source_as_of""",
+                 source_as_of=excluded.source_as_of, lines=COALESCE(excluded.lines, portal_bills.lines)""",
             (key, supplier, invoice_no, bill_date, num(b[3], "ex GST"), num(b[4], "inc GST"),
              (str(b[5]).strip()[:12] if len(b) > 5 and b[5] is not None else ""),
              due, num(b[7], "amount due", required=False) if len(b) > 7 else None,
-             num(b[8], "shop share", required=False) if len(b) > 8 else None, note, as_of),
+             num(b[8], "shop share", required=False) if len(b) > 8 else None, note, as_of,
+             categories().lines_payload(b)),
         )
         n += 1
     meta = meta_get(c, "purchases")
@@ -1549,6 +1570,7 @@ APPLIERS = {
     "last-year-plu": lambda c, data: compare().apply(c, data),
     "pay-rates": apply_pay_rates,
     "xero-pnl": lambda c, data: pnl().apply_xero_pnl(c, data),
+    "sales-today": lambda c, data: todayfeed().apply_sales_today(c, data),
 }
 
 
@@ -2345,25 +2367,81 @@ def _icon(key):
     return f'<svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">{paths.get(key, "")}</svg>'
 
 
-def layout(title, active, body, user, when):
-    by_key = {key: (href, label) for href, label, key in NAV}
-    groups = (
-        ("Trading", ("overview", "daily", "online", "exceptions", "products", "kitchen", "departments")),
-        ("Price and stock", ("pricing", "till", "stock")),
-        ("Fuel", ("dips", "commission", "fuel")),
-        ("Money", ("pnl", "purchases", "invoices")),
-        ("Team", ("shifts", "hours")),
-        ("Reference", ("notes",)),
+def _section_href(base, query, keep, extra=()):
+    pairs = []
+    if query:
+        allowed = set(categories().CATEGORIES)
+        for key in keep:
+            for value in query_list(query, key):
+                if key == "category" and value not in allowed:
+                    continue
+                if key == "view" and value != "category":
+                    continue
+                pairs.append((key, value))
+    pairs.extend(extra)
+    if not pairs:
+        return base
+    return base + "?" + urlencode(pairs)
+
+
+def layout(title, active, body, user, when, query=None):
+    # One sidebar link per section. The pages inside a section are the sub-tabs.
+    # (label, icon key, landing href, tabs of (active key, label, href, query keys to keep, extra pairs))
+    purchase_keep = ("period", "from", "to", "supplier")
+    sections = (
+        ("Sales", "overview", "/portal", (
+            ("overview", "Overview", "/portal", ("period", "from", "to"), ()),
+            ("daily", "Daily", "/portal/day", ("period", "from", "to"), ()),
+            ("online", "Online", "/portal/online", ("period", "from", "to"), ()),
+            ("kitchen", "Kitchen", "/portal/kitchen", ("period", "from", "to"), ()),
+            ("departments", "Departments", "/portal/departments", ("period", "from", "to"), ()),
+            ("exceptions", "Till exceptions", "/portal/exceptions", ("period", "from", "to"), ()),
+        )),
+        ("Purchases", "purchases", "/portal/purchases", (
+            ("purchases", "By supplier", "/portal/purchases", purchase_keep, ()),
+            ("purchase-category", "By category", "/portal/purchases", purchase_keep + ("category",), (("view", "category"),)),
+            ("invoices", "Invoices", "/portal/invoices", ("supplier", "list"), ()),
+        )),
+        ("Stock", "stock", "/portal/stock", (
+            ("stock", "On hand", "/portal/stock", (), ()),
+            ("products", "Products", "/portal/products", (), ()),
+            ("pricing", "Pricing", "/portal/pricing", (), ()),
+            ("till", "Till prices", "/portal/till-prices", (), ()),
+        )),
+        ("Fuel", "fuel", "/portal/fuel", (
+            ("fuel", "Fuel commission", "/portal/fuel", (), ()),
+            ("commission", "Commission", "/portal/commission", (), ()),
+            ("dips", "Pumps & dips", "/portal/dips", (), ()),
+        )),
+        ("Staff", "hours", "/portal/hours", (
+            ("hours", "Staff hours", "/portal/hours", (), ()),
+            ("shifts", "Shift balancing", "/portal/shifts", (), ()),
+        )),
+        ("P&L", "pnl", "/portal/pnl", (
+            ("pnl", "Profit & Loss", "/portal/pnl", (), ()),
+        )),
+        ("Notes", "notes", "/portal/notes", (
+            ("notes", "Notes", "/portal/notes", (), ()),
+        )),
     )
     blocks = []
-    for heading, keys in groups:
+    subnav = ""
+    for heading, icon, landing, tabs in sections:
+        keys = {tab[0] for tab in tabs}
+        on = active in keys
+        current = ' aria-current="page"' if tabs and tabs[0][0] == active else ""
+        cls = ' class="on"' if on else ""
+        blocks.append(f'<a{cls} href="{landing}"{current}>{_icon(icon)}<span>{h(heading)}</span></a>')
+        if not on or len(tabs) < 2:
+            continue
         links = []
-        for key in keys:
-            href, label = by_key[key]
-            cls = " on" if key == active else ""
-            current = ' aria-current="page"' if key == active else ""
-            links.append(f'<a class="{cls.strip()}" href="{href}"{current}>{_icon(key)}<span>{h(label)}</span></a>')
-        blocks.append(f'<div class="nav-group"><div class="nav-label">{heading}</div>{"".join(links)}</div>')
+        for key, label, href, keep, extra in tabs:
+            tab_on = key == active
+            tab_cls = ' class="on"' if tab_on else ""
+            tab_current = ' aria-current="page"' if tab_on else ""
+            tab_href = _section_href(href, query, keep, extra)
+            links.append(f'<a{tab_cls} href="{h(tab_href)}"{tab_current}>{h(label)}</a>')
+        subnav = f'<nav class="section-tabs" aria-label="{h(heading)}">{"".join(links)}</nav>'
     try:
         clock = when.strftime("%a %-d %b %Y, %-I:%M %p")
     except ValueError:
@@ -2395,7 +2473,7 @@ def layout(title, active, body, user, when):
 <form method="post" action="/portal/logout"><input type="hidden" name="csrf" value="{h(user['csrf'])}"><button type="submit">Log out</button></form>
 <button class="btn ghost sm" type="button" id="help-open" aria-expanded="false" aria-controls="help-panel">Help</button></div>
 </header>
-<main id="content">{body}</main></div>
+<main id="content">{subnav}{body}</main></div>
 <button class="nav-backdrop" type="button" id="nav-backdrop" aria-label="Close menu"></button>
 <aside id="help-panel" class="help-panel" aria-label="Assistant" hidden>
 <div class="help-head"><h2>Assistant</h2><button type="button" class="btn ghost sm" id="help-close">Close</button></div>
@@ -2501,7 +2579,7 @@ def projection_card(proj, october, online_loaded=False):
         )
     return f"""<section class="card" id="projection"><div class="lbl">{h(proj['month'])}</div>
 <h2>{h(proj['month'])} · {title}</h2>
-<p class="help">Current month, data through {h(fmt_date(proj['latest']))}. This card ignores the date range above. It updates after the nightly 9:30pm Brisbane refresh; today's sales are not in yet.</p>
+<p class="help">Current month, data through {h(fmt_date(proj['latest']))}. This card ignores the date range above and the hourly today total. It updates after the nightly 9:30pm Brisbane refresh.</p>
 {online_note}{comm}
 <div class="grid g2">
 <div><div class="lbl">Straight run-rate</div><b class="stat">{money(_shown_sales(run, online_loaded))}</b>
@@ -3001,7 +3079,8 @@ def page_overview(c, query):
             f'<p class="callout" id="provisional">Shop GP is provisional. Cost coverage is {pct_ratio(coverage)}. '
             f'{h(missing)} {missing_label}. This is 2026 only and is not a warning about 2025.</p>'
         )
-    return f"""<div class="ph"><h1>Sales overview</h1>{through_line(through)}<p>{h(caption)}. Figures are the loaded trading days, with no zero filled in for a missing day. Australia/Brisbane. Today’s sales wait for the 9:30pm refresh. {h(sales_note)}</p></div>
+    return f"""<div class="ph"><h1>Sales overview</h1>{through_line(through)}<p>{h(caption)}. Figures are the loaded trading days, with no zero filled in for a missing day. Australia/Brisbane. Completed days come from the nightly file. Today so far is the hourly till total until that file replaces the day. {h(sales_note)}</p></div>
+{todayfeed().card(c)}
 {daypage().glance(c)}
 {error}{period_controls('/portal', active, start, end)}
 {parity().override_note(deltas)}{callout}
@@ -3330,7 +3409,7 @@ UNASSIGNED_SUPPLIER = "Unassigned"
 SUPPLIER_NAME_LIMIT = 120
 PRODUCT_RETURN_KEYS = ("period", "from", "to", "dept", "group", "q", "sort", "product", "compare", "arrange")
 STOCK_RETURN_KEYS = ("q", "filter", "pick", "edit", "sort", "arrange")
-_RETURN_KEYS = set(PRODUCT_RETURN_KEYS) | set(STOCK_RETURN_KEYS) | {"supplier"}
+_RETURN_KEYS = set(PRODUCT_RETURN_KEYS) | set(STOCK_RETURN_KEYS) | {"supplier", "view", "category", "list"}
 
 
 def clean_supplier_name(value):
@@ -3536,6 +3615,23 @@ def back_query(raw):
     return query
 
 
+def purchase_return(raw):
+    """Purchases address to open again after saving a category. Drops anything else."""
+    parsed = parse_qs(raw or "", keep_blank_values=False)
+    allowed_category = set(categories().CATEGORIES)
+    pairs = []
+    for key in ("period", "from", "to", "supplier", "view", "category"):
+        for value in query_list(parsed, key):
+            if key == "view" and value != "category":
+                continue
+            if key == "category" and value not in allowed_category:
+                continue
+            pairs.append((key, value[:200]))
+    if not pairs:
+        return "/portal/purchases"
+    return "/portal/purchases?" + urlencode(pairs)
+
+
 def safe_portal_return(base, raw):
     if base not in ("/portal/products", "/portal/stock"):
         base = "/portal/products"
@@ -3610,28 +3706,35 @@ def supplier_filter_box(names, selected, filtering):
     )
 
 
-def _purchase_query(period, start, end, selected, filtering):
+def _purchase_query(period, start, end, selected, filtering, view="", category=""):
     pairs = [("period", period)]
     if period == "custom":
         pairs.extend((("from", start.isoformat()), ("to", end.isoformat())))
     if filtering:
         pairs.extend(("supplier", name) for name in selected)
+    if view == "category":
+        pairs.append(("view", "category"))
+    if category:
+        pairs.append(("category", category))
     return "/portal/purchases?" + urlencode(pairs)
 
 
-def purchase_filter_form(active, start, end, names, selected, filtering):
+def purchase_filter_form(active, start, end, names, selected, filtering, view="", category=""):
     presets = (("week", "This week"), ("month", "This month"), ("lastmonth", "Last month"))
     chips = []
     for key, label in presets:
         cls = " on" if key == active else ""
-        chips.append(f'<a class="chip{cls}" href="{h(_purchase_query(key, start, end, selected, filtering))}">{label}</a>')
+        chips.append(f'<a class="chip{cls}" href="{h(_purchase_query(key, start, end, selected, filtering, view, category))}">{label}</a>')
     keep = active if active != "custom" else "custom"
-    clear_href = _purchase_query(keep, start, end, [], False)
+    clear_href = _purchase_query(keep, start, end, [], False, view, "")
+    hidden = '<input type="hidden" name="view" value="category">' if view == "category" else ""
+    if category:
+        hidden += f'<input type="hidden" name="category" value="{h(category)}">'
     return f"""<form class="period" id="purchase-filters" method="get" action="/portal/purchases">
 <div class="chips" role="group" aria-label="Date range">{''.join(chips)}</div>
 <div class="row supplier-row">
 <div class="f"><span>Suppliers</span>{supplier_filter_box(names, selected, filtering)}</div>
-<button class="btn" type="submit" name="period" value="{h(keep)}">Apply suppliers</button>
+{hidden}<button class="btn" type="submit" name="period" value="{h(keep)}">Apply suppliers</button>
 <a class="btn ghost" href="{h(clear_href)}">Clear</a>
 </div>
 <div class="row date-row">
@@ -3651,7 +3754,7 @@ def bills_between(c, start, end, filtering, selected):
     ))
 
 
-def page_purchases(c, query):
+def page_purchases(c, query, user=None, form_error=""):
     through = data_through(c)
     anchor = anchor_day(c)
     try:
@@ -3660,9 +3763,13 @@ def page_purchases(c, query):
     except ValueError as ex:
         active, start, end = period_bounds("month", None, None, anchor)
         error = f'<p class="alert">{h(str(ex))}</p>'
+    if form_error:
+        error += f'<p class="alert">{h(form_error)}</p>'
     names = named_suppliers(c, ("portal_bills", "portal_spend"))
     selected, filtering = chosen_suppliers(query, names)
     bills = bills_between(c, start, end, filtering, selected)
+    view = "category" if query.get("view") == "category" else ""
+    category = query.get("category") if query.get("category") in categories().CATEGORIES else ""
     by_supplier = {}
     for bill in bills:
         bucket = by_supplier.setdefault(bill["supplier"], {"bills": 0, "inc": 0.0, "due": 0.0})
@@ -3685,12 +3792,23 @@ def page_purchases(c, query):
         '<div class="tw"><table><thead><tr><th>Supplier</th><th>Bills</th><th>Inc GST</th><th>Still due</th></tr></thead><tbody>'
         + "".join(body) + f'<tr class="total"><td>Total</td><td class="num">{len(bills)}</td><td class="num">{money(total_inc)}</td><td></td></tr></tbody></table></div>'
     )
-    return f"""<div class="ph"><h1>Purchases by supplier</h1>{through_line(through)}
-<p>Bills dated in the selected range. This is not a cost-of-goods figure, and fuel direct debits are not in this table.</p></div>
-{error}{purchase_filter_form(active, start, end, names, selected, filtering)}
-<section class="card" id="purchase-summary"><h2>{money(total_inc)} inc GST</h2>
+    saved = '<p class="oknote" id="category-saved">Category saved. The nightly upload will not replace it.</p>' if query.get("ok") == "category" else ""
+    filters = purchase_filter_form(active, start, end, names, selected, filtering, view, category if view else "")
+    if view == "category":
+        back = _purchase_query(active, start, end, selected, filtering, view, category).split("?", 1)[-1]
+        main = categories().category_page(c, user, query, active, start, end, bills, filtering, selected, back)
+        heading = "Purchases by category"
+        lead = "Each category is part of the same supplier-bill total. Open a category for its suppliers and bills. Fuel direct debits stay out of that total."
+    else:
+        main = f"""<section class="card" id="purchase-summary"><h2>{money(total_inc)} inc GST</h2>
 <p class="help">{len(bills)} bills. Shop sales in the same dates: {money(shop) if shop_rows else '—'}.{h(shop_note)}</p>{table}</section>
 {parity().purchase_extra(c, active, start, end, bills, selected if filtering else None)}"""
+        heading = "Purchases by supplier"
+        lead = "Bills dated in the selected range. This is not a cost-of-goods figure, and fuel direct debits are not in this table."
+    return f"""<div class="ph"><h1>{heading}</h1>{through_line(through)}
+<p>{lead}</p></div>
+{error}{saved}{filters}
+{main}"""
 
 
 def page_fuel(c, query):
@@ -5254,45 +5372,46 @@ def handle_get(handler, parsed):
     c = db()
     try:
         if path == "/portal":
-            html = layout("Sales overview", "overview", page_overview(c, query), user, _srv().now())
+            html = layout("Sales overview", "overview", page_overview(c, query), user, _srv().now(), query)
         elif path == "/portal/online":
-            html = layout("Online orders", "online", page_online(c, query), user, _srv().now())
+            html = layout("Online orders", "online", page_online(c, query), user, _srv().now(), query)
         elif path == "/portal/exceptions":
-            html = layout("Till exceptions", "exceptions", exceptions().page(c, query), user, _srv().now())
+            html = layout("Till exceptions", "exceptions", exceptions().page(c, query), user, _srv().now(), query)
         elif path == "/portal/products":
-            html = layout("Products", "products", parity().page_products(c, query, user), user, _srv().now())
+            html = layout("Products", "products", parity().page_products(c, query, user), user, _srv().now(), query)
         elif path == "/portal/stock":
-            html = layout("Stock on hand", "stock", stock().page_stock(c, user, query), user, _srv().now())
+            html = layout("Stock on hand", "stock", stock().page_stock(c, user, query), user, _srv().now(), query)
         elif path == "/portal/pricing":
-            html = layout("Pricing", "pricing", parity().page_pricing(c, query), user, _srv().now())
+            html = layout("Pricing", "pricing", parity().page_pricing(c, query), user, _srv().now(), query)
         elif path == "/portal/till-prices":
-            html = layout("Till price changes", "till", parity().page_till(c, query), user, _srv().now())
+            html = layout("Till price changes", "till", parity().page_till(c, query), user, _srv().now(), query)
         elif path == "/portal/departments":
-            html = layout("Departments", "departments", parity().page_departments(c, query), user, _srv().now())
+            html = layout("Departments", "departments", parity().page_departments(c, query), user, _srv().now(), query)
         elif path == "/portal/kitchen":
-            html = layout("Kitchen", "kitchen", parity().page_kitchen(c, query), user, _srv().now())
+            html = layout("Kitchen", "kitchen", parity().page_kitchen(c, query), user, _srv().now(), query)
         elif path == "/portal/pnl":
-            html = layout("Profit & Loss", "pnl", pnl().page(c, query, user), user, _srv().now())
+            html = layout("Profit & Loss", "pnl", pnl().page(c, query, user), user, _srv().now(), query)
         elif path == "/portal/purchases":
-            html = layout("Purchases", "purchases", page_purchases(c, query), user, _srv().now())
+            purchase_active = "purchase-category" if query.get("view") == "category" else "purchases"
+            html = layout("Purchases", purchase_active, page_purchases(c, query, user), user, _srv().now(), query)
         elif path == "/portal/fuel":
-            html = layout("Fuel commission", "fuel", page_fuel(c, query), user, _srv().now())
+            html = layout("Fuel commission", "fuel", page_fuel(c, query), user, _srv().now(), query)
         elif path == "/portal/dips":
-            html = layout("Pumps and dips", "dips", page_dips(c, query), user, _srv().now())
+            html = layout("Pumps and dips", "dips", page_dips(c, query), user, _srv().now(), query)
         elif path == "/portal/shifts":
-            html = layout("Shift balancing", "shifts", parity().page_shifts(c, query), user, _srv().now())
+            html = layout("Shift balancing", "shifts", parity().page_shifts(c, query), user, _srv().now(), query)
         elif path == "/portal/commission":
-            html = layout("Commission", "commission", parity().page_commission(c, query), user, _srv().now())
+            html = layout("Commission", "commission", parity().page_commission(c, query), user, _srv().now(), query)
         elif path == "/portal/notes":
-            html = layout("Data notes", "notes", parity().page_notes(c), user, _srv().now())
+            html = layout("Data notes", "notes", parity().page_notes(c), user, _srv().now(), query)
         elif path == "/portal/invoices":
-            html = layout("Invoices", "invoices", page_invoices(c, query, user), user, _srv().now())
+            html = layout("Invoices", "invoices", page_invoices(c, query, user), user, _srv().now(), query)
         elif path == "/portal/day":
-            html = layout("Daily summary", "daily", daypage().page(c, query), user, _srv().now())
+            html = layout("Daily summary", "daily", daypage().page(c, query), user, _srv().now(), query)
         elif path == "/portal/hours":
-            html = layout("Staff hours", "hours", page_hours(c, user, query), user, _srv().now())
+            html = layout("Staff hours", "hours", page_hours(c, user, query), user, _srv().now(), query)
         elif path == "/portal/password":
-            html = layout("Change password", "", password_page(user, ok=query.get("ok") == "1"), user, _srv().now())
+            html = layout("Change password", "", password_page(user, ok=query.get("ok") == "1"), user, _srv().now(), query)
         elif path == "/portal/hours.csv":
             try:
                 anchor = date.fromisoformat(query.get("week")) if query.get("week") else today()
@@ -5555,7 +5674,32 @@ def handle_post(handler):
         return handle_products_post(handler, user, form)
     if path == "/portal/invoices":
         return handle_invoices_post(handler, user, form)
+    if path == "/portal/purchases":
+        return handle_purchases_post(handler, user, form)
     handler.send(404, {"error": "not found"})
+
+
+def handle_purchases_post(handler, user, form):
+    if (form.get("action") or "") != "set_category":
+        handler.send(400, {"error": "bad action"})
+        return
+    c = db()
+    try:
+        try:
+            categories().save_override(c, user, form.get("supplier"), form.get("category") or "")
+        except ValueError as ex:
+            query = back_query(form.get("back"))
+            active = "purchase-category" if query.get("view") == "category" else "purchases"
+            html = layout(
+                "Purchases", active, page_purchases(c, query, user, str(ex)), user, _srv().now(), query,
+            )
+            send_portal(handler, 400, html, user)
+            return
+        c.commit()
+    finally:
+        c.close()
+    log("purchase category saved")
+    handler.redirect(with_ok(purchase_return(form.get("back")), "category"))
 
 
 def handle_products_post(handler, user, form):
@@ -6069,6 +6213,23 @@ def ensure_online_order_columns(c):
             c.execute(f"ALTER TABLE portal_online_orders ADD COLUMN {name} {kind}")
 
 
+def ensure_bill_columns(c):
+    """Older databases were created before bill lines were stored."""
+    wanted = (("lines", "TEXT"),)
+    if _srv().PG:
+        found = {
+            row["column_name"]
+            for row in c.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='portal_bills'"
+            ).fetchall()
+        }
+    else:
+        found = {row["name"] for row in c.execute("PRAGMA table_info(portal_bills)").fetchall()}
+    for name, kind in wanted:
+        if name not in found:
+            c.execute(f"ALTER TABLE portal_bills ADD COLUMN {name} {kind}")
+
+
 def ensure_invoice_columns(c):
     """Older databases were created before paid_date and amount existed."""
     wanted = (("paid_date", "TEXT"), ("amount", "REAL"), ("xero_invoice_id", "TEXT"))
@@ -6092,6 +6253,7 @@ def install():
     try:
         c.executescript(SCHEMA)
         ensure_invoice_columns(c)
+        ensure_bill_columns(c)
         ensure_online_order_columns(c)
         compare().seed(c)
         pnl().seed(c)

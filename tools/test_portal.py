@@ -66,6 +66,10 @@ class PortalTest(unittest.TestCase):
         c.execute("DELETE FROM portal_pnl_adjustments")
         c.execute("DELETE FROM portal_meta WHERE k='pnl-adjustment-seeds'")
         c.execute("DELETE FROM portal_invoice_payments")
+        c.execute("DELETE FROM portal_supplier_categories")
+        c.execute("DELETE FROM portal_sales_today")
+        c.execute("DELETE FROM portal_snapshots WHERE dataset='sales-today'")
+        c.execute("DELETE FROM portal_meta WHERE k='sales-today'")
         c.execute("UPDATE portal_users SET password_hash=? WHERE username='astron'", (ORIGINAL_HASH,))
         c.commit(); c.close()
         self.jar = {}
@@ -925,9 +929,12 @@ class PortalTest(unittest.TestCase):
         self.assertNotIn("GP", section)
         self.assertNotIn("coverage", section.lower())
         self.assertNotIn("missing", section.lower())
-        for label in ("Products", "Pricing", "Till price changes", "Departments", "Kitchen", "Shift balancing",
-                      "Commission", "Fuel commission", "Invoices", "Staff hours", "Data notes"):
+        for label in ("Sales", "Purchases", "Stock", "Fuel", "Staff", "Notes"):
+            self.assertIn(f">{label}<", page)
+        self.assertIn(">P&amp;L<", page)
+        for label in ("Overview", "Daily", "Online", "Kitchen", "Departments", "Till exceptions"):
             self.assertIn(label, page)
+        self.assertIn('class="on" href="/portal" aria-current="page"', page)
 
         last = self.authed("GET", "/portal/products?period=lastmonth&product=804040")[2].decode()
         self.assertNotIn("Cost override", last.split('id="product-804040"', 1)[-1].split("</section>", 1)[0])
@@ -957,6 +964,15 @@ class PortalTest(unittest.TestCase):
         self.assertIn("TILL8122", purchases)
         self.assertIn("Previous period", purchases)
         self.assertIn("Weekly purchases", purchases)
+        self.assertIn("By supplier", purchases)
+        self.assertIn("By category", purchases)
+        self.assertIn('href="/portal/purchases?view=category"', purchases)
+        self.assertIn(">Invoices<", purchases)
+        stock = self.authed("GET", "/portal/stock")[2].decode()
+        self.assertIn(">On hand<", stock)
+        self.assertIn(">Products<", stock)
+        self.assertIn(">Pricing<", stock)
+        self.assertIn(">Till prices<", stock)
 
         fuel = self.authed("GET", "/portal/fuel")[2].decode()
         self.assertIn("does not read or set pump prices", fuel)
@@ -2641,6 +2657,154 @@ class PortalTest(unittest.TestCase):
         bega = [row for row in unpaid_rows if row["supplier"] == "Bega Dairy"]
         owing = inv.split('id="unpaid-total"', 1)[1].split('id="overdue-total"', 1)[0]
         self.assertIn(portal.money(sum(row["amount_due"] or 0 for row in bega)), owing)
+
+    def _drop_open_sales_day(self):
+        c = server.db()
+        c.execute("DELETE FROM portal_sales_days WHERE date='2026-11-11'")
+        c.execute("DELETE FROM portal_sales_today")
+        c.commit()
+        c.close()
+
+    def test_purchase_categories_match_the_bill_total(self):
+        import portal_categories
+        portal._ingest_hits.clear()
+        self.login()
+        self.ingest("purchases", load("purchases.json"))
+        query = "view=category&period=custom&from=2026-09-08&to=2026-11-10"
+        page = self.authed("GET", "/portal/purchases?" + query)[2].decode()
+        self.assertIn('id="purchase-categories"', page)
+        self.assertIn('id="category-total"', page)
+        self.assertIn("United fuel direct debits", page)
+        self.assertIn("$321.13", page)
+        self.assertIn('class="cat-grid"', page)
+        self.assertIn('class="section-tabs"', page)
+        amounts = [Decimal(item) for item in re.findall(r'data-inc="([0-9.-]+)"', page)]
+        total = Decimal(re.search(r'data-total="([0-9.-]+)"', page).group(1))
+        self.assertEqual(sum(amounts, Decimal("0.00")), total)
+        c = server.db()
+        bills = portal.rows(c.execute(
+            "SELECT inc_gst FROM portal_bills WHERE bill_date>='2026-09-08' AND bill_date<='2026-11-10'"
+        ))
+        c.close()
+        self.assertEqual(total, portal._cents(sum(float(row["inc_gst"] or 0) for row in bills)))
+        self.assertEqual(len(amounts), 7)
+
+        def detail(category):
+            return self.authed("GET", "/portal/purchases?" + query + "&category=" + category)[2].decode().split('id="purchase-categories"', 1)[1]
+
+        kitchen = detail("Kitchen")
+        self.assertIn('class="cat-cards"', kitchen)
+        self.assertIn("Tully Pies", kitchen)
+        self.assertIn("BIDFOOD", kitchen)
+        self.assertIn("Max Stocks", kitchen)
+        self.assertNotIn("Smokemart", kitchen)
+        tobacco = detail("Tobacco")
+        self.assertIn("Smokemart", tobacco)
+        self.assertIn("SMOKESTIX", tobacco)
+        self.assertIn("CIGNAL", tobacco)
+        drinks = detail("Drinks")
+        self.assertIn("coca cola", drinks)
+        self.assertIn("The Distributors Queensland", drinks)
+        self.assertIn("Bega Dairy", detail("Dairy%2FGrocery"))
+        self.assertIn("Lactalis", detail("Dairy%2FGrocery"))
+        self.assertIn("CAMPBELLS CAIRNS", detail("Other"))
+        fuel = detail("Fuel")
+        self.assertIn("MOTORPASS", fuel)
+        self.assertIn("United fuel direct debits", fuel)
+        one = self.authed("GET", "/portal/purchases?" + query + "&supplier=Tully+Pies")[2].decode()
+        one_amounts = [Decimal(item) for item in re.findall(r'data-inc="([0-9.-]+)"', one)]
+        one_total = Decimal(re.search(r'data-total="([0-9.-]+)"', one).group(1))
+        self.assertEqual(sum(one_amounts, Decimal("0.00")), one_total)
+        kitchen_only = Decimal(re.search(r'data-category="Kitchen" data-inc="([0-9.-]+)"', one).group(1))
+        self.assertEqual(kitchen_only, one_total)
+        self.assertGreater(one_total, 0)
+
+        split = portal_categories.classify_bill("CAMPBELLS CAIRNS", [
+            {"description": "Winfield Blue 20s", "accountName": "Purchases - Shop", "inc": 60},
+            {"description": "Bega tasty cheese", "accountName": "Purchases - Shop", "inc": 40},
+        ], 100)
+        self.assertEqual(split["Tobacco"], Decimal("60.00"))
+        self.assertEqual(split["Dairy/Grocery"], Decimal("40.00"))
+        self.assertEqual(sum(split.values(), Decimal("0")), Decimal("100.00"))
+        self.assertEqual(portal_categories.classify_bill("CAMPBELLS CAIRNS", [
+            {"description": "Shop bits", "accountName": "Purchases - Fuel", "inc": 100},
+        ], 110)["Fuel"], Decimal("110.00"))
+
+        token = self.csrf_from(self.authed("GET", "/portal/purchases?" + query)[2].decode())
+        body = urlencode({
+            "csrf": token, "action": "set_category", "supplier": "coca cola", "category": "Kitchen",
+            "back": query + "&category=Drinks",
+        })
+        status, hdrs, raw, _ = self.authed("POST", "/portal/purchases", body)
+        self.assertEqual(status, 302, raw[:300])
+        self.assertIn("ok=category", hdrs.get("Location", ""))
+        self.assertEqual(self.ingest("purchases", load("purchases.json"))[0], 200)
+        moved = detail("Kitchen")
+        self.assertIn("coca cola", moved)
+        self.assertNotIn("coca cola", detail("Drinks"))
+
+    def test_sales_today_hourly_and_nightly_wins(self):
+        portal._ingest_hits.clear()
+        self.login()
+        self.addCleanup(self._drop_open_sales_day)
+        self.ingest("sales", load("sales.json"))
+        payload = {
+            "date": "2026-11-11",
+            "asOf": "2026-11-11T15:04:00+10:00",
+            "receipts": 12,
+            "totalIncGst": 3456.78,
+            "shopIncGst": 1000.00,
+            "fuelIncGst": 2456.78,
+            "byHour": [{"hour": 15, "receipts": 4, "totalIncGst": 800}],
+            "topItems": [{"code": "804040", "description": "Bacon egg muffin", "qty": 3, "incGst": 24}],
+            "tenders": [{"name": "Cash", "count": 2, "amount": 40}],
+        }
+        code, _, raw, _ = self.ingest("sales-today", payload)
+        self.assertEqual(code, 200, raw[:300])
+        stored = json.loads(raw)
+        self.assertEqual(stored["dataset"], "sales-today")
+        self.assertEqual(stored["date"], "2026-11-11")
+        self.assertEqual(stored["receipts"], 12)
+        again = dict(payload)
+        again["totalIncGst"] = 3500
+        again["receipts"] = 13
+        again.pop("topItems")
+        code, _, raw, _ = self.ingest("sales-today", again)
+        self.assertEqual(code, 200, raw[:300])
+        page = self.authed("GET", "/portal")[2].decode()
+        card = page.split('id="today-so-far"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("Updated 15:04", card)
+        self.assertIn("$3,500.00", card)
+        self.assertIn('id="today-compare"', card)
+        self.assertIn("3pm", card)
+        self.assertNotIn("Bacon egg muffin", card)
+        self.assertIn("Cash", card)
+        c = server.db()
+        before = c.execute("SELECT total FROM portal_sales_days WHERE date='2026-11-10'").fetchone()["total"]
+        c.execute(
+            """INSERT INTO portal_sales_days(date,total,shop,fuel,gp,gp_pct,coverage,missing,products,covered_ex,source_as_of)
+               VALUES('2026-11-11',4000,1500,2500,10,0.1,1,0,1,100,'2026-11-11')"""
+        )
+        c.commit()
+        c.close()
+        closed = self.authed("GET", "/portal")[2].decode().split('id="today-so-far"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("rolled off", closed)
+        self.assertNotIn("$3,500.00", closed)
+        nxt = dict(payload)
+        nxt["date"] = "2026-11-12"
+        nxt["asOf"] = "2026-11-12T09:15:00+10:00"
+        nxt["totalIncGst"] = 111.11
+        code, _, raw, _ = self.ingest("sales-today", nxt)
+        self.assertEqual(code, 200, raw[:200])
+        rolled = self.authed("GET", "/portal")[2].decode()
+        card = rolled.split('id="today-so-far"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("Updated 09:15", card)
+        self.assertIn("$111.11", card)
+        self.assertIn('data-date="2026-11-12"', rolled)
+        self.assertEqual(self.ingest("sales-today", {"date": "2026-11-11"})[0], 400)
+        c = server.db()
+        self.assertEqual(c.execute("SELECT total FROM portal_sales_days WHERE date='2026-11-10'").fetchone()["total"], before)
+        c.close()
 
     def test_daily_summary_keeps_overview_month_figures(self):
         portal._ingest_hits.clear()
