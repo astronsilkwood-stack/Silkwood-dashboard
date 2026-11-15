@@ -1,13 +1,16 @@
 """Purchase categories for the owner portal.
 
-Edit the tables in this file to change how a supplier or a bill line is filed.
-A category saved on the portal replaces these rules for that supplier and is
-kept when the nightly purchases file is posted again.
+Each invoice line is filed from its item code, description, or Xero account.
+A category saved on an item (by code, or by description when there is no code)
+replaces those rules for that item. The supplier category is only the fallback
+for a line that still does not match, and for a bill with no lines.
 
-A bill with no line detail uses the supplier rules. Campbells is left in Other
-until a line description (or a saved category) says otherwise, because that
-supplier sells both tobacco and grocery. The Distributors is Drinks; a
-confectionery line moves when the invoice lists it.
+Freight, GST and rounding lines are not their own category. Their amount is
+shared across the other lines on the same bill in proportion to those lines.
+A bill that is only freight stays in Other.
+
+Edit the tables in this file to change the automatic rules. Saved categories
+are kept when the nightly purchases file is posted again.
 
 United Petroleum fuel direct debits are not supplier bills. They stay out of
 the bill total, same as the Purchases page. The Fuel category shows them beside
@@ -180,12 +183,49 @@ def supplier_category(name):
     return _first_rule(folded, SUPPLIER_RULES) or "Other"
 
 
-def line_category(line):
-    account = " ".join(str(line.get(key) or "") for key in ("accountName", "accountCode"))
-    found = _first_rule(account, ACCOUNT_RULES)
+# A line whose whole description is one of these is freight, GST or rounding.
+# Its amount is shared across the other lines on the same bill.
+SPREAD_EXACT = {
+    "freight", "delivery", "delivery charge", "rounding", "round off", "discount",
+    "gst", "tax", "fuel levy",
+}
+
+
+def item_key(line):
+    """Remember an item by its code, or by the description when there is no code."""
+    code = _fold(line.get("itemCode") or "")
+    if code:
+        return "code:" + code[:80]
+    desc = _fold(line.get("description") or "")
+    if desc:
+        return "desc:" + desc[:180]
+    return ""
+
+
+def is_spread(line):
+    text = _fold(line.get("description") or "")
+    if text in SPREAD_EXACT or text.startswith(("freight ", "delivery charge", "rounding ", "discount ")):
+        return True
+    account = _fold(" ".join(str(line.get(key) or "") for key in ("accountName", "accountCode")))
+    return bool(re.search(r"\bfreight\b", account)) or account in {"gst", "tax"}
+
+
+def line_category(line, supplier, supplier_override=None, item_overrides=None):
+    """Return (category, how). how is item, spread, rule, or supplier."""
+    key = item_key(line)
+    if key and item_overrides and key in item_overrides:
+        return item_overrides[key], "item"
+    if is_spread(line):
+        return "", "spread"
+    found = _first_rule(" ".join((line.get("itemCode") or "", line.get("description") or "")), LINE_RULES)
+    if not found:
+        found = _first_rule(
+            " ".join(str(line.get(key) or "") for key in ("accountName", "accountCode")),
+            ACCOUNT_RULES,
+        )
     if found:
-        return found
-    return _first_rule(line.get("description") or "", LINE_RULES)
+        return found, "rule"
+    return (supplier_override or supplier_category(supplier)), "supplier"
 
 
 def _close(left, right):
@@ -219,68 +259,172 @@ def _partition(amount, weights):
     return {key: value for key, value in out.items() if value != 0}
 
 
-def classify_bill(supplier, lines, amount, override=None):
-    """Map one bill's inc-GST total onto categories. The parts add up to the bill."""
+def _line_inc(line):
+    if line.get("inc") is not None:
+        return portal._cents(line["inc"])
+    if line.get("ex") is not None:
+        return portal._cents(Decimal(str(line["ex"])) * portal.GST_DIVISOR)
+    return None
+
+
+def _qty(line):
+    qty = line.get("qty")
+    if qty is None:
+        return None
+    number = Decimal(str(qty))
+    if number == number.to_integral():
+        return int(number)
+    return number
+
+
+def allocate_bill(supplier, lines, amount, supplier_override=None, item_overrides=None):
+    """One row per item. The row amounts add up to the bill.
+
+    Freight, GST and rounding are folded into the other lines on this bill,
+    in proportion to those lines. A bill with no lines is one supplier row.
+    """
     amount = portal._cents(amount or 0)
-    if override:
-        return {override: amount} if amount != 0 else {}
-    weights = {}
-    known = Decimal("0")
+    fallback = supplier_override or supplier_category(supplier)
+    usable = []
     for line in lines or []:
-        if not isinstance(line, dict) or line.get("inc") is None:
+        if not isinstance(line, dict):
             continue
-        inc = portal._cents(line["inc"])
+        inc = _line_inc(line)
+        if inc is None or inc == 0:
+            continue
+        usable.append((line, inc))
+    if not usable:
+        if amount == 0:
+            return []
+        return [{
+            "description": "No line items",
+            "itemCode": "",
+            "qty": None,
+            "own": amount,
+            "inc": amount,
+            "category": fallback,
+            "how": "supplier",
+            "whole": True,
+        }]
+    known = sum((inc for _, inc in usable), Decimal("0"))
+    ex_gst = portal._cents(amount / portal.GST_DIVISOR) if amount else Decimal("0")
+    weights = {str(index): inc for index, (_, inc) in enumerate(usable)}
+    if _close(known, amount) or _close(known, ex_gst) or abs(known) > abs(amount):
+        scaled = _partition(amount, weights)
+        rest = Decimal("0")
+    else:
+        scaled = {str(index): inc for index, (_, inc) in enumerate(usable)}
+        rest = amount - known
+    goods = []
+    spreads = []
+    for index, (line, _) in enumerate(usable):
+        inc = scaled.get(str(index), Decimal("0"))
         if inc == 0:
             continue
-        category = line_category(line) or supplier_category(supplier)
-        weights[category] = weights.get(category, Decimal("0")) + inc
-        known += inc
-    if known == 0:
-        category = supplier_category(supplier)
-        return {category: amount} if amount != 0 else {}
-    ex_gst = portal._cents(amount / portal.GST_DIVISOR) if amount else Decimal("0")
-    if _close(known, amount) or _close(known, ex_gst) or abs(known) > abs(amount):
-        return _partition(amount, weights)
-    part = _partition(known, weights)
-    rest = amount - sum(part.values(), Decimal("0"))
+        category, how = line_category(line, supplier, supplier_override, item_overrides)
+        row = {
+            "description": line.get("description") or line.get("itemCode") or "Item",
+            "itemCode": line.get("itemCode") or "",
+            "qty": _qty(line),
+            "own": inc,
+            "inc": inc,
+            "category": category or "Other",
+            "how": how,
+            "whole": False,
+        }
+        if how == "spread":
+            spreads.append(row)
+        else:
+            goods.append(row)
+    spread_total = sum((row["inc"] for row in spreads), Decimal("0"))
+    if spreads and goods and spread_total != 0:
+        share = _partition(spread_total, {str(index): row["inc"] for index, row in enumerate(goods) if row["inc"] != 0})
+        for key, extra in share.items():
+            goods[int(key)]["inc"] += extra
+        rows = goods
+    elif spreads and not goods:
+        for row in spreads:
+            row["category"] = "Other"
+            row["description"] = row["description"] or "Freight"
+        rows = spreads
+    else:
+        rows = goods
     if rest != 0:
-        default = supplier_category(supplier)
-        part[default] = part.get(default, Decimal("0")) + rest
-    return {key: value for key, value in part.items() if value != 0}
+        rows.append({
+            "description": "Rest of bill",
+            "itemCode": "",
+            "qty": None,
+            "own": rest,
+            "inc": rest,
+            "category": fallback,
+            "how": "supplier",
+            "whole": False,
+        })
+    return [row for row in rows if row["inc"] != 0]
 
 
-def _line_dict(description, account_code, account_name, inc):
-    if inc is None and not description and not account_code and not account_name:
+def classify_bill(supplier, lines, amount, override=None, item_overrides=None):
+    """Category totals for one bill. The parts add up to the bill."""
+    totals = {}
+    for row in allocate_bill(supplier, lines, amount, override, item_overrides):
+        totals[row["category"]] = totals.get(row["category"], Decimal("0")) + row["inc"]
+    return totals
+
+
+def _line_dict(description, account_code, account_name, inc, item_code="", qty=None, ex=None):
+    if inc is None and ex is None and not description and not account_code and not account_name and not item_code:
         return None
     item = {
         "description": " ".join(str(description or "").split())[:200],
+        "itemCode": " ".join(str(item_code or "").split())[:40],
         "accountCode": " ".join(str(account_code or "").split())[:80],
         "accountName": " ".join(str(account_name or "").split())[:120],
     }
+    if qty is not None:
+        item["qty"] = qty
     if inc is not None:
         item["inc"] = float(portal._cents(inc))
+    elif ex is not None:
+        item["ex"] = float(portal._cents(ex))
     portal.reject_sensitive(item["description"], "purchases")
+    portal.reject_sensitive(item["itemCode"], "purchases")
     portal.reject_sensitive(item["accountCode"], "purchases")
     portal.reject_sensitive(item["accountName"], "purchases")
-    if not item["description"] and not item["accountCode"] and not item["accountName"] and "inc" not in item:
+    if not any(item.values()) and "inc" not in item and "ex" not in item:
         return None
     return item
 
 
 def _parse_line(raw):
     if isinstance(raw, dict):
-        description = raw.get("description") or raw.get("desc") or raw.get("item") or raw.get("name") or ""
-        account_code = raw.get("accountCode") or raw.get("account_code") or raw.get("code") or ""
-        account_name = raw.get("accountName") or raw.get("account_name") or ""
+        description = (
+            raw.get("description") or raw.get("Description") or raw.get("desc")
+            or raw.get("item") or raw.get("name") or ""
+        )
+        item_code = raw.get("itemCode") or raw.get("ItemCode") or ""
+        account_code = raw.get("accountCode") or raw.get("AccountCode") or raw.get("account_code") or ""
+        account_name = raw.get("accountName") or raw.get("AccountName") or raw.get("account_name") or ""
+        qty_raw = raw.get("qty", raw.get("Quantity"))
+        qty = None if qty_raw in ("", None) else portal.num(qty_raw, "line qty", required=False)
         inc = raw.get("incGst", raw.get("inc", raw.get("amount")))
-        if inc in ("", None):
-            ex = raw.get("exGst", raw.get("ex"))
-            inc = None if ex in ("", None) else portal.num(ex, "line ex GST", required=False)
-            if inc is not None:
-                inc = float(portal._cents(Decimal(str(inc)) * portal.GST_DIVISOR))
+        ex = None
+        if inc in ("", None) and (raw.get("LineAmount") not in (None, "") or raw.get("lineAmount") not in (None, "")):
+            line_amount = portal.num(raw.get("LineAmount", raw.get("lineAmount")), "line amount", required=False)
+            tax_raw = raw.get("TaxAmount", raw.get("taxAmount"))
+            tax = Decimal("0") if tax_raw in (None, "") else Decimal(str(portal.num(tax_raw, "line tax", required=False)))
+            if tax:
+                inc = float(portal._cents(Decimal(str(line_amount)) + tax))
+            else:
+                ex = line_amount
+                inc = None
+        elif inc in ("", None):
+            ex_raw = raw.get("exGst", raw.get("ex"))
+            if ex_raw not in ("", None):
+                ex = portal.num(ex_raw, "line ex GST", required=False)
+            inc = None
         else:
             inc = portal.num(inc, "line inc GST", required=False)
-        return _line_dict(description, account_code, account_name, inc)
+        return _line_dict(description, account_code, account_name, inc, item_code, qty, ex)
     if isinstance(raw, list) and raw:
         description = raw[0] if len(raw) > 0 else ""
         account_code = raw[1] if len(raw) > 1 else ""
@@ -313,11 +457,47 @@ def parse_line_list(raw):
     return lines or None
 
 
-def lines_payload(bill):
-    """JSON for the optional line list on a bill array, or None when it has none."""
-    if not isinstance(bill, list) or len(bill) < 11 or not isinstance(bill[10], list):
+def line_index(data, suppliers):
+    """Optional lines sent beside the bills, keyed by supplier, invoice and date."""
+    found = {}
+    raw = data.get("lines") if isinstance(data, dict) else None
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            found[str(key)] = value
+    elif isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            supplier = item.get("supplier") or ""
+            if not supplier and isinstance(item.get("supplierIndex"), int) and not isinstance(item.get("supplierIndex"), bool):
+                idx = item["supplierIndex"]
+                if 0 <= idx < len(suppliers):
+                    supplier = str(suppliers[idx])
+            invoice = item.get("invoice") or item.get("invoiceNumber") or item.get("InvoiceNumber") or ""
+            bill_date = item.get("date") or item.get("billDate") or ""
+            lines = item.get("items") or item.get("lines") or item.get("LineItems")
+            if supplier and invoice and bill_date and lines is not None:
+                found[f"{str(supplier).strip()}\n{str(invoice).strip()}\n{str(bill_date).strip()}"] = lines
+    return found
+
+
+def lines_payload(bill, extra=None):
+    """JSON for one bill's lines, or None when this upload has none for it.
+
+    The 11th bill value wins. Otherwise `extra` is the matching entry from the
+    purchases `lines` list, which is where a nightly push can put the Xero
+    lines cached under xero/raw/lines/.
+    """
+    raw = None
+    if isinstance(bill, list) and len(bill) > 10 and bill[10] not in (None, "", []):
+        raw = bill[10]
+    if raw is None:
+        raw = extra
+    if isinstance(raw, dict):
+        raw = raw.get("LineItems") or raw.get("lines") or raw.get("items")
+    if not isinstance(raw, list):
         return None
-    lines = parse_line_list(bill[10])
+    lines = parse_line_list(raw)
     if not lines:
         return None
     return json.dumps(lines, separators=(",", ":"), ensure_ascii=False)
@@ -339,6 +519,36 @@ def load_overrides(c):
         if row["category"] in CATEGORIES:
             found[row["supplier_key"]] = row["category"]
     return found
+
+
+def load_item_overrides(c):
+    found = {}
+    for row in portal.rows(c.execute("SELECT item_key, category FROM portal_item_categories")):
+        if row["category"] in CATEGORIES:
+            found[row["item_key"]] = row["category"]
+    return found
+
+
+def save_item(c, user, item_code, description, category):
+    line = {"itemCode": item_code or "", "description": description or ""}
+    key = item_key(line)
+    if not key:
+        raise ValueError("That line needs an item code or a description.")
+    if category and category not in CATEGORIES:
+        raise ValueError("Choose a category.")
+    if not category:
+        c.execute("DELETE FROM portal_item_categories WHERE item_key=?", (key,))
+        return key
+    now = portal.stamp()
+    c.execute(
+        """INSERT INTO portal_item_categories(item_key, item_code, description, category, updated_at, updated_by)
+           VALUES(?,?,?,?,?,?)
+           ON CONFLICT(item_key) DO UPDATE SET item_code=excluded.item_code, description=excluded.description,
+             category=excluded.category, updated_at=excluded.updated_at, updated_by=excluded.updated_by""",
+        (key, " ".join(str(item_code or "").split())[:40], " ".join(str(description or "").split())[:200],
+         category, now, user["username"]),
+    )
+    return key
 
 
 def save_override(c, user, supplier, category):
@@ -366,26 +576,31 @@ def save_override(c, user, supplier, category):
     return match
 
 
-def _bill_parts(bills, overrides):
+def _bill_parts(bills, overrides, item_overrides):
     parts = {category: Decimal("0.00") for category in CATEGORIES}
     rows = []
+    missing = 0
     for bill in bills:
+        source = load_lines(bill.get("lines"))
+        if not source:
+            missing += 1
         override = overrides.get(supplier_key(bill["supplier"]))
-        split = classify_bill(bill["supplier"], load_lines(bill.get("lines")), bill["inc_gst"] or 0, override)
-        for category, amount in split.items():
-            if category not in parts:
-                category = "Other"
-            parts[category] += amount
+        for row in allocate_bill(bill["supplier"], source, bill["inc_gst"] or 0, override, item_overrides):
+            category = row["category"] if row["category"] in parts else "Other"
+            parts[category] += row["inc"]
             rows.append({
                 "category": category,
                 "supplier": bill["supplier"],
                 "invoice_no": bill["invoice_no"],
                 "bill_date": bill["bill_date"],
-                "status": bill["status"] or "",
-                "amount_due": bill["amount_due"] or 0,
-                "bill_inc": portal._cents(bill["inc_gst"] or 0),
-                "inc": amount,
-                "saved": bool(override),
+                "description": row["description"],
+                "itemCode": row["itemCode"],
+                "qty": row["qty"],
+                "own": row["own"],
+                "inc": row["inc"],
+                "how": row["how"],
+                "whole": row["whole"],
+                "saved_supplier": bool(override),
             })
     target = portal._cents(sum(float(bill["inc_gst"] or 0) for bill in bills))
     drift = target - sum(parts.values(), Decimal("0"))
@@ -396,7 +611,7 @@ def _bill_parts(bills, overrides):
             if row["category"] == largest:
                 row["inc"] += drift
                 break
-    return parts, rows, target
+    return parts, rows, target, missing
 
 
 def _money_attr(amount):
@@ -415,45 +630,89 @@ def _supplier_form(user, supplier, saved, automatic, back):
     if not user:
         return ""
     chosen = saved or ""
-    note = "Saved category" if saved else f"Automatic is {automatic}"
+    note = "Saved supplier fallback" if saved else f"Automatic fallback is {automatic}"
     return (
         f'<form method="post" action="/portal/purchases" class="cat-form">'
         f'<input type="hidden" name="csrf" value="{portal.h(user["csrf"])}">'
         f'<input type="hidden" name="action" value="set_category">'
         f'<input type="hidden" name="supplier" value="{portal.h(supplier)}">'
         f'<input type="hidden" name="back" value="{portal.h(back)}">'
-        f'<label class="f">Category<select name="category" aria-label="Category for {portal.h(supplier)}">{_option_list(chosen)}</select></label>'
+        f'<label class="f">Supplier fallback<select name="category" aria-label="Fallback category for {portal.h(supplier)}">{_option_list(chosen)}</select></label>'
         f'<button class="btn" type="submit">Save</button>'
-        f'<span class="mini">{portal.h(note)}. The nightly upload does not change a saved category.</span>'
+        f'<span class="mini">{portal.h(note)}. Used only for a line that does not match, and for a bill with no lines. The nightly upload does not change it.</span>'
         f'</form>'
     )
 
 
-def _bill_table(items):
+def _item_form(user, item, back, saved):
+    if not user or item.get("whole") or not item_key(item):
+        return ""
+    chosen = saved or ""
+    return (
+        f'<form method="post" action="/portal/purchases" class="cat-form">'
+        f'<input type="hidden" name="csrf" value="{portal.h(user["csrf"])}">'
+        f'<input type="hidden" name="action" value="set_item">'
+        f'<input type="hidden" name="item_code" value="{portal.h(item.get("itemCode") or "")}">'
+        f'<input type="hidden" name="description" value="{portal.h(item.get("description") or "")}">'
+        f'<input type="hidden" name="back" value="{portal.h(back)}">'
+        f'<label class="f">Item category<select name="category" aria-label="Category for {portal.h(item.get("description") or item.get("itemCode") or "item")}">{_option_list(chosen)}</select></label>'
+        f'<button class="btn" type="submit">Save item</button>'
+        f'</form>'
+    )
+
+
+def _qty_text(qty):
+    if qty is None:
+        return "—"
+    return str(qty)
+
+
+def _line_rows(user, items, back, item_overrides):
     if not items:
-        return '<p class="empty">No bills in this category for the current filters.</p>'
+        return '<p class="empty">No lines in this category for the current filters.</p>'
     body = []
     cards = []
-    for item in sorted(items, key=lambda row: (row["bill_date"], row["supplier"], row["invoice_no"]), reverse=True):
+    ordered = sorted(items, key=lambda row: (-row["inc"], row["supplier"], row["invoice_no"], row["description"]))
+    for item in ordered:
+        saved = item_overrides.get(item_key(item)) if item_key(item) else None
+        share = ""
+        if item["inc"] != item["own"]:
+            share = f'<span class="mini">includes freight share, line was {portal.money(item["own"])}</span>'
+        code = f'<div class="mini">{portal.h(item["itemCode"])}</div>' if item.get("itemCode") else ""
+        pill = ' <span class="pill">Saved</span>' if saved else ""
+        if share:
+            share = f'<div class="mini">Includes this bill’s freight, GST or rounding. The line itself was {portal.money(item["own"])}.</div>'
         body.append(
-            f"<tr><td>{portal.h(portal.fmt_date(item['bill_date']))}</td>"
-            f"<td>{portal.h(item['invoice_no'])}</td>"
+            f"<tr><td>{portal.h(item['description'])}{pill}{code}{share}</td>"
+            f"<td class=\"num\">{portal.h(_qty_text(item['qty']))}</td>"
             f"<td class=\"num\">{portal.money(item['inc'])}</td>"
-            f"<td class=\"num\">{portal.money(item['bill_inc'])}</td>"
-            f"<td>{portal.h(item['status'])}</td></tr>"
+            f"<td>{portal.h(item['supplier'])}</td>"
+            f"<td>{portal.h(item['invoice_no'])}</td>"
+            f"<td>{_item_form(user, item, back, saved)}</td></tr>"
         )
         cards.append(
-            f'<article class="invoice-card"><b>{portal.h(item["invoice_no"])}</b>'
-            f'<span>{portal.h(portal.fmt_date(item["bill_date"]))} · {portal.h(item["status"] or "—")}</span>'
-            f'<span>In this category {portal.money(item["inc"])}</span>'
-            f'<span>Bill {portal.money(item["bill_inc"])}</span></article>'
+            f'<article class="invoice-card"><b>{portal.h(item["description"])}</b>{code}{pill}'
+            f'<span>{portal.h(item["supplier"])} · {portal.h(item["invoice_no"])}</span>'
+            f'<span>Qty {_qty_text(item["qty"])} · {portal.money(item["inc"])}</span>{share}'
+            f'{_item_form(user, item, back, saved)}</article>'
         )
     table = (
-        '<div class="tw cat-table"><table><thead><tr><th>Date</th><th>Invoice</th>'
-        '<th>In this category</th><th>Bill inc GST</th><th>Status</th></tr></thead><tbody>'
+        '<div class="tw cat-table"><table><thead><tr><th>Item</th><th>Qty</th><th>Amount</th>'
+        '<th>Supplier</th><th>Bill</th><th>Category</th></tr></thead><tbody>'
         + "".join(body) + "</tbody></table></div>"
     )
     return table + f'<div class="cat-cards">{"".join(cards)}</div>'
+
+
+def _missing_note(missing, total):
+    if not missing:
+        return ""
+    bills = "bill" if missing == 1 else "bills"
+    return (
+        f'<p class="callout" id="lines-missing" data-missing="{missing}" data-bills="{total}">'
+        f'{missing} of {total} {bills} in this range have no line items, so the whole bill uses the supplier category. '
+        f'The nightly purchases file should include each bill’s Xero lines, already cached on the shop computer under xero/raw/lines/.</p>'
+    )
 
 
 def fuel_debits(c, start, end, filtering, selected):
@@ -550,60 +809,61 @@ def _fuel_detail(c, start, end, filtering, selected):
 
 def category_page(c, user, query, active, start, end, bills, filtering, selected, back):
     overrides = load_overrides(c)
-    parts, rows, target = _bill_parts(bills, overrides)
+    items = load_item_overrides(c)
+    parts, rows, target, missing = _bill_parts(bills, overrides, items)
     category = query.get("category") if query.get("category") in CATEGORIES else ""
     fuel = _fuel_note(c, start, end, filtering, selected)
+    note = _missing_note(missing, len(bills))
+    help_text = (
+        '<p class="help" id="category-help">Each line is filed from its item code, description, or Xero account. '
+        'Freight, GST and rounding on a bill are shared across that bill’s other lines in proportion to those lines. '
+        'A line that still does not match uses the supplier, and so does a bill with no lines. '
+        'Save an item to remember it by its code, or by the description when it has no code. '
+        'The supplier fallback is only for what a line does not decide.</p>'
+    )
     if category:
         chosen = [row for row in rows if row["category"] == category]
-        by_supplier = {}
+        suppliers = []
+        seen = set()
         for row in chosen:
-            bucket = by_supplier.setdefault(row["supplier"], {"inc": Decimal("0.00"), "bills": []})
-            bucket["inc"] += row["inc"]
-            bucket["bills"].append(row)
-        blocks = []
-        for name, bucket in sorted(by_supplier.items(), key=lambda item: item[1]["inc"], reverse=True):
-            saved = overrides.get(supplier_key(name))
-            automatic = supplier_category(name)
-            blocks.append(
-                f'<section class="card" id="category-supplier-{portal.h(supplier_key(name).replace(" ", "-"))}">'
-                f'<h3>{portal.h(name)}</h3>'
-                f'<p class="help">{portal.money(bucket["inc"])} inc GST in {portal.h(category)} · {len(bucket["bills"])} '
-                f'{"bill" if len(bucket["bills"]) == 1 else "bills"}</p>'
-                f'{_supplier_form(user, name, saved, automatic, back)}'
-                f'{_bill_table(bucket["bills"])}</section>'
-            )
-        if not blocks:
-            blocks.append('<p class="empty">No supplier bills in this category for the current filters.</p>')
+            if row["supplier"] not in seen:
+                seen.add(row["supplier"])
+                suppliers.append(row["supplier"])
+        forms = []
+        for name in suppliers:
+            forms.append(_supplier_form(user, name, overrides.get(supplier_key(name)), supplier_category(name), back))
         back_href = _href(active, start, end, selected, filtering, "")
         extra = ""
         if category == "Fuel":
             extra = _fuel_detail(c, start, end, filtering, selected) + fuel
+        count = len(chosen)
+        unit = "line" if count == 1 else "lines"
         return (
             f'<section id="purchase-categories"><p><a class="btn ghost" href="{portal.h(back_href)}">All categories</a></p>'
+            f'{note}'
             f'<section class="card"><h2>{portal.h(category)}</h2>'
-            f'<p id="category-one" data-inc="{_money_attr(parts[category])}">{portal.money(parts[category])} inc GST. '
-            f'The categories together are {portal.money(target)}, the same Purchases total for these filters.</p></section>'
-            f'{"".join(blocks)}{extra}</section>'
+            f'<p id="category-one" data-inc="{_money_attr(parts[category])}">{portal.money(parts[category])} inc GST · {count} {unit}. '
+            f'The categories together are {portal.money(target)}, the same Purchases total for these filters.</p>'
+            f'{help_text}'
+            f'{"".join(forms)}'
+            f'{_line_rows(user, chosen, back, items)}</section>{extra}</section>'
         )
     cards = []
     for name in CATEGORIES:
         amount = parts[name]
         count = len([row for row in rows if row["category"] == name])
         href = _href(active, start, end, selected, filtering, name)
+        unit = "line" if count == 1 else "lines"
         cards.append(
             f'<a class="cat-card {portal.tone(name)}" data-category="{portal.h(name)}" data-inc="{_money_attr(amount)}" '
             f'href="{portal.h(href)}"><span class="lbl">{portal.h(name)}</span>'
-            f'<b>{portal.money(amount)}</b><small>{count} {"bill" if count == 1 else "bills"}</small></a>'
+            f'<b>{portal.money(amount)}</b><small>{count} {unit}</small></a>'
         )
     return (
         f'<section id="purchase-categories"><div class="cat-grid">{"".join(cards)}</div>'
         f'<p id="category-total" data-total="{_money_attr(target)}">Categories {portal.money(target)} inc GST. '
         f'This is the Purchases total for the same dates and suppliers.</p>'
-        f'<p class="help" id="category-help">Kitchen, drinks, tobacco, confectionery, dairy and fuel come from the supplier. '
-        f'Campbells stays in Other until you save a category or the bill lines say tobacco or grocery. '
-        f'The Distributors is Drinks, and a confectionery line moves when the invoice lists it. '
-        f'Open a category to see its suppliers and bills, and to save a different category for a supplier.</p>'
-        f'{fuel}</section>'
+        f'{note}{help_text}{fuel}</section>'
     )
 
 

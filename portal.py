@@ -120,9 +120,12 @@ CREATE TABLE IF NOT EXISTS portal_bills(
   ex_gst REAL, inc_gst REAL, status TEXT, due_date TEXT, amount_due REAL, shop_share REAL, note TEXT, source_as_of TEXT,
   lines TEXT);
 CREATE INDEX IF NOT EXISTS ix_portal_bills_date ON portal_bills(bill_date);
--- Saved supplier category. Nightly purchases ingest does not write this table.
+-- Saved supplier fallback and saved item category. Nightly purchases ingest does not write these.
 CREATE TABLE IF NOT EXISTS portal_supplier_categories(
   supplier_key TEXT PRIMARY KEY, supplier TEXT NOT NULL, category TEXT NOT NULL,
+  updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS portal_item_categories(
+  item_key TEXT PRIMARY KEY, item_code TEXT NOT NULL, description TEXT NOT NULL, category TEXT NOT NULL,
   updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
 -- Hourly till total for a trading day. Replaced by that day's nightly sales row on the page.
 CREATE TABLE IF NOT EXISTS portal_sales_today(
@@ -928,6 +931,7 @@ def apply_purchases(c, data):
     if not isinstance(suppliers, list) or not isinstance(bills, list):
         raise ValueError("purchases data needs suppliers and bills")
     as_of = need_date(data.get("asOf") or data.get("toDate"), "asOf")
+    line_lookup = categories().line_index(data, suppliers)
     n = 0
     for i, b in enumerate(bills):
         if not isinstance(b, list) or len(b) < 5:
@@ -956,7 +960,7 @@ def apply_purchases(c, data):
              (str(b[5]).strip()[:12] if len(b) > 5 and b[5] is not None else ""),
              due, num(b[7], "amount due", required=False) if len(b) > 7 else None,
              num(b[8], "shop share", required=False) if len(b) > 8 else None, note, as_of,
-             categories().lines_payload(b)),
+             categories().lines_payload(b, line_lookup.get(key) or line_lookup.get(invoice_no))),
         )
         n += 1
     meta = meta_get(c, "purchases")
@@ -3798,7 +3802,7 @@ def page_purchases(c, query, user=None, form_error=""):
         back = _purchase_query(active, start, end, selected, filtering, view, category).split("?", 1)[-1]
         main = categories().category_page(c, user, query, active, start, end, bills, filtering, selected, back)
         heading = "Purchases by category"
-        lead = "Each category is part of the same supplier-bill total. Open a category for its suppliers and bills. Fuel direct debits stay out of that total."
+        lead = "Each category is the invoice lines for these dates and suppliers. The categories add up to the Purchases total. Fuel direct debits stay out of that total."
     else:
         main = f"""<section class="card" id="purchase-summary"><h2>{money(total_inc)} inc GST</h2>
 <p class="help">{len(bills)} bills. Shop sales in the same dates: {money(shop) if shop_rows else '—'}.{h(shop_note)}</p>{table}</section>
@@ -5680,13 +5684,17 @@ def handle_post(handler):
 
 
 def handle_purchases_post(handler, user, form):
-    if (form.get("action") or "") != "set_category":
+    action = form.get("action") or ""
+    if action not in ("set_category", "set_item"):
         handler.send(400, {"error": "bad action"})
         return
     c = db()
     try:
         try:
-            categories().save_override(c, user, form.get("supplier"), form.get("category") or "")
+            if action == "set_item":
+                categories().save_item(c, user, form.get("item_code"), form.get("description"), form.get("category") or "")
+            else:
+                categories().save_override(c, user, form.get("supplier"), form.get("category") or "")
         except ValueError as ex:
             query = back_query(form.get("back"))
             active = "purchase-category" if query.get("view") == "category" else "purchases"

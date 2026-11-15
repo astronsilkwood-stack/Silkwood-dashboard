@@ -67,6 +67,7 @@ class PortalTest(unittest.TestCase):
         c.execute("DELETE FROM portal_meta WHERE k='pnl-adjustment-seeds'")
         c.execute("DELETE FROM portal_invoice_payments")
         c.execute("DELETE FROM portal_supplier_categories")
+        c.execute("DELETE FROM portal_item_categories")
         c.execute("DELETE FROM portal_sales_today")
         c.execute("DELETE FROM portal_snapshots WHERE dataset='sales-today'")
         c.execute("DELETE FROM portal_meta WHERE k='sales-today'")
@@ -2742,6 +2743,61 @@ class PortalTest(unittest.TestCase):
         moved = detail("Kitchen")
         self.assertIn("coca cola", moved)
         self.assertNotIn("coca cola", detail("Drinks"))
+        c = server.db()
+        missing = c.execute(
+            "SELECT COUNT(*) AS n FROM portal_bills WHERE bill_date>='2026-09-08' AND bill_date<='2026-11-10'"
+        ).fetchone()["n"]
+        c.close()
+        self.assertIn(f'data-missing="{missing}"', page)
+        self.assertIn("xero/raw/lines", page)
+
+        sample = json.loads(json.dumps(load("purchases.json")))
+        sample["lines"] = [{
+            "supplier": "CAMPBELLS CAIRNS",
+            "invoice": "SPLIT-1",
+            "date": "2026-11-10",
+            "LineItems": [
+                {"Description": "Winfield Blue 25s", "ItemCode": "WIN25", "Quantity": 2, "AccountCode": "310", "LineAmount": 54.55, "TaxAmount": 5.45},
+                {"Description": "Coca Cola 24 pack", "ItemCode": "COKE24", "Quantity": 1, "LineAmount": 27.27, "TaxAmount": 2.73},
+                {"Description": "Chocolate block", "ItemCode": "CHOC", "Quantity": 4, "incGst": 20},
+                {"Description": "Freight", "Quantity": 1, "LineAmount": 9.09, "TaxAmount": 0.91},
+            ],
+        }]
+        sample["bills"].append([30, "2026-11-10", "SPLIT-1", 109.09, 120.0, "A", "2026-11-17", 120, 1.0, ""])
+        self.assertEqual(self.ingest("purchases", sample)[0], 200)
+        split = portal_categories.classify_bill("CAMPBELLS CAIRNS", portal_categories.parse_line_list(sample["lines"][0]["LineItems"]), 120)
+        self.assertEqual(sum(split.values(), Decimal("0")), Decimal("120.00"))
+        self.assertGreater(split["Tobacco"], Decimal("60"))
+        self.assertIn("Drinks", split)
+        self.assertIn("Confectionery/Snacks", split)
+        tobacco_lines = detail("Tobacco")
+        self.assertIn("Winfield Blue 25s", tobacco_lines)
+        self.assertIn("SPLIT-1", tobacco_lines)
+        self.assertIn("WIN25", tobacco_lines)
+        drinks_lines = detail("Drinks")
+        self.assertIn("Coca Cola 24 pack", drinks_lines)
+        self.assertIn("SPLIT-1", drinks_lines)
+        self.assertIn("Chocolate block", detail("Confectionery%2FSnacks"))
+        fresh = self.authed("GET", "/portal/purchases?" + query)[2].decode()
+        self.assertIn(f'data-missing="{missing}"', fresh)
+        self.assertIn(f'data-bills="{missing + 1}"', fresh)
+        token = self.csrf_from(self.authed("GET", "/portal/purchases?" + query + "&category=Tobacco")[2].decode())
+        body = urlencode({
+            "csrf": token, "action": "set_item", "item_code": "WIN25", "description": "Winfield Blue 25s",
+            "category": "Kitchen", "back": query + "&category=Tobacco",
+        })
+        status, hdrs, raw, _ = self.authed("POST", "/portal/purchases", body)
+        self.assertEqual(status, 302, raw[:300])
+        self.assertEqual(self.ingest("purchases", sample)[0], 200)
+        self.assertIn("Winfield Blue 25s", detail("Kitchen"))
+        self.assertNotIn("Winfield Blue 25s", detail("Tobacco"))
+        kept = self.authed("GET", "/portal/purchases?" + query + "&category=Kitchen")[2].decode()
+        self.assertIn("Saved", kept)
+        c = server.db()
+        c.execute("DELETE FROM portal_bills WHERE invoice_no='SPLIT-1'")
+        c.execute("DELETE FROM portal_item_categories")
+        c.commit()
+        c.close()
 
     def test_sales_today_hourly_and_nightly_wins(self):
         portal._ingest_hits.clear()
