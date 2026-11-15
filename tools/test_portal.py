@@ -2688,7 +2688,8 @@ class PortalTest(unittest.TestCase):
         ))
         c.close()
         self.assertEqual(total, portal._cents(sum(float(row["inc_gst"] or 0) for row in bills)))
-        self.assertEqual(len(amounts), 7)
+        self.assertEqual(len(amounts), 8)
+        self.assertGreater(Decimal(re.search(r'data-category="BBQ Gas" data-inc="([0-9.-]+)"', page).group(1)), 0)
 
         def detail(category):
             return self.authed("GET", "/portal/purchases?" + query + "&category=" + category)[2].decode().split('id="purchase-categories"', 1)[1]
@@ -2709,6 +2710,13 @@ class PortalTest(unittest.TestCase):
         self.assertIn("Bega Dairy", detail("Dairy%2FGrocery"))
         self.assertIn("Lactalis", detail("Dairy%2FGrocery"))
         self.assertIn("CAMPBELLS CAIRNS", detail("Other"))
+        self.assertIn("Elgas", detail("BBQ%20Gas"))
+        self.assertNotIn("Elgas Limited", detail("Other"))
+        self.assertEqual(portal_categories.supplier_category("Elgas Limited"), "BBQ Gas")
+        self.assertEqual(portal_categories.classify_bill("CAMPBELLS CAIRNS", [
+            {"description": "Swap & Go 8.5kg", "inc": 30},
+        ], 30), {"BBQ Gas": Decimal("30.00")})
+        self.assertEqual(portal_categories.classify_bill("Elgas Limited", [], 40, "Kitchen"), {"Kitchen": Decimal("40.00")})
         fuel = detail("Fuel")
         self.assertIn("MOTORPASS", fuel)
         self.assertIn("United fuel direct debits", fuel)
