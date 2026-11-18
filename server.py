@@ -107,6 +107,15 @@ STAFF_PIN = os.environ.get("STAFF_PIN", "").strip()      # shared staff PIN; emp
 MANAGER_PIN = os.environ.get("MANAGER_PIN") or os.environ.get("SILKWOOD_PIN") or "1945"
 PG = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 
+def _open_pg_pool():
+    from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+    # Neon's -pooler endpoint is PgBouncer (transaction mode): disable server-side prepared statements.
+    # timeout is a few seconds so a saturated pool fails the request instead of holding it for 30s.
+    # max_idle / max_lifetime recycle sockets before Neon drops them. check_connection discards one that is already dead.
+    return ConnectionPool(DATABASE_URL, min_size=1, max_size=10, open=True, timeout=5, max_idle=120, max_lifetime=600,
+        kwargs={"row_factory": dict_row, "prepare_threshold": None, "connect_timeout": 10}, check=ConnectionPool.check_connection)
+
 class PgConn:
     """Tiny adapter so the SQLite-style code also runs on Postgres (psycopg 3)."""
     _pool = None
@@ -114,13 +123,11 @@ class PgConn:
         import psycopg
         from psycopg.rows import dict_row
         self.direct = direct
+        self._returned = False
         if direct:   # schema/migrations over the direct (unpooled) endpoint, per Neon guidance
             self.c = psycopg.connect(DATABASE_URL_UNPOOLED, row_factory=dict_row); return
         if PgConn._pool is None:
-            from psycopg_pool import ConnectionPool
-            # Neon's -pooler endpoint is PgBouncer (transaction mode): disable server-side prepared statements
-            PgConn._pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=10, open=True,
-                kwargs={"row_factory": dict_row, "prepare_threshold": None}, check=ConnectionPool.check_connection)
+            PgConn._pool = _open_pg_pool()
         self.c = PgConn._pool.getconn()
     def execute(self, sql, params=()):
         sql = sql.replace("INSERT OR REPLACE INTO task_done VALUES(?,?,?,?)",
@@ -131,10 +138,25 @@ class PgConn:
             if st.strip(): self.c.execute(st.replace("INTEGER PRIMARY KEY", "SERIAL PRIMARY KEY"))
     def commit(self): self.c.commit()
     def close(self):
-        if self.direct: self.c.close()
-        else:
-            if self.c.info.transaction_status != 0: self.c.rollback()
-            PgConn._pool.putconn(self.c)
+        """Return the connection. Idempotent, and it does not raise.
+
+        Do not rollback before putconn. A socket Neon already dropped makes rollback() raise, and that
+        used to skip putconn and leak the slot until the process was restarted. putconn rolls back a live
+        transaction, or discards a dead socket and opens a replacement.
+        """
+        if self._returned: return
+        self._returned = True
+        conn = self.c
+        if self.direct:
+            try: conn.close()
+            except Exception: pass
+            return
+        try:
+            PgConn._pool.putconn(conn)
+        except Exception as ex:
+            print(f"db pool return failed: {type(ex).__name__}", flush=True)
+            try: conn.close()
+            except Exception: pass
 
 def db():
     if PG: return PgConn()
@@ -142,6 +164,13 @@ def db():
 
 def init():
     c = PgConn(direct=True) if PG else db()
+    try:
+        _init_schema(c)
+    finally:
+        c.close()
+    portal.install()
+
+def _init_schema(c):
     c.executescript("""
     CREATE TABLE IF NOT EXISTS items(id INTEGER PRIMARY KEY, kind TEXT, name TEXT, type TEXT, example INTEGER DEFAULT 0, active INTEGER DEFAULT 1, sort INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY, tab TEXT, title TEXT, repeat TEXT, weekday INTEGER, due_time TEXT, start_date TEXT, active INTEGER DEFAULT 1, example INTEGER DEFAULT 0, created_by TEXT);
@@ -183,8 +212,7 @@ def init():
         for tab, title, rep, due in STARTER_TASKS:
             c.execute("INSERT INTO tasks(tab,title,repeat,weekday,due_time,start_date,example) VALUES(?,?,?,?,?,?,1)",
                       (tab, title, rep, 0 if rep == "weekly" else None, due, "2026-01-01"))
-    c.commit(); c.close()
-    portal.install()
+    c.commit()
 
 def is_bad(typ, v):
     if typ not in RULES or v is None: return 0
@@ -237,22 +265,25 @@ FOOD_STAGES = {"cook": ("Cooking (core)", "core"), "reheat": ("Reheating (core)"
                "coldhold": ("Cold holding", "fridge"), "chilled": ("Receiving chilled", "fridge"), "frozen": ("Receiving frozen", "freezer")}
 HOTBOX_MAX_H = 2
 
-def day_state(d, extras=True):
-    c = db()
-    items = [dict(r) for r in c.execute("SELECT * FROM items WHERE active=1 ORDER BY kind, sort, id")]
-    logs = [dict(r, data=json.loads(r["data"])) for r in c.execute("SELECT * FROM logs WHERE date=? ORDER BY at", (d,))]
-    tasks = tasks_for(c, d)
-    lock = c.execute("SELECT * FROM days WHERE date=?", (d,)).fetchone()
-    shifts = [dict(r) for r in c.execute("SELECT * FROM shifts WHERE date=? ORDER BY start_at", (d,))]
-    ex = {}
-    if extras:
-        ex["food"] = [dict(r) for r in c.execute("SELECT * FROM food_temps WHERE date=? ORDER BY at", (d,))]
-        ex["hotbox"] = [dict(r) for r in c.execute("SELECT * FROM hotbox_items WHERE date=? OR (out_at IS NULL AND date<=?) ORDER BY time_in", (d, d))]
-        ex["discards"] = [dict(r) for r in c.execute("SELECT * FROM discards WHERE date=? ORDER BY at", (d,))]
-        ex["cold_items"] = [dict(r) for r in c.execute("SELECT * FROM cold_items WHERE date=? OR (out_at IS NULL AND date<=?) ORDER BY time_in", (d, d))]
-    c.close()
-    return {**ex, "now": now().strftime("%Y-%m-%d %H:%M:%S"), "food_stages": FOOD_STAGES, "hotbox_max_h": HOTBOX_MAX_H, "pg": PG,"date": d, "today": today(), "items": items, "logs": logs, "tasks": tasks, "tanks": TANKS,
-            "rules": RULES, "locked": dict(lock) if lock else None, "shifts": shifts, "summary": summarise(items, logs, tasks, ex.get("food"))}
+def day_state(d, extras=True, conn=None):
+    """Read one day. Pass conn to share the caller's connection; otherwise this function returns its own."""
+    c = conn if conn is not None else db()
+    try:
+        items = [dict(r) for r in c.execute("SELECT * FROM items WHERE active=1 ORDER BY kind, sort, id")]
+        logs = [dict(r, data=json.loads(r["data"])) for r in c.execute("SELECT * FROM logs WHERE date=? ORDER BY at", (d,))]
+        tasks = tasks_for(c, d)
+        lock = c.execute("SELECT * FROM days WHERE date=?", (d,)).fetchone()
+        shifts = [dict(r) for r in c.execute("SELECT * FROM shifts WHERE date=? ORDER BY start_at", (d,))]
+        ex = {}
+        if extras:
+            ex["food"] = [dict(r) for r in c.execute("SELECT * FROM food_temps WHERE date=? ORDER BY at", (d,))]
+            ex["hotbox"] = [dict(r) for r in c.execute("SELECT * FROM hotbox_items WHERE date=? OR (out_at IS NULL AND date<=?) ORDER BY time_in", (d, d))]
+            ex["discards"] = [dict(r) for r in c.execute("SELECT * FROM discards WHERE date=? ORDER BY at", (d,))]
+            ex["cold_items"] = [dict(r) for r in c.execute("SELECT * FROM cold_items WHERE date=? OR (out_at IS NULL AND date<=?) ORDER BY time_in", (d, d))]
+        return {**ex, "now": now().strftime("%Y-%m-%d %H:%M:%S"), "food_stages": FOOD_STAGES, "hotbox_max_h": HOTBOX_MAX_H, "pg": PG,"date": d, "today": today(), "items": items, "logs": logs, "tasks": tasks, "tanks": TANKS,
+                "rules": RULES, "locked": dict(lock) if lock else None, "shifts": shifts, "summary": summarise(items, logs, tasks, ex.get("food"))}
+    finally:
+        if conn is None: c.close()
 
 def shift_hours(a, b):
     f = "%Y-%m-%d %H:%M:%S"
@@ -380,7 +411,10 @@ def send_email(sub_id, subject, html_body):
     to = os.environ.get("MAIL_TO", "").strip() or "silkwoodup@gmail.com"
     def set_status(st, err=""):
         if sub_id is None: return
-        c = db(); c.execute("UPDATE submissions SET email_status=?, email_error=? WHERE id=?", (st, err[:300], sub_id)); c.commit(); c.close()
+        c = db()
+        try:
+            c.execute("UPDATE submissions SET email_status=?, email_error=? WHERE id=?", (st, err[:300], sub_id)); c.commit()
+        finally: c.close()
     if not host:
         set_status("not_configured"); return "not_configured", ""
     step = "build"
@@ -409,7 +443,7 @@ def day_submit(c, d, staff, area, final):
     """Save a day submission + queue email/webhook. Updates (final=False) do NOT lock the day;
     the final (closing) submit always covers the whole day (both areas) and locks it."""
     ts = now().strftime("%Y-%m-%d %H:%M:%S")
-    ds = day_state(d); s = ds["summary"]; s["shifts"] = ds["shifts"]
+    ds = day_state(d, conn=c); s = ds["summary"]; s["shifts"] = ds["shifts"]
     if final: area = "both"
     elif area not in AREAS: area = "both"
     if final: c.execute("INSERT INTO days VALUES(?,?,?,?)", (d, staff, ts, json.dumps(s)))
@@ -546,7 +580,10 @@ def post_webhook(sub_id, payload):
         except urllib.error.HTTPError as e: st = f"failed HTTP {e.code}"
         except Exception as e: st = f"failed {type(e).__name__}"
     if sub_id is not None:
-        c = db(); c.execute("UPDATE submissions SET webhook_status=? WHERE id=?", (st, sub_id)); c.commit(); c.close()
+        c = db()
+        try:
+            c.execute("UPDATE submissions SET webhook_status=? WHERE id=?", (st, sub_id)); c.commit()
+        finally: c.close()
     return st
 
 CLOSING_TASKS = ['coffee_cleaned','coffee_milk','coffee_cups','coffee_sugar','coffee_water','coffee_tray',
@@ -681,16 +718,23 @@ def closing_submit(b):
     except urllib.error.HTTPError as e: st, ok = f"failed HTTP {e.code}", False
     except Exception as e: st, ok = f"failed {type(e).__name__}", False
     if ok and ids:
+        c = None
         try:
             c = db()
             for pid in ids: c.execute("UPDATE closing_photos SET submitted=1 WHERE id=?", (pid,))
-            c.commit(); c.close()
+            c.commit()
         except Exception: pass
+        finally:
+            if c is not None: c.close()
+    c = None
     try:
-        c = db(); c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
+        c = db()
+        c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
             (d, now().strftime("%Y-%m-%d %H:%M:%S"), staff, "closing" + ("-test" if test else ""), json.dumps({"status": st, "newspapers": papers, "pumpPhotos": len(photos["pump"]), "dipPhotos": len(photos["dip"])})[:500]))
-        c.commit(); c.close()
+        c.commit()
     except Exception: pass
+    finally:
+        if c is not None: c.close()
     return (200, {"ok": True, "status": st, "staff": staff}) if ok else (502, {"error": "Webhook " + st + ". Try again."})
 
 def kitchen_submit(b):
@@ -721,11 +765,15 @@ def kitchen_submit(b):
             st = f"sent {r.status}"; ok = 200 <= r.status < 300
     except urllib.error.HTTPError as e: st, ok = f"failed HTTP {e.code}", False
     except Exception as e: st, ok = f"failed {type(e).__name__}", False
+    c = None
     try:
-        c = db(); c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
+        c = db()
+        c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
             (d, now().strftime("%Y-%m-%d %H:%M:%S"), staff, "kitchen_daily", json.dumps({"status": st})[:500]))
-        c.commit(); c.close()
+        c.commit()
     except Exception: pass
+    finally:
+        if c is not None: c.close()
     return (200, {"ok": True, "status": st, "staff": staff}) if ok else (502, {"error": "Webhook " + st + ". Try again."})
 
 FC_PRODUCTS = ("Diesel", "Unleaded", "Premium Unleaded")
@@ -793,11 +841,15 @@ def fleet_submit(b):
                "tillLookup": True, "configured": bool(url and key)}
     if b.get("dryRun") is True: return 200, {"ok": True, "dryRun": True, "preview": preview}
     if re.fullmatch(r"(?i)test\d*", sales):  # staff test: full validation, never posted to the webhook, not used for duplicate-blocking
+        c = None
         try:
-            c = db(); c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
+            c = db()
+            c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
                 (today(), now().strftime("%Y-%m-%d %H:%M:%S"), staff, "fleet_card-test", json.dumps({"status": "test - not sent", "sales": sales, "last4": last4, "lines": lines})))
-            c.commit(); c.close()
+            c.commit()
         except Exception: pass
+        finally:
+            if c is not None: c.close()
         return 200, {"ok": True, "test": True, "status": "test - not sent", "last4": last4}
     if not url or not key: return 503, {"error": "Fleet Card Pay is not configured on the server"}
     c = db()
@@ -815,11 +867,15 @@ def fleet_submit(b):
             st = f"sent {r.status}"; ok = 200 <= r.status < 300
     except urllib.error.HTTPError as e: st, ok = f"failed HTTP {e.code}", False
     except Exception as e: st, ok = f"failed {type(e).__name__}", False
+    c = None
     try:
-        c = db(); c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
+        c = db()
+        c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
             (today(), now().strftime("%Y-%m-%d %H:%M:%S"), staff, "fleet_card", json.dumps({"status": st, "sales": sales, "last4": last4, "lines": lines})))
-        c.commit(); c.close()
+        c.commit()
     except Exception: pass
+    finally:
+        if c is not None: c.close()
     return (200, {"ok": True, "status": st, "last4": last4}) if ok else (502, {"error": "Not sent (" + st + "). Nothing was lodged. Try again."})
 
 def to_cents(price):
@@ -1116,12 +1172,15 @@ def place_order(b, ip, when=None):
         order_warn("order save failed: " + (type(err).__name__ if err else "unknown"))
         return 500, {"error": "Could not save your order. Please call the shop on (07) 4065 2263."}
     status = forward_order(stored)
+    c = None
     try:
         c = db()
         c.execute("UPDATE orders SET webhook_status=? WHERE id=?", (status[:80], stored["id"]))
-        c.commit(); c.close()
+        c.commit()
     except Exception:
         order_warn("order webhook status not saved")
+    finally:
+        if c is not None: c.close()
     return 200, {
         "ok": True,
         "id": stored["id"],
@@ -1131,6 +1190,26 @@ def place_order(b, ip, when=None):
         "payment": "Pay when you collect",
         "items": [{"name": it["name"], "qty": it["qty"], "line": it["line"], "notes": it["notes"]} for it in stored["items"]],
     }
+
+def history_payload():
+    """Reports list. One connection for the whole read; day_state must not borrow a second one.
+
+    The old loop held this connection idle in a transaction while day_state checked out another.
+    After a day lock the reports page reloads history while tablets keep polling, and those overlapping
+    checkouts filled the pool. day_state then raised PoolTimeout and this connection was never returned.
+    """
+    c = db()
+    try:
+        dates = sorted({list(dict(r).values())[0] for r in c.execute("SELECT date FROM logs UNION SELECT date FROM task_done UNION SELECT date FROM days UNION SELECT date FROM audit UNION SELECT date FROM shifts")}, reverse=True)[:60]
+        out = []
+        for d in dates:
+            s = day_state(d, extras=False, conn=c)
+            names = sorted({r["staff"] for r in c.execute("SELECT staff FROM logs WHERE date=? UNION SELECT staff FROM task_done WHERE date=? UNION SELECT staff FROM audit WHERE date=?", (d, d, d)) if r["staff"]})
+            out.append({"date": d, "locked": s["locked"], "summary": s["summary"], "logs": len(s["logs"]), "staff": names, "shifts": s["shifts"],
+                        "submissions": [dict(r) for r in c.execute("SELECT id,area,staff,at,email_status,email_error,webhook_status FROM submissions WHERE date=? ORDER BY id", (d,))]})
+        return out
+    finally:
+        c.close()
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -1213,7 +1292,9 @@ class H(BaseHTTPRequestHandler):
         if not self.authed(): return self.send(401, {"error": "staff PIN required", "pin": True})
         m = re.fullmatch(r"/submission/(\d+)", u.path)
         if m:
-            c = db(); r = c.execute("SELECT * FROM submissions WHERE id=?", (int(m.group(1)),)).fetchone(); c.close()
+            c = db()
+            try: r = c.execute("SELECT * FROM submissions WHERE id=?", (int(m.group(1)),)).fetchone()
+            finally: c.close()
             if not r: return self.send(404, {"error": "not found"})
             r = dict(r); return self.send(200, snapshot_html(r, json.loads(r["snapshot"]), True).encode(), "text/html; charset=utf-8")
         if u.path == "/api/test-email":  # manager only; sends synchronously and reports the result
@@ -1241,15 +1322,7 @@ class H(BaseHTTPRequestHandler):
             if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d): return self.send(400, {"error": "bad date"})
             return self.send(200, day_state(d))
         if u.path == "/api/history":
-            c = db()
-            dates = sorted({list(dict(r).values())[0] for r in c.execute("SELECT date FROM logs UNION SELECT date FROM task_done UNION SELECT date FROM days UNION SELECT date FROM audit UNION SELECT date FROM shifts")}, reverse=True)[:60]
-            out = []
-            for d in dates:
-                s = day_state(d, extras=False)
-                names = sorted({r["staff"] for r in c.execute("SELECT staff FROM logs WHERE date=? UNION SELECT staff FROM task_done WHERE date=? UNION SELECT staff FROM audit WHERE date=?", (d, d, d)) if r["staff"]})
-                out.append({"date": d, "locked": s["locked"], "summary": s["summary"], "logs": len(s["logs"]), "staff": names, "shifts": s["shifts"],
-                            "submissions": [dict(r) for r in c.execute("SELECT id,area,staff,at,email_status,email_error,webhook_status FROM submissions WHERE date=? ORDER BY id", (d,))]})
-            c.close(); return self.send(200, out)
+            return self.send(200, history_payload())
         self.send(404, {"error": "not found"})
     def authed(self):
         return not STAFF_PIN or self.headers.get("X-Staff-Pin", "") == STAFF_PIN
@@ -1319,11 +1392,13 @@ class H(BaseHTTPRequestHandler):
     def handle_write(self, m):
         try: b = self.body()
         except Exception: return self.send(400, {"error": "bad json"})
-        p = urlparse(self.path).path; c = db(); ts = now().strftime("%Y-%m-%d %H:%M:%S")
-        d = b.get("date") or today()
-        def locked(): return c.execute("SELECT 1 FROM days WHERE date=?", (d,)).fetchone()
-        staff = (b.get("staff") or "").strip()[:40]; after = []
+        p = urlparse(self.path).path
+        c = db(); after = []
         try:
+            ts = now().strftime("%Y-%m-%d %H:%M:%S")
+            d = b.get("date") or today()
+            def locked(): return c.execute("SELECT 1 FROM days WHERE date=?", (d,)).fetchone()
+            staff = (b.get("staff") or "").strip()[:40]
             if not staff:  # every write must carry the staff member's name
                 return self.send(400, {"error": "staff name required", "name": True})
             if p in ("/api/tick", "/api/log", "/api/submit", "/api/log/delete", "/api/food", "/api/food/delete",
@@ -1452,8 +1527,9 @@ class H(BaseHTTPRequestHandler):
             detail = {k: v for k, v in b.items() if k not in ("pin", "staff", "date")}
             c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)", (d, ts, staff, p.removeprefix("/api/"), json.dumps(detail)[:500]))
             c.commit()
-            for f in after: f()
         finally: c.close()
+        # Email and webhook each take a connection. Start them after this one is back in the pool.
+        for f in after: f()
         self.send(200, day_state(d))
 
 if __name__ == "__main__":
