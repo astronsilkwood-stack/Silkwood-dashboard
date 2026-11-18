@@ -3,6 +3,7 @@
 Uses a fake pool (no Postgres). A later case starts the real server on SQLite.
 """
 import json, os, sys, tempfile, threading, unittest, urllib.error, urllib.request
+from datetime import date, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -205,6 +206,104 @@ class SqliteEndpointsTest(unittest.TestCase):
         finally:
             httpd.shutdown()
             httpd.server_close()
+
+    def test_history_matches_per_day_reads_in_a_few_queries(self):
+        """Sixty dates used to be a query per table per day. The batch must match that result."""
+        self.assertFalse(server.PG)
+        if server.DB.exists():
+            server.DB.unlink()
+        server.init()
+        today_d = server.today()
+        today_wd = date.fromisoformat(today_d).weekday()
+        yesterday = (date.fromisoformat(today_d) - timedelta(days=1)).isoformat()
+        once_day = "2026-01-02"
+        c = server.db()
+        try:
+            unit = c.execute("SELECT id FROM items WHERE kind='kcheck' ORDER BY id LIMIT 1").fetchone()["id"]
+            c.execute("INSERT INTO tasks(tab,title,repeat,weekday,due_time,start_date,active) VALUES(?,?,?,?,?,?,1)",
+                      ("kitchen", "Carry me", "once", None, None, "2026-01-01"))
+            c.execute("INSERT INTO tasks(tab,title,repeat,weekday,due_time,start_date,active) VALUES(?,?,?,?,?,?,1)",
+                      ("kitchen", "Already done once", "once", None, None, once_day))
+            c.execute("INSERT INTO tasks(tab,title,repeat,weekday,due_time,start_date,active) VALUES(?,?,?,?,?,?,1)",
+                      ("shop", "Only from today", "daily", None, "09:00", today_d))
+            c.execute("INSERT INTO tasks(tab,title,repeat,weekday,due_time,start_date,active) VALUES(?,?,?,?,?,?,1)",
+                      ("shop", "This weekday", "weekly", today_wd, None, "2026-01-01"))
+            ids = {r["title"]: r["id"] for r in c.execute("SELECT id, title FROM tasks WHERE title IN ('Carry me','Already done once','Only from today','This weekday')")}
+            c.execute("INSERT INTO task_done(task_id,date,staff,at) VALUES(?,?,?,?)",
+                      (ids["Already done once"], once_day, "Sam", once_day + " 12:00:00"))
+            c.execute("INSERT INTO task_done(task_id,date,staff,at) VALUES(?,?,?,?)",
+                      (ids["This weekday"], today_d, "Priya", today_d + " 09:05:00"))
+            c.execute("INSERT INTO logs(date,kind,ref,data,staff,at,bad) VALUES(?,?,?,?,?,?,?)",
+                      (today_d, "ktemp", str(unit), json.dumps({"name": "Walk-In Cool Room", "temp": 9, "type": "fridge"}), "Priya", today_d + " 10:00:00", 1))
+            c.execute("INSERT INTO logs(date,kind,ref,data,staff,at,bad) VALUES(?,?,?,?,?,?,?)",
+                      (today_d, "ktemp", str(unit), json.dumps({"name": "Walk-In Cool Room", "temp": 4, "type": "fridge"}), "", today_d + " 11:00:00", 0))
+            c.execute("INSERT INTO logs(date,kind,ref,data,staff,at,bad) VALUES(?,?,?,?,?,?,?)",
+                      (today_d, "fuel", "1 Unleaded", json.dumps({"water": "yes", "water_mm": 12}), "Ash", today_d + " 12:00:00", 0))
+            c.execute("INSERT INTO logs(date,kind,ref,data,staff,at,bad) VALUES(?,?,?,?,?,?,?)",
+                      (yesterday, "prep", "", json.dumps({"item": "Chips", "qty": "2"}), "Priya", yesterday + " 18:00:00", 0))
+            c.execute("INSERT INTO days(date,staff,at,summary) VALUES(?,?,?,?)",
+                      (yesterday, "Sam", yesterday + " 20:40:00", "{}"))
+            c.execute("INSERT INTO shifts(date,staff,area,start_at,end_at,hours) VALUES(?,?,?,?,?,?)",
+                      (today_d, "Priya", "kitchen", today_d + " 09:00:00", today_d + " 14:00:00", 5))
+            c.execute("INSERT INTO shifts(date,staff,area,start_at,end_at,hours) VALUES(?,?,?,?,?,?)",
+                      (today_d, "Ash", "shop", today_d + " 06:00:00", None, None))
+            c.execute("INSERT INTO submissions(date,area,staff,at,snapshot,email_status,email_error,webhook_status) VALUES(?,?,?,?,?,?,?,?)",
+                      (today_d, "kitchen", "Priya", today_d + " 15:00:00", "{}", "sent", None, "sent 200"))
+            c.execute("INSERT INTO submissions(date,area,staff,at,snapshot,email_status,email_error,webhook_status) VALUES(?,?,?,?,?,?,?,?)",
+                      (today_d, "both", "Sam", today_d + " 20:30:00", "{}", "sending", None, None))
+            c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
+                      (today_d, today_d + " 16:00:00", "Gayana", "note", ""))
+            for i in range(70):
+                d = (date(2024, 1, 1) + timedelta(days=i)).isoformat()
+                c.execute("INSERT INTO audit(date,at,staff,action,detail) VALUES(?,?,?,?,?)",
+                          (d, d + " 08:00:00", "", "old", ""))
+            c.commit()
+        finally:
+            c.close()
+
+        def per_day():
+            c = server.db()
+            try:
+                out = []
+                for d in server._history_dates(c):
+                    s = server.day_state(d, extras=False)
+                    names = sorted({r["staff"] for r in c.execute(
+                        "SELECT staff FROM logs WHERE date=? UNION SELECT staff FROM task_done WHERE date=? UNION SELECT staff FROM audit WHERE date=?",
+                        (d, d, d)) if r["staff"]})
+                    subs = [dict(r) for r in c.execute(
+                        "SELECT id,area,staff,at,email_status,email_error,webhook_status FROM submissions WHERE date=? ORDER BY id", (d,))]
+                    out.append({"date": d, "locked": s["locked"], "summary": s["summary"], "logs": len(s["logs"]),
+                                "staff": names, "shifts": s["shifts"], "submissions": subs})
+                return out
+            finally:
+                c.close()
+
+        want = per_day()
+        calls = {"n": 0}
+        orig = server.db
+        class Counting:
+            def __init__(self, conn):
+                self._c = conn
+            def execute(self, sql, params=()):
+                calls["n"] += 1
+                return self._c.execute(sql, params)
+            def commit(self):
+                return self._c.commit()
+            def close(self):
+                return self._c.close()
+        def wrapped():
+            return Counting(orig())
+        server.db = wrapped
+        try:
+            got = server.history_payload()
+        finally:
+            server.db = orig
+        self.assertEqual(len(got), 60)
+        self.assertEqual(got[0]["date"], today_d)
+        self.assertNotIn("2024-01-01", [row["date"] for row in got])
+        self.assertLessEqual(calls["n"], 12)
+        for g, w in zip(got, want):
+            self.assertEqual(g, w, g["date"])
 
 
 if __name__ == "__main__":

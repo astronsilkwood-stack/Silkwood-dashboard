@@ -1191,22 +1191,75 @@ def place_order(b, ip, when=None):
         "items": [{"name": it["name"], "qty": it["qty"], "line": it["line"], "notes": it["notes"]} for it in stored["items"]],
     }
 
-def history_payload():
-    """Reports list. One connection for the whole read; day_state must not borrow a second one.
+_HISTORY_SUBS = ("id", "area", "staff", "at", "email_status", "email_error", "webhook_status")
 
-    The old loop held this connection idle in a transaction while day_state checked out another.
-    After a day lock the reports page reloads history while tablets keep polling, and those overlapping
-    checkouts filled the pool. day_state then raised PoolTimeout and this connection was never returned.
+def _history_dates(c):
+    return sorted({list(dict(r).values())[0] for r in c.execute("SELECT date FROM logs UNION SELECT date FROM task_done UNION SELECT date FROM days UNION SELECT date FROM audit UNION SELECT date FROM shifts")}, reverse=True)[:60]
+
+def _tasks_for_loaded(tasks, done_on, d, today_d, ever_done):
+    """Same day list as tasks_for, from rows already loaded for every date in the report."""
+    wd = date.fromisoformat(d).weekday()
+    out = []
+    for t in tasks:
+        if t["start_date"] is None or t["start_date"] > d: continue
+        if t["repeat"] == "weekly" and t["weekday"] != wd: continue
+        if t["repeat"] == "once" and t["start_date"] != d:
+            if d != today_d: continue
+            if t["id"] in ever_done: continue
+        seen = dict(t)
+        seen["done"] = done_on.get(t["id"])
+        out.append(seen)
+    return out
+
+def _by_date(rows, key="date"):
+    out = {}
+    for r in rows:
+        out.setdefault(r[key], []).append(r)
+    return out
+
+def history_payload():
+    """Reports list for up to 60 dates. One connection, one query per table.
+
+    Neon is cross-region, so a per-day day_state() was hundreds of round trips (~20s).
+    The read stays on a single checkout so a failure still returns the connection.
     """
     c = db()
     try:
-        dates = sorted({list(dict(r).values())[0] for r in c.execute("SELECT date FROM logs UNION SELECT date FROM task_done UNION SELECT date FROM days UNION SELECT date FROM audit UNION SELECT date FROM shifts")}, reverse=True)[:60]
+        dates = _history_dates(c)
+        if not dates: return []
+        ph = ",".join("?" for _ in dates)
+        args = tuple(dates)
+        items = [dict(r) for r in c.execute("SELECT * FROM items WHERE active=1 ORDER BY kind, sort, id")]
+        tasks = [dict(t) for t in c.execute("SELECT * FROM tasks WHERE active=1")]
+        done_on = {}
+        names = {}
+        def add_name(day, staff):
+            if staff: names.setdefault(day, set()).add(staff)
+        for r in c.execute(f"SELECT task_id, date, staff, at FROM task_done WHERE date IN ({ph})", args):
+            done_on.setdefault(r["date"], {})[r["task_id"]] = dict(staff=r["staff"], at=r["at"])
+            add_name(r["date"], r["staff"])
+        logs = {}
+        for r in c.execute(f"SELECT date, kind, ref, data, bad, staff FROM logs WHERE date IN ({ph}) ORDER BY at", args):
+            logs.setdefault(r["date"], []).append({"kind": r["kind"], "ref": r["ref"], "bad": r["bad"], "data": json.loads(r["data"])})
+            add_name(r["date"], r["staff"])
+        locks = {r["date"]: dict(r) for r in c.execute(f"SELECT * FROM days WHERE date IN ({ph})", args)}
+        shifts = _by_date(dict(r) for r in c.execute(f"SELECT * FROM shifts WHERE date IN ({ph}) ORDER BY start_at", args))
+        for r in c.execute(f"SELECT date, staff FROM audit WHERE date IN ({ph})", args):
+            add_name(r["date"], r["staff"])
+        subs = {}
+        for r in c.execute(f"SELECT id, date, area, staff, at, email_status, email_error, webhook_status FROM submissions WHERE date IN ({ph}) ORDER BY id", args):
+            subs.setdefault(r["date"], []).append({k: r[k] for k in _HISTORY_SUBS})
+        today_d = today()
+        ever_done = set()
+        if today_d in dates:
+            ever_done = {r["task_id"] for r in c.execute("SELECT DISTINCT task_id FROM task_done td JOIN tasks t ON t.id=td.task_id WHERE t.repeat='once' AND t.active=1")}
         out = []
         for d in dates:
-            s = day_state(d, extras=False, conn=c)
-            names = sorted({r["staff"] for r in c.execute("SELECT staff FROM logs WHERE date=? UNION SELECT staff FROM task_done WHERE date=? UNION SELECT staff FROM audit WHERE date=?", (d, d, d)) if r["staff"]})
-            out.append({"date": d, "locked": s["locked"], "summary": s["summary"], "logs": len(s["logs"]), "staff": names, "shifts": s["shifts"],
-                        "submissions": [dict(r) for r in c.execute("SELECT id,area,staff,at,email_status,email_error,webhook_status FROM submissions WHERE date=? ORDER BY id", (d,))]})
+            day_logs = logs.get(d, [])
+            day_tasks = _tasks_for_loaded(tasks, done_on.get(d, {}), d, today_d, ever_done)
+            out.append({"date": d, "locked": locks.get(d), "summary": summarise(items, day_logs, day_tasks),
+                        "logs": len(day_logs), "staff": sorted(names.get(d, ())), "shifts": shifts.get(d, []),
+                        "submissions": subs.get(d, [])})
         return out
     finally:
         c.close()
