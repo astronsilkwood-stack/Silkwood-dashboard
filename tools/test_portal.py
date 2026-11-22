@@ -136,7 +136,7 @@ class PortalTest(unittest.TestCase):
 
     def test_logged_out_pages_redirect_and_staff_routes_stay(self):
         for path in ("/portal", "/portal/day", "/portal/invoices", "/portal/hours", "/portal/purchases", "/portal/fuel", "/portal/dips", "/portal/hours.csv",
-                     "/portal/products", "/portal/pricing", "/portal/till-prices", "/portal/departments", "/portal/kitchen",
+                     "/portal/products", "/portal/pricing", "/portal/till-prices", "/portal/departments", "/portal/kitchen", "/portal/order-times",
                      "/portal/shifts", "/portal/commission", "/portal/notes", "/portal/stock", "/portal/exceptions", "/portal/pnl"):
             status, hdrs, body, _ = self.request("GET", path, headers={"X-Staff-Pin": "9999"})
             self.assertEqual(status, 302, path)

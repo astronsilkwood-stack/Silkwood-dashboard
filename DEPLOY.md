@@ -20,6 +20,8 @@
    Owner portal (separate from the staff PIN): PORTAL_ADMIN_USER, PORTAL_ADMIN_PASSWORD_HASH, and PORTAL_INGEST_KEY.
    Generate the hash with `python3 tools/hash_portal_password.py` and open https://silkwood-ops.onrender.com/portal.
    The nightly box upload and the staff-hours read use `Authorization: Bearer <PORTAL_INGEST_KEY>`. See README.
+   Kitchen wait times are the Orders tab on the staff tablet (New order, then Done). No new env var.
+   An optional till copy can POST /api/portal/food-orders with the same bearer key. It does not drive the tablet. See README.
    After this kitchen checklist ships, set KITCHEN_WEBHOOK_URL and KITCHEN_WEBHOOK_KEY on the Render service
    (Environment) before staff use Submit. The payload type is `kitchen_daily_checklist` for site `United Silkwood`.
    (Render's API create-service call can need a card on file, so the first create is done in the dashboard.
