@@ -7,6 +7,7 @@ stores the owner's own record. Pay rates and contract costs are shown only on
 the logged-in pages. They are not in the staff-hours feed.
 """
 import csv, gzip, hashlib, hmac, io, json, os, re, secrets, zlib
+import food_orders
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -2408,6 +2409,7 @@ def layout(title, active, body, user, when, query=None):
             ("daily", "Daily", "/portal/day", ("period", "from", "to"), ()),
             ("online", "Online", "/portal/online", ("period", "from", "to"), ()),
             ("kitchen", "Kitchen", "/portal/kitchen", ("period", "from", "to"), ()),
+            ("order-times", "Order times", "/portal/order-times", ("period", "from", "to"), ()),
             ("departments", "Departments", "/portal/departments", ("period", "from", "to"), ()),
             ("exceptions", "Till exceptions", "/portal/exceptions", ("period", "from", "to"), ()),
         )),
@@ -5381,6 +5383,8 @@ def handle_get(handler, parsed):
         return handle_barcode_get(handler, query)
     if path == "/api/portal/chat":
         return handle_chat_get(handler)
+    if path == "/api/portal/order-times":
+        return food_orders.handle_report(handler, query)
     user = session_user(handler)
     if not user:
         if path.startswith("/api/"):
@@ -5408,6 +5412,8 @@ def handle_get(handler, parsed):
             html = layout("Departments", "departments", parity().page_departments(c, query), user, _srv().now(), query)
         elif path == "/portal/kitchen":
             html = layout("Kitchen", "kitchen", parity().page_kitchen(c, query), user, _srv().now(), query)
+        elif path == "/portal/order-times":
+            html = layout("Order times", "order-times", food_orders.page(c, query), user, _srv().now(), query)
         elif path == "/portal/pnl":
             html = layout("Profit & Loss", "pnl", pnl().page(c, query, user), user, _srv().now(), query)
         elif path == "/portal/purchases":
@@ -5642,6 +5648,8 @@ def handle_post(handler):
     path = urlparse(handler.path).path.rstrip("/") or "/"
     if path == "/api/portal/ingest":
         return handle_ingest(handler)
+    if path == "/api/portal/food-orders":
+        return food_orders.handle_ingest(handler)
     if path == "/api/portal/invoice-payments/match":
         return handle_invoice_payment_match(handler)
     if path == "/api/portal/chat/reply":

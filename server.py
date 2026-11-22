@@ -13,6 +13,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 import portal
+import food_orders
 
 ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get("SILKWOOD_DB", ROOT / "silkwood.db"))
@@ -205,7 +206,9 @@ def _init_schema(c):
         c.execute("ALTER TABLE submissions ADD COLUMN webhook_status TEXT"); c.commit()
     except Exception:
         if PG: c.c.rollback()
-    ensure_cold_items(c); c.commit()
+    ensure_cold_items(c)
+    food_orders.ensure(c)
+    c.commit()
     if not c.execute("SELECT 1 FROM items WHERE kind<>'cold' LIMIT 1").fetchone():
         for i, (k, n, t, ex) in enumerate(STARTERS):
             c.execute("INSERT INTO items(kind,name,type,example,sort) VALUES(?,?,?,?,?)", (k, n, t, ex, i))
@@ -280,6 +283,7 @@ def day_state(d, extras=True, conn=None):
             ex["hotbox"] = [dict(r) for r in c.execute("SELECT * FROM hotbox_items WHERE date=? OR (out_at IS NULL AND date<=?) ORDER BY time_in", (d, d))]
             ex["discards"] = [dict(r) for r in c.execute("SELECT * FROM discards WHERE date=? ORDER BY at", (d,))]
             ex["cold_items"] = [dict(r) for r in c.execute("SELECT * FROM cold_items WHERE date=? OR (out_at IS NULL AND date<=?) ORDER BY time_in", (d, d))]
+            food_orders.attach(ex, c)
         return {**ex, "now": now().strftime("%Y-%m-%d %H:%M:%S"), "food_stages": FOOD_STAGES, "hotbox_max_h": HOTBOX_MAX_H, "pg": PG,"date": d, "today": today(), "items": items, "logs": logs, "tasks": tasks, "tanks": TANKS,
                 "rules": RULES, "locked": dict(lock) if lock else None, "shifts": shifts, "summary": summarise(items, logs, tasks, ex.get("food"))}
     finally:
@@ -1492,6 +1496,28 @@ class H(BaseHTTPRequestHandler):
                     kind = b.get("kind"); typ = b.get("type") or {"fridge": "fridge", "freezer": "freezer"}.get(kind, "")
                     if kind not in ("fridge", "freezer", "kcheck", "prep", "hotbox", "cold") or not (b.get("name") or "").strip(): return self.send(400, {"error": "kind and name required"})
                     c.execute("INSERT INTO items(kind,name,type,sort) VALUES(?,?,?,999)", (kind, b["name"].strip()[:60], typ))
+            elif p == "/api/food-order":
+                d = today()
+                try:
+                    food_orders.create_manual(c, staff, b.get("source"), b.get("customer"))
+                except ValueError as ex:
+                    return self.send(400, {"error": str(ex)[:180]})
+            elif p == "/api/food-order/done":
+                d = today()
+                try:
+                    err, code = food_orders.mark_done(c, staff, b.get("id"))
+                except ValueError as ex:
+                    return self.send(400, {"error": str(ex)[:180]})
+                if err:
+                    return self.send(code, {"error": err})
+            elif p == "/api/food-order/undo":
+                d = today()
+                try:
+                    err, code = food_orders.undo(c, b.get("id"))
+                except ValueError as ex:
+                    return self.send(400, {"error": str(ex)[:180]})
+                if err:
+                    return self.send(code, {"error": err})
             elif p == "/api/submit":
                 if not staff: return self.send(400, {"error": "staff name required"})
                 after += day_submit(c, d, staff, b.get("area"), b.get("final") is True)

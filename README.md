@@ -100,6 +100,74 @@ No new environment variable is required for these pages.
 
 The Sales overview shows Today so far for the latest hourly day that the nightly file does not have yet. If that date is already a completed sales day, the card says the nightly file has taken over. Same weekday last week is the completed sales day seven days earlier, when that day is already stored. Shop and fuel on the card are the hourly figures, not the nightly daysheet.
 
+### Kitchen order times
+
+The kitchen tablet measures the wait itself. Open the staff app, tab **Orders**. Tap **New order** when the food is rung up (one tap; the card is numbered #1, #2, … for that Brisbane day and the clock starts immediately). Tap **Done** when it is handed over. **Counter** is the usual case. **Phone** is one extra tap before New order, and the name can be left blank. **Undo** reverts only the last of those taps, and only for 5 minutes. The list refreshes with the rest of the app (about every 15 seconds). Amber means the wait is over 10 minutes. Red means over 15 minutes. No new environment variable. The staff PIN is the same one the tablet already uses.
+
+Till receipts are not the live board. They reach this app many minutes after the sale, and a held phone sale is missing from the till until it is paid. A separate poller (not in this repo) can still push them for later matching. That does not open a card and it is not the wait time on the Order times page.
+
+```
+POST /api/portal/food-orders
+Authorization: Bearer <PORTAL_INGEST_KEY>
+Content-Type: application/json
+```
+
+Same bearer key as the nightly ingest. If `PORTAL_INGEST_KEY` is unset the route is `503` and stores nothing. A missing or wrong key is `401`. A bad body is `400` and stores nothing. More than 60 requests a minute from one address is `429`. The body limit is 1,000,000 bytes. Plain JSON, or gzip with `Content-Encoding: gzip`. At most 200 orders in one request. An empty `orders` list is `200` and changes nothing. Posting about once a minute is enough.
+
+`200` body:
+
+```json
+{"ok": true, "received": 1, "created": 1, "updated": 0, "unchanged": 0}
+```
+
+`received` is how many orders were in the request. A repeat of the same order counts as `unchanged`, or `updated` when a stored field changes. The same receipt, `orderId`, or `link` is one row. A paid update does not create a second row and does not move the start time later.
+
+A counter sale:
+
+```json
+{"orders":[{
+  "receipt":"10421",
+  "orderId":"10421",
+  "status":"paid",
+  "rungUp":"2026-11-22T12:04:00+10:00",
+  "source":"counter",
+  "items":[{"name":"Burger","qty":1}]
+}]}
+```
+
+A phone order parked on the till (unpaid). `heldAt` is the start time. `customer` is required while it is held:
+
+```json
+{"orders":[{
+  "receipt":"H88",
+  "orderId":"H88",
+  "status":"held",
+  "customer":"Sam Lee",
+  "heldAt":"2026-11-22T12:10:00+10:00",
+  "source":"counter",
+  "items":[{"name":"Fish and chips","qty":1}]
+}]}
+```
+
+When that sale is paid, send the same `orderId`. The receipt number may change. `link` is the same idea when you have the old receipt or order id and a new receipt. Leave `items` out to keep the lines already stored. The start stays at `heldAt`:
+
+```json
+{"orders":[{
+  "receipt":"10455",
+  "orderId":"H88",
+  "status":"paid",
+  "paidAt":"2026-11-22T12:28:00+10:00",
+  "source":"counter",
+  "items":[{"name":"Fish and chips","qty":1},{"name":"Chips","qty":2}]
+}]}
+```
+
+`source` is `counter` or `bopple`. `status` is `held` or `paid` (a new order with no status is stored as paid). `rungUp`, `heldAt`, and `paidAt` are ISO-8601. A `Z` suffix is UTC. A time with no zone is read as Brisbane. A JSON number is accepted for `receipt` and `orderId`; send a string if you need a leading zero. One order object with a `receipt` field is accepted instead of `orders`. Snake-case aliases `order_id`, `held_at`, `rung_up`, `paid_at`, and `customer_name` are accepted. Item `description` and `quantity` are accepted aliases of `name` and `qty`.
+
+Sending the held payload again after the order is paid does not change it and does not reset the clock. Card numbers, and fields named like a card or bank account, are rejected.
+
+Owner report: `/portal/order-times` (also under Sales → Order times). `GET /api/portal/order-times?from=YYYY-MM-DD&to=YYYY-MM-DD` accepts the owner session or `Authorization: Bearer <PORTAL_INGEST_KEY>`. With no dates it is the last 7 days. The averages are the kitchen taps only (New order → Done), per day and per hour, plus the count over 15 minutes and the orders never marked done. Raw kitchen rows are included. `receipts` is the till copy, separate from those averages.
+
 **purchases** — the `purchases-data.json` object. Each bill is `[supplierIndex, date, invoiceNumber, exGst, incGst, status, dueDate, amountDue, shopShare, note]`. `supplierIndex` points at `suppliers`. Upsert key is supplier + invoice number + bill date.
 
 **fuel-commission** — the `fuel-commission-data.json` object. Each `days[]` row is upserted by `date` (`grades`, `totalCommEx`, `litres`, `salesInc`). `mtd`, `tomorrow`, and `basis` are kept from the latest upload.
