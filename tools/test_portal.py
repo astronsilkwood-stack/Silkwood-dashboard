@@ -3554,6 +3554,192 @@ class PortalTest(unittest.TestCase):
         self.assertNotIn('id="pnl-rent"', still)
         self.assertIn("month to date", still.split('id="pnl-period"', 1)[1].split("</p>", 1)[0])
 
+    def test_pnl_same_month_last_year(self):
+        """November 2026 sits beside November 2025, and December beside December 2025.
+
+        Missing last-year accounts stay blank. Change stays this month minus the previous month.
+        """
+        from datetime import date
+        import portal_pnl
+        self.login()
+
+        def accounts(rows):
+            return [
+                {"section": section, "accountName": name, "accountId": account_id, "amount": amount}
+                for section, name, account_id, amount in rows
+            ]
+
+        cost = "Less Cost of Sales"
+        expense = "Less Operating Expenses"
+        self.assertEqual(self.ingest("xero-pnl", {"month": "2026-10", "accounts": accounts([
+            (cost, "Purchases - Fuel", "fuel", 100),
+            (expense, "Wages and Salaries", "wages", 400),
+            (expense, "Superannuation", "super", 40),
+        ])})[0], 200)
+        self.assertEqual(self.ingest("xero-pnl", {"month": "2026-11", "accounts": accounts([
+            (cost, "Purchases - Fuel", "fuel", 1000),
+            (cost, "Purchases - Shop", "shop", 400),
+            (expense, "Cleaning", "clean", 30),
+            (expense, "Wages and Salaries", "wages", 500),
+            (expense, "Superannuation", "super", 50),
+        ])})[0], 200)
+        self.assertEqual(self.ingest("xero-pnl", {"month": "2025-11", "accounts": accounts([
+            (cost, "Purchases - Shop", "shop-2025", 350),
+            (expense, "Wages and Salaries", "wages", 480),
+            (expense, "Superannuation", "super", 48),
+            (expense, "Electricity", "elec", 20),
+        ])})[0], 200)
+        self.assertEqual(self.ingest("xero-pnl", {"month": "2026-12", "accounts": accounts([
+            (cost, "Purchases - Fuel", "fuel", 10),
+            (expense, "Wages and Salaries", "wages", 100),
+            (expense, "Superannuation", "super", 12),
+        ])})[0], 200)
+        self.assertEqual(self.ingest("xero-pnl", {"month": "2025-12", "accounts": accounts([
+            (cost, "Purchases - Shop", "shop-2025", 70),
+            (expense, "Wages and Salaries", "wages", 90),
+            (expense, "Superannuation", "super", 9),
+            (expense, "Bank Fees", "bank", 15),
+        ])})[0], 200)
+        self.assertEqual(self.ingest("xero-pnl", {"month": "2026-06", "accounts": accounts([
+            (expense, "Cleaning", "clean", 5),
+        ])})[0], 200)
+
+        def nums(fragment):
+            return re.findall(r'<td class="num">(.*?)</td>', fragment)
+
+        def row_label(html, label):
+            needle = f">{label}</td>"
+            self.assertIn(needle, html, label)
+            return html.split(needle, 1)[1].split("</tr>", 1)[0]
+
+        c = server.db()
+        try:
+            november = portal_pnl.build(c, date(2026, 11, 1), date(2026, 11, 11))
+            december = portal_pnl.build(c, date(2026, 12, 1), date(2026, 12, 18))
+        finally:
+            c.close()
+        self.assertEqual(november["ly_month"], "2025-11")
+        self.assertTrue(november["ly_loaded"])
+        self.assertEqual(november["prev_month"], "2026-10")
+        self.assertEqual(december["ly_month"], "2025-12")
+        self.assertTrue(december["ly_loaded"])
+
+        def line(statement, label):
+            found = [row for row in statement["rows"] if row.get("label") == label]
+            self.assertEqual(len(found), 1, label)
+            return found[0]
+
+        fuel = line(november, "Purchases - Fuel")
+        self.assertEqual(fuel["this"], Decimal("1000.00"))
+        self.assertIsNone(fuel["ly"])
+        self.assertEqual(fuel["prev"], Decimal("100.00"))
+        self.assertEqual(fuel["change"], Decimal("900.00"))
+        shop = line(november, "Purchases - Shop")
+        self.assertEqual(shop["this"], Decimal("400.00"))
+        self.assertEqual(shop["ly"], Decimal("350.00"))
+        self.assertEqual(shop["prev"], Decimal("0.00"))
+        wages = line(november, "Wages and Salaries")
+        self.assertEqual(wages["this"], Decimal("500.00"))
+        self.assertEqual(wages["ly"], Decimal("480.00"))
+        self.assertEqual(wages["prev"], Decimal("400.00"))
+        self.assertEqual(wages["change"], Decimal("100.00"))
+        superannuation = line(november, "Superannuation")
+        self.assertEqual(superannuation["ly"], Decimal("48.00"))
+        self.assertEqual(superannuation["change"], Decimal("10.00"))
+        electricity = line(november, "Electricity")
+        self.assertIsNone(electricity["this"])
+        self.assertIsNone(electricity["prev"])
+        self.assertEqual(electricity["ly"], Decimal("20.00"))
+        self.assertIsNone(electricity["change"])
+        cleaning = line(november, "Cleaning")
+        self.assertEqual(cleaning["this"], Decimal("30.00"))
+        self.assertIsNone(cleaning["ly"])
+        wage_cost = line(november, "Total wage cost")
+        self.assertEqual(wage_cost["id"], "pnl-wage-cost")
+        self.assertEqual(wage_cost["this"], Decimal("550.00"))
+        self.assertEqual(wage_cost["ly"], Decimal("528.00"))
+        self.assertEqual(wage_cost["prev"], Decimal("440.00"))
+        self.assertEqual(wage_cost["change"], Decimal("110.00"))
+
+        dec_wages = line(december, "Wages and Salaries")
+        self.assertEqual(dec_wages["this"], Decimal("100.00"))
+        self.assertEqual(dec_wages["ly"], Decimal("90.00"))
+        self.assertEqual(dec_wages["prev"], Decimal("500.00"))
+        self.assertEqual(dec_wages["change"], Decimal("-400.00"))
+        dec_fuel = line(december, "Purchases - Fuel")
+        self.assertIsNone(dec_fuel["ly"])
+        self.assertEqual(dec_fuel["prev"], Decimal("1000.00"))
+        dec_shop = line(december, "Purchases - Shop")
+        self.assertEqual(dec_shop["ly"], Decimal("70.00"))
+        self.assertEqual(line(december, "Total wage cost")["ly"], Decimal("99.00"))
+        self.assertEqual(line(december, "Total wage cost")["this"], Decimal("112.00"))
+        self.assertEqual(line(december, "Bank Fees")["ly"], Decimal("15.00"))
+        self.assertIsNone(line(december, "Bank Fees")["this"])
+        self.assertFalse(any(row.get("label") == "Electricity" for row in december["rows"]))
+        self.assertFalse(any(row.get("label") == "Bank Fees" for row in november["rows"]))
+
+        page = self.authed("GET", "/portal/pnl?month=2026-11")[2].decode()
+        period = page.split('id="pnl-period"', 1)[1].split("</p>", 1)[0]
+        self.assertIn("November 2025 is the same month last year", period)
+        self.assertIn("October 2026", period)
+        head = page.split("<thead>", 1)[1].split("</thead>", 1)[0]
+        self.assertLess(head.index("November 2026"), head.index("November 2025"))
+        self.assertLess(head.index("November 2025"), head.index("October 2026"))
+        self.assertLess(head.index("October 2026"), head.index(">Change<"))
+        fuel_cells = nums(row_label(page, "Purchases - Fuel"))
+        self.assertEqual(fuel_cells, ["$1,000.00", "—", "$100.00", "$900.00"])
+        self.assertNotIn("$0.00", fuel_cells)
+        shop_cells = nums(row_label(page, "Purchases - Shop"))
+        self.assertEqual(shop_cells[1], "$350.00")
+        self.assertNotEqual(shop_cells[1], "$0.00")
+        wage_cells = nums(row_label(page, "Wages and Salaries"))
+        self.assertEqual(wage_cells, ["$500.00", "$480.00", "$400.00", "$100.00"])
+        super_cells = nums(row_label(page, "Superannuation"))
+        self.assertEqual(super_cells, ["$50.00", "$48.00", "$40.00", "$10.00"])
+        total_cells = nums(page.split('id="pnl-wage-cost"', 1)[1].split("</tr>", 1)[0])
+        self.assertEqual(total_cells, ["$550.00", "$528.00", "$440.00", "$110.00"])
+        power_cells = nums(row_label(page, "Electricity"))
+        self.assertEqual(power_cells, ["—", "$20.00", "—", "—"])
+        self.assertNotIn("$0.00", power_cells)
+        clean_cells = nums(row_label(page, "Cleaning"))
+        self.assertEqual(clean_cells[1], "—")
+        rent_cells = nums(page.split('id="pnl-rent">', 1)[1].split("</tr>", 1)[0])
+        self.assertEqual(rent_cells[1], "—")
+        self.assertNotEqual(rent_cells[1], "$0.00")
+        self.assertIn("November 2025", page.split('class="pnl-cards"', 1)[1])
+        self.assertNotIn("Bank Fees", page.split('id="pnl-statement"', 1)[1].split('id="pnl-note"', 1)[0])
+
+        missing = self.authed("GET", "/portal/pnl?month=2026-06")[2].decode()
+        ly_missing = missing.split('id="pnl-ly-missing"', 1)[1].split("</p>", 1)[0]
+        self.assertIn("June 2025: Xero P&L not loaded yet", ly_missing)
+        self.assertIn('id="pnl-prev-missing"', missing)
+        june_clean = nums(row_label(missing, "Cleaning"))
+        self.assertEqual(june_clean, ["$5.00", "—", "—", "—"])
+
+        old_now = server.now
+        server.now = lambda: datetime(2026, 12, 18, 15, 0, tzinfo=server.TZ)
+        try:
+            self.login()
+            status, _, raw, _ = self.authed("GET", "/portal/pnl?month=2026-12")
+            december_page = raw.decode()
+        finally:
+            server.now = old_now
+        self.assertEqual(status, 200, december_page[:500])
+        dec_head = december_page.split("<thead>", 1)[1].split("</thead>", 1)[0]
+        self.assertLess(dec_head.index("December 2026"), dec_head.index("December 2025"))
+        self.assertLess(dec_head.index("December 2025"), dec_head.index("November 2026"))
+        dec_wage_cells = nums(row_label(december_page, "Wages and Salaries"))
+        self.assertEqual(dec_wage_cells, ["$100.00", "$90.00", "$500.00", "-$400.00"])
+        dec_fuel_cells = nums(row_label(december_page, "Purchases - Fuel"))
+        self.assertEqual(dec_fuel_cells[1], "—")
+        self.assertNotIn("$0.00", dec_fuel_cells)
+        dec_total = nums(december_page.split('id="pnl-wage-cost"', 1)[1].split("</tr>", 1)[0])
+        self.assertEqual(dec_total, ["$112.00", "$99.00", "$550.00", "-$438.00"])
+        statement = december_page.split('id="pnl-statement"', 1)[1].split('id="pnl-note"', 1)[0]
+        self.assertIn("Bank Fees", statement)
+        self.assertNotIn("Electricity", statement)
+        self.assertNotIn("$480.00", statement)
+
     def test_portal_daily_rent(self):
         """Portal rent is ex GST, and the same amount is removed from Purchases - Fuel."""
         from datetime import date

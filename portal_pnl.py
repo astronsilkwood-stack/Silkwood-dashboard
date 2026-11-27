@@ -10,7 +10,9 @@ shows the rent as an operating expense and removes the same ex-GST amount from
 fuel purchases. The two lines offset. A Xero rent account means both lines are
 left out. Manual adjustment lines are typed on this page and stored here only.
 A cost of sales line is added to the Xero cost accounts before that rent
-reduction, so rent inside a fuel debit is still removed once.
+reduction, so rent inside a fuel debit is still removed once. The same month
+last year is another column, read from that month's Xero rows. An account
+that report does not include is left blank, not shown as zero.
 """
 import re
 from datetime import date, timedelta
@@ -30,6 +32,9 @@ NOTE = (
     "Employee wages already in Xero are not added again. "
     "Change is this month minus the previous month. "
     "The current month is month to date. The previous column is the whole previous month. "
+    "The last-year column is the same calendar month one year earlier, for the whole month. "
+    "An account that month's Xero report does not include is left blank, not shown as zero. "
+    "Wages and Salaries and Superannuation are shown on their own lines, with a total of those accounts. "
     "Portal rent is typed on this page and is not entered in Xero. "
     "The typed amount includes GST and each day is that amount divided by 1.1. "
     "A finished month counts every day. This month counts the days through the same date as sales. "
@@ -387,25 +392,30 @@ def _rent_warning(month_label, names):
     )
 
 
-def rent_warnings(current, previous, prev_loaded, month_label, prev_label):
+def rent_warnings(current, previous, prev_loaded, month_label, prev_label, last_year=None, ly_loaded=False, ly_label=""):
     warnings = []
     if current["rent"]["skipped"]:
         warnings.append(_rent_warning(month_label, current["rent"]["names"]))
     if prev_loaded and previous["rent"]["skipped"]:
         warnings.append(_rent_warning(prev_label, previous["rent"]["names"]))
+    if ly_loaded and last_year and last_year["rent"]["skipped"]:
+        warnings.append(_rent_warning(ly_label, last_year["rent"]["names"]))
     return warnings
 
 
-def _rent_visible(current, previous, prev_loaded):
-    return current["rent"]["show"] or (prev_loaded and previous["rent"]["show"])
+def _rent_visible(current, previous, prev_loaded, last_year=None, ly_loaded=False):
+    ly_show = bool(ly_loaded and last_year and last_year["rent"]["show"])
+    return current["rent"]["show"] or (prev_loaded and previous["rent"]["show"]) or ly_show
 
 
-def _day_notes(current, previous, prev_loaded):
+def _day_notes(current, previous, prev_loaded, last_year=None, ly_loaded=False):
     notes = []
     if current["rent"]["note"]:
         notes.append(current["rent"]["note"])
     if prev_loaded and previous["rent"]["note"]:
         notes.append("Previous month: " + previous["rent"]["note"])
+    if ly_loaded and last_year and last_year["rent"]["note"]:
+        notes.append("Last year: " + last_year["rent"]["note"])
     return " ".join(notes)
 
 
@@ -426,39 +436,60 @@ def _signed_rent_cells(current, previous, prev_loaded, sign):
     return this_amount, this_text, prev_amount, prev_text
 
 
-def _append_fuel_rent_line(rows, current, previous, prev_loaded):
-    if not _rent_visible(current, previous, prev_loaded):
+def _ly_rent_cell(side, ly_loaded, sign):
+    """Last year's rent. No rate, or no Xero month, stays blank rather than zero."""
+    if not ly_loaded or not side or not side.get("loaded"):
+        return None, None
+    if side["skipped"]:
+        return None, "In Xero" if sign > 0 else "Left in fuel"
+    if not side["show"] or side["amount"] is None:
+        return None, None
+    amount = side["amount"]
+    if sign < 0:
+        amount = -amount
+    return amount, None
+
+
+def _append_fuel_rent_line(rows, current, previous, prev_loaded, last_year=None, ly_loaded=False):
+    if not _rent_visible(current, previous, prev_loaded, last_year, ly_loaded):
         return
     hint = FUEL_RENT_LEAD
-    days = _day_notes(current, previous, prev_loaded)
+    days = _day_notes(current, previous, prev_loaded, last_year, ly_loaded)
     if days:
         hint = hint + " " + days
     this_amount, this_text, prev_amount, prev_text = _signed_rent_cells(current, previous, prev_loaded, -1)
+    ly_side = last_year["rent"] if last_year else None
+    ly_amount, ly_text = _ly_rent_cell(ly_side, ly_loaded, -1)
     rows.append(_line(
-        FUEL_RENT_LABEL, this_amount, prev_amount, row_id="pnl-rent-fuel", hint=hint, title=hint,
-        this_text=this_text, prev_text=prev_text,
+        FUEL_RENT_LABEL, this_amount, prev_amount, ly=ly_amount, row_id="pnl-rent-fuel", hint=hint, title=hint,
+        this_text=this_text, prev_text=prev_text, ly_text=ly_text,
     ))
 
 
-def _append_rent_line(rows, current, previous, prev_loaded):
-    if not _rent_visible(current, previous, prev_loaded):
+def _append_rent_line(rows, current, previous, prev_loaded, last_year=None, ly_loaded=False):
+    if not _rent_visible(current, previous, prev_loaded, last_year, ly_loaded):
         return
     cur, prev = current["rent"], previous["rent"]
+    ly_side = last_year["rent"] if last_year else None
     show_prev = prev_loaded and prev["show"]
+    show_ly = bool(ly_loaded and ly_side and ly_side["show"])
     if cur["show"] and cur["label_rate"] is not None:
         label = _rent_label(cur["label_rate"])
     elif show_prev and prev["label_rate"] is not None and not cur["show"]:
         label = _rent_label(prev["label_rate"])
+    elif show_ly and ly_side["label_rate"] is not None and not cur["show"]:
+        label = _rent_label(ly_side["label_rate"])
     else:
         label = "Rent (portal)"
     hint = RENT_OFFSET_LEAD
-    days = _day_notes(current, previous, prev_loaded)
+    days = _day_notes(current, previous, prev_loaded, last_year, ly_loaded)
     if days:
         hint = hint + " " + days
     this_amount, this_text, prev_amount, prev_text = _signed_rent_cells(current, previous, prev_loaded, 1)
+    ly_amount, ly_text = _ly_rent_cell(ly_side, ly_loaded, 1)
     rows.append(_line(
-        label, this_amount, prev_amount, row_id="pnl-rent", hint=hint, title=hint,
-        this_text=this_text, prev_text=prev_text,
+        label, this_amount, prev_amount, ly=ly_amount, row_id="pnl-rent", hint=hint, title=hint,
+        this_text=this_text, prev_text=prev_text, ly_text=ly_text,
     ))
 
 
@@ -714,7 +745,7 @@ def _adjustment_settings(c, user, month):
     forms = "".join(_adjustment_form(user, month, row) for row in lines)
     empty = "" if lines else '<p class="help" id="pnl-adjustment-empty">No manual lines for this month yet.</p>'
     return f'''<section class="card" id="pnl-adjustments"><h2>Manual adjustments</h2>
-<p class="help" id="pnl-adjustment-help">Lines added here are stored on this portal only. They are not in Xero, and the nightly Xero upload does not change or remove them. A positive amount increases that section, including the month totals and the previous-month column. Cost of sales is added before the United fuel rent line, so rent that is already inside a fuel debit is not counted twice. The amount is for the whole month. Cost, expense, and other lines appear on the statement once that month’s Xero P&amp;L is loaded.</p>
+<p class="help" id="pnl-adjustment-help">Lines added here are stored on this portal only. They are not in Xero, and the nightly Xero upload does not change or remove them. A positive amount increases that section, including the month totals, the previous-month column, and the same month last year. Cost of sales is added before the United fuel rent line, so rent that is already inside a fuel debit is not counted twice. The amount is for the whole month. Cost, expense, and other lines appear on the statement once that month’s Xero P&amp;L is loaded.</p>
 {empty}{forms}
 <h3>Add a line</h3>
 {_adjustment_form(user, month, None)}
@@ -748,17 +779,68 @@ def _merge(current_rows, previous_rows, prev_loaded):
             prev = Decimal("0.00")
         else:
             prev = _cents_amount(other)
-        lines.append({"label": row["account_name"], "this": _cents_amount(row), "prev": prev, "hint": ""})
+        lines.append({
+            "label": row["account_name"],
+            "account_id": row["account_id"],
+            "this": _cents_amount(row),
+            "prev": prev,
+            "hint": "",
+        })
     if prev_loaded:
         for row in previous_rows:
             if row["account_id"] in seen:
                 continue
             lines.append({
                 "label": row["account_name"],
+                "account_id": row["account_id"],
                 "this": Decimal("0.00"),
                 "prev": _cents_amount(row),
                 "hint": "",
             })
+    return lines
+
+
+def _norm_name(name):
+    return " ".join((name or "").casefold().split())
+
+
+def _with_last_year(lines, ly_rows, ly_loaded):
+    """Attach same-month-last-year amounts. A missing account stays None, not zero."""
+    if not ly_loaded:
+        for line in lines:
+            line["ly"] = None
+        return lines
+    by_id = {row["account_id"]: row for row in ly_rows}
+    by_name = {}
+    for row in ly_rows:
+        by_name.setdefault(_norm_name(row["account_name"]), []).append(row)
+    used = set()
+    for line in lines:
+        other = None
+        account_id = line.get("account_id")
+        if account_id and account_id in by_id and account_id not in used:
+            other = by_id[account_id]
+        if other is None:
+            for candidate in by_name.get(_norm_name(line["label"]), []):
+                if candidate["account_id"] not in used:
+                    other = candidate
+                    break
+        if other is None:
+            line["ly"] = None
+            continue
+        used.add(other["account_id"])
+        line["ly"] = _cents_amount(other)
+    for row in ly_rows:
+        if row["account_id"] in used:
+            continue
+        lines.append({
+            "label": row["account_name"],
+            "account_id": row["account_id"],
+            "this": None,
+            "prev": None,
+            "ly": _cents_amount(row),
+            "hint": "",
+        })
     return lines
 
 
@@ -768,7 +850,7 @@ def _delta(this, prev, places="0.01"):
     return (Decimal(this) - Decimal(prev)).quantize(Decimal(places), rounding=ROUND_HALF_UP)
 
 
-def _line(label, this, prev, kind="line", hint="", row_id="", percent=False, this_text=None, prev_text=None, title="", manual=False):
+def _line(label, this, prev, kind="line", hint="", row_id="", percent=False, this_text=None, prev_text=None, title="", manual=False, ly=None, ly_text=None):
     places = "0.1" if percent else "0.01"
     return {
         "kind": kind,
@@ -777,18 +859,22 @@ def _line(label, this, prev, kind="line", hint="", row_id="", percent=False, thi
         "title": title,
         "this": this,
         "prev": prev,
+        "ly": ly,
         "change": None if this_text or prev_text else _delta(this, prev, places),
         "id": row_id,
         "percent": percent,
         "this_text": this_text,
         "prev_text": prev_text,
+        "ly_text": ly_text,
         "manual": manual,
     }
 
 
 def _section(label):
-    return {"kind": "section", "label": label, "hint": "", "this": None, "prev": None, "change": None,
-            "id": "", "percent": False, "this_text": None, "prev_text": None}
+    return {
+        "kind": "section", "label": label, "hint": "", "this": None, "prev": None, "ly": None, "change": None,
+        "id": "", "percent": False, "this_text": None, "prev_text": None, "ly_text": None,
+    }
 
 
 def _wage_cell(mode, amount):
@@ -856,12 +942,50 @@ def _paired_adjustments(current_rows, previous_rows, prev_known, section):
     return paired
 
 
+def _with_ly_adjustments(paired, ly_rows, ly_known, section):
+    """Match manual lines to last year. No match stays blank, not zero."""
+    last_year = [row for row in ly_rows if row["section"] == section] if ly_known else []
+    buckets = {}
+    for row in last_year:
+        buckets.setdefault(_pair_key(row), []).append(row)
+    used = set()
+    for item in paired:
+        item["ly"] = None
+        if not ly_known:
+            continue
+        match = None
+        for candidate in buckets.get(_pair_key(item["row"]), []):
+            if candidate["id"] not in used:
+                match = candidate
+                used.add(candidate["id"])
+                break
+        if match is not None:
+            item["ly"] = _adj_amount(match)
+    if ly_known:
+        for row in last_year:
+            if row["id"] in used:
+                continue
+            paired.append({
+                "row": row,
+                "account": row.get("account_name") or "",
+                "this": None,
+                "prev": None,
+                "ly": _adj_amount(row),
+            })
+    return paired
+
+
+def _section_adjustments(current_rows, previous_rows, prev_known, ly_rows, ly_known, section):
+    paired = _paired_adjustments(current_rows, previous_rows, prev_known, section)
+    return _with_ly_adjustments(paired, ly_rows, ly_known, section)
+
+
 def _manual_line(item):
     row = item["row"]
     note = " ".join((row.get("note") or "").split())
     hint = MANUAL_LEAD if not note else MANUAL_LEAD + " " + note
     return _line(
-        row["label"], item["this"], item["prev"],
+        row["label"], item["this"], item["prev"], ly=item.get("ly"),
         row_id=f'pnl-adj-{row["id"]}', hint=hint, title=hint, manual=True,
     )
 
@@ -950,34 +1074,53 @@ def _side_figures(c, month_start, end, rows, loaded, rates, mtd, adjustments):
     }
 
 
+def _year_ago(month_start):
+    """Same calendar month one year earlier. Day is always the 1st."""
+    return date(month_start.year - 1, month_start.month, 1)
+
+
 def build(c, month_start, today_d):
-    """Figures for one calendar month and the previous month. Decimals, or None when missing."""
+    """Figures for one month, the previous month, and the same month last year.
+
+    Decimals, or None when that figure is missing. A last-year account that
+    was not in the Xero report is None, not zero.
+    """
     mtd = month_start.year == today_d.year and month_start.month == today_d.month
     end = today_d if mtd else portal.month_last_day(month_start)
     prev_start = (month_start - timedelta(days=1)).replace(day=1)
     prev_end = portal.month_last_day(prev_start)
+    ly_start = _year_ago(month_start)
+    ly_end = portal.month_last_day(ly_start)
     month = f"{month_start.year:04d}-{month_start.month:02d}"
     prev_month = f"{prev_start.year:04d}-{prev_start.month:02d}"
+    ly_month = f"{ly_start.year:04d}-{ly_start.month:02d}"
     current_rows = _rows(c, month)
     previous_rows = _rows(c, prev_month)
+    ly_rows = _rows(c, ly_month)
     loaded = bool(current_rows)
     prev_loaded = bool(previous_rows)
+    ly_loaded = bool(ly_rows)
     rates = load_rent_rates(c)
     current_adj = load_adjustments(c, month)
     previous_adj = load_adjustments(c, prev_month)
+    ly_adj = load_adjustments(c, ly_month)
     current = _side_figures(c, month_start, end, current_rows, loaded, rates, mtd, current_adj)
     previous = _side_figures(c, prev_start, prev_end, previous_rows, prev_loaded, rates, False, previous_adj)
-    rows = _statement_rows(current, previous, loaded, prev_loaded)
+    last_year = _side_figures(c, ly_start, ly_end, ly_rows, ly_loaded, rates, False, ly_adj)
+    rows = _statement_rows(current, previous, last_year, loaded, prev_loaded, ly_loaded)
     month_label = _month_name(month_start)
     prev_label = _month_name(prev_start)
+    ly_label = _month_name(ly_start)
     return {
         "month": month,
         "prev_month": prev_month,
+        "ly_month": ly_month,
         "start": month_start,
         "end": end,
         "mtd": mtd,
         "loaded": loaded,
         "prev_loaded": prev_loaded,
+        "ly_loaded": ly_loaded,
         "fuel": current["income"]["fuel"],
         "shop": current["income"]["shop"],
         "online": current["income"]["online"],
@@ -1002,7 +1145,9 @@ def build(c, month_start, today_d):
         "prev_expenses": previous["expense"],
         "rows": rows,
         "notes": _notes(current["income"]),
-        "rent_warnings": rent_warnings(current, previous, prev_loaded, month_label, prev_label),
+        "rent_warnings": rent_warnings(
+            current, previous, prev_loaded, month_label, prev_label, last_year, ly_loaded, ly_label,
+        ),
     }
 
 
@@ -1012,85 +1157,155 @@ def _show_wages(current, previous, prev_loaded):
     return prev_loaded and previous["wage_mode"] in ("amount", "incomplete")
 
 
-def _account_lines(current_rows, previous_rows, prev_loaded):
+def _xero_rows(side):
+    kinds = side["kinds"]
+    return kinds["cost"] + kinds["expense"] + kinds["income"] + kinds["other"]
+
+
+def _xero_wage_total(side, loaded):
+    """Sum of Xero wage and super accounts. None when that month has none, not zero."""
+    if not loaded:
+        return None
+    rows = [row for row in _xero_rows(side) if is_wage_account(row["account_name"])]
+    if not rows:
+        return None
+    return _sum_rows(rows)
+
+
+def _account_lines(current_rows, previous_rows, prev_loaded, ly_rows, ly_loaded):
+    merged = _with_last_year(
+        _merge(current_rows, previous_rows if prev_loaded else [], prev_loaded),
+        ly_rows if ly_loaded else [],
+        ly_loaded,
+    )
     return [
-        _line(line["label"], line["this"], line["prev"])
-        for line in _merge(current_rows, previous_rows if prev_loaded else [], prev_loaded)
+        _line(line["label"], line["this"], line["prev"], ly=line["ly"])
+        for line in merged
     ]
 
 
-def _statement_rows(current, previous, loaded, prev_loaded):
-    cur_in, prev_in = current["income"], previous["income"]
+def _append_wage_cost(rows, current, previous, last_year, loaded, prev_loaded, ly_loaded):
+    this = _xero_wage_total(current, loaded)
+    prev = _xero_wage_total(previous, prev_loaded)
+    ly = _xero_wage_total(last_year, ly_loaded)
+    if this is None and prev is None and ly is None:
+        return
+    rows.append(_line(
+        "Total wage cost", this, prev, ly=ly, kind="total", row_id="pnl-wage-cost",
+        hint="Wages and Salaries plus Superannuation, from the Xero accounts for that month. A month with no wage or super account is left blank.",
+    ))
+
+
+def _statement_rows(current, previous, last_year, loaded, prev_loaded, ly_loaded):
+    cur_in, prev_in, ly_in = current["income"], previous["income"], last_year["income"]
     cur_adj = current.get("adjustments") or []
     prev_adj = previous.get("adjustments") or []
+    ly_adj = last_year.get("adjustments") or []
     income_lines = _place_adjustments(
         [
-            _line("Fuel", cur_in["fuel"], prev_in["fuel"], row_id="pnl-fuel"),
-            _line("Shop", cur_in["shop"], prev_in["shop"], row_id="pnl-shop"),
-            _line("Online (Bopple)", cur_in["online"], prev_in["online"], row_id="pnl-online"),
+            _line("Fuel", cur_in["fuel"], prev_in["fuel"], ly=ly_in["fuel"], row_id="pnl-fuel"),
+            _line("Shop", cur_in["shop"], prev_in["shop"], ly=ly_in["shop"], row_id="pnl-shop"),
+            _line("Online (Bopple)", cur_in["online"], prev_in["online"], ly=ly_in["online"], row_id="pnl-online"),
         ],
-        _paired_adjustments(cur_adj, prev_adj, True, "income"),
+        _section_adjustments(cur_adj, prev_adj, True, ly_adj, True, "income"),
     )
     rows = [_section("Income")]
     rows.extend(income_lines)
-    rows.append(_line("Total income", cur_in["total"], prev_in["total"], kind="total", row_id="pnl-income-row"))
-    if not loaded:
+    rows.append(_line(
+        "Total income", cur_in["total"], prev_in["total"], ly=ly_in["total"],
+        kind="total", row_id="pnl-income-row",
+    ))
+    if not loaded and not ly_loaded:
         return rows
-    if current["kinds"]["income"] or (prev_loaded and previous["kinds"]["income"]):
+    if (
+        current["kinds"]["income"]
+        or (prev_loaded and previous["kinds"]["income"])
+        or (ly_loaded and last_year["kinds"]["income"])
+    ):
         rows.append(_section("Xero income (not included)"))
-        rows.extend(_account_lines(current["kinds"]["income"], previous["kinds"]["income"], prev_loaded))
+        rows.extend(_account_lines(
+            current["kinds"]["income"], previous["kinds"]["income"], prev_loaded,
+            last_year["kinds"]["income"], ly_loaded,
+        ))
     rows.append(_section("Cost of sales"))
     rows.extend(_place_adjustments(
-        _account_lines(current["kinds"]["cost"], previous["kinds"]["cost"], prev_loaded),
-        _paired_adjustments(cur_adj, prev_adj, prev_loaded, "cost"),
+        _account_lines(
+            current["kinds"]["cost"], previous["kinds"]["cost"], prev_loaded,
+            last_year["kinds"]["cost"], ly_loaded,
+        ),
+        _section_adjustments(cur_adj, prev_adj, prev_loaded, ly_adj, ly_loaded, "cost"),
     ))
-    _append_fuel_rent_line(rows, current, previous, prev_loaded)
-    rows.append(_line("Total cost of sales", current["cost"], previous["cost"] if prev_loaded else None, kind="total", row_id="pnl-cos"))
-    rows.append(_line("Gross profit", current["gross"], previous["gross"] if prev_loaded else None, kind="total", row_id="pnl-gross-row"))
+    _append_fuel_rent_line(rows, current, previous, prev_loaded, last_year, ly_loaded)
+    rows.append(_line(
+        "Total cost of sales", current["cost"], previous["cost"] if prev_loaded else None,
+        ly=last_year["cost"] if ly_loaded else None, kind="total", row_id="pnl-cos",
+    ))
+    rows.append(_line(
+        "Gross profit", current["gross"], previous["gross"] if prev_loaded else None,
+        ly=last_year["gross"] if ly_loaded else None, kind="total", row_id="pnl-gross-row",
+    ))
     rows.append(_line(
         "Gross profit %", current["gp_pct"], previous["gp_pct"] if prev_loaded else None,
+        ly=last_year["gp_pct"] if ly_loaded else None,
         kind="pct", row_id="pnl-gp-pct", percent=True,
     ))
     rows.append(_section("Operating expenses"))
-    expense_lines = [
-        _line(line["label"], line["this"], line["prev"])
-        for line in _merge(current["kinds"]["expense"], previous["kinds"]["expense"] if prev_loaded else [], prev_loaded)
-    ]
     rows.extend(_place_adjustments(
-        expense_lines, _paired_adjustments(cur_adj, prev_adj, prev_loaded, "expense"),
+        _account_lines(
+            current["kinds"]["expense"], previous["kinds"]["expense"], prev_loaded,
+            last_year["kinds"]["expense"], ly_loaded,
+        ),
+        _section_adjustments(cur_adj, prev_adj, prev_loaded, ly_adj, ly_loaded, "expense"),
     ))
+    _append_wage_cost(rows, current, previous, last_year, loaded, prev_loaded, ly_loaded)
     if _show_wages(current, previous, prev_loaded):
         this_amount, this_text = _wage_cell(current["wage_mode"], current["wage_amount"])
         if prev_loaded:
             prev_amount, prev_text = _wage_cell(previous["wage_mode"], previous["wage_amount"])
         else:
             prev_amount, prev_text = None, None
+        if ly_loaded:
+            ly_amount, ly_text = _wage_cell(last_year["wage_mode"], last_year["wage_amount"])
+        else:
+            ly_amount, ly_text = None, None
         rows.append(_line(
-            "Staff wages and super", this_amount, prev_amount, row_id="pnl-portal-wages",
+            "Staff wages and super", this_amount, prev_amount, ly=ly_amount, row_id="pnl-portal-wages",
             hint="From Staff hours only when that month's Xero report has no wages or super accounts",
-            this_text=this_text, prev_text=prev_text,
+            this_text=this_text, prev_text=prev_text, ly_text=ly_text,
         ))
     rows.append(_line(
         "Contract hours", current["contract"], previous["contract"] if prev_loaded else None,
+        ly=last_year["contract"] if ly_loaded else None,
         row_id="pnl-contract", hint="Not in Xero",
     ))
-    _append_rent_line(rows, current, previous, prev_loaded)
+    _append_rent_line(rows, current, previous, prev_loaded, last_year, ly_loaded)
     rows.append(_line(
         "Total operating expenses", current["expense"], previous["expense"] if prev_loaded else None,
+        ly=last_year["expense"] if ly_loaded else None,
         kind="total", row_id="pnl-opex",
     ))
+    show_other = (
+        current["kinds"]["other"]
+        or (prev_loaded and previous["kinds"]["other"])
+        or (ly_loaded and last_year["kinds"]["other"])
+    )
     other_lines = _place_adjustments(
-        _account_lines(current["kinds"]["other"], previous["kinds"]["other"], prev_loaded) if (
-            current["kinds"]["other"] or (prev_loaded and previous["kinds"]["other"])
-        ) else [],
-        _paired_adjustments(cur_adj, prev_adj, prev_loaded, "other"),
+        _account_lines(
+            current["kinds"]["other"], previous["kinds"]["other"], prev_loaded,
+            last_year["kinds"]["other"], ly_loaded,
+        ) if show_other else [],
+        _section_adjustments(cur_adj, prev_adj, prev_loaded, ly_adj, ly_loaded, "other"),
     )
     if other_lines:
         rows.append(_section("Other"))
         rows.extend(other_lines)
-    rows.append(_line("Net profit", current["net"], previous["net"] if prev_loaded else None, kind="total", row_id="pnl-net-row"))
+    rows.append(_line(
+        "Net profit", current["net"], previous["net"] if prev_loaded else None,
+        ly=last_year["net"] if ly_loaded else None, kind="total", row_id="pnl-net-row",
+    ))
     rows.append(_line(
         "Net margin", current["margin"], previous["margin"] if prev_loaded else None,
+        ly=last_year["margin"] if ly_loaded else None,
         kind="pct", row_id="pnl-margin", percent=True,
     ))
     return rows
@@ -1148,7 +1363,7 @@ def _table(rows):
     body = []
     for row in rows:
         if row["kind"] == "section":
-            body.append(f'<tr class="pnl-section"><td colspan="4">{portal.h(row["label"])}</td></tr>')
+            body.append(f'<tr class="pnl-section"><td colspan="5">{portal.h(row["label"])}</td></tr>')
             continue
         hint = f'<small class="mini">{portal.h(row["hint"])}</small>' if row.get("hint") else ""
         ident = f' id="{row["id"]}"' if row.get("id") else ""
@@ -1165,13 +1380,14 @@ def _table(rows):
         body.append(
             f'<tr{klass}{ident}><td>{label}{hint}</td>'
             f'<td class="num">{_show(row, "this")}</td>'
+            f'<td class="num">{_show(row, "ly")}</td>'
             f'<td class="num">{_show(row, "prev")}</td>'
             f'<td class="num">{_show(row, "change")}</td></tr>'
         )
     return "".join(body)
 
 
-def _cards(rows, this_head, prev_head):
+def _cards(rows, this_head, prev_head, ly_head):
     parts = []
     for row in rows:
         if row["kind"] == "section":
@@ -1185,6 +1401,7 @@ def _cards(rows, this_head, prev_head):
         parts.append(
             f'<article class="{cls}"><h3{title}>{portal.h(row["label"])}{hint}</h3><dl>'
             f'<div><dt>{portal.h(this_head)}</dt><dd><b>{_show(row, "this")}</b></dd></div>'
+            f'<div><dt>{portal.h(ly_head)}</dt><dd><b>{_show(row, "ly")}</b></dd></div>'
             f'<div><dt>{portal.h(prev_head)}</dt><dd><b>{_show(row, "prev")}</b></dd></div>'
             f'<div><dt>Change</dt><dd><b>{_show(row, "change")}</b></dd></div>'
             f'</dl></article>'
@@ -1230,6 +1447,7 @@ def page(c, query, user=None, error="", error_id="pnl-rent-error"):
     else:
         period += ", " + portal.fmt_date(statement["start"].isoformat()) + " to " + portal.fmt_date(statement["end"].isoformat())
     prev_name = _month_name(date(int(statement["prev_month"][:4]), int(statement["prev_month"][5:]), 1))
+    ly_name = _month_name(date(int(statement["ly_month"][:4]), int(statement["ly_month"][5:]), 1))
     this_head = _month_name(month) + (" month to date" if statement["mtd"] else "")
     alert = f'<p class="alert" id="pnl-error">{portal.h(month_error)}</p>' if month_error else ""
     if error:
@@ -1265,15 +1483,17 @@ def page(c, query, user=None, error="", error_id="pnl-rent-error"):
         missing = ""
         if not statement["prev_loaded"]:
             missing = f'<p class="help" id="pnl-prev-missing">{portal.h(prev_name)}: Xero P&L not loaded yet.</p>'
+        if not statement["ly_loaded"]:
+            missing += f'<p class="help" id="pnl-ly-missing">{portal.h(ly_name)}: Xero P&L not loaded yet.</p>'
     else:
         stats = '<div class="grid g3">' + _stat("pnl-income", "Income ex GST", statement["income"], "Fuel, shop, and online") + "</div>"
         missing = '<p class="empty" id="xero-pnl-empty">Xero P&L not loaded yet</p>'
     table = f'''<div class="pnl-wrap"><table class="pnl-table">
-<thead><tr><th>Account</th><th class="num">{portal.h(this_head)}</th><th class="num">{portal.h(prev_name)}</th><th class="num">Change</th></tr></thead>
+<thead><tr><th>Account</th><th class="num">{portal.h(this_head)}</th><th class="num" title="Same month last year">{portal.h(ly_name)}</th><th class="num">{portal.h(prev_name)}</th><th class="num">Change</th></tr></thead>
 <tbody>{_table(statement["rows"])}</tbody></table></div>
-<div class="pnl-cards">{_cards(statement["rows"], this_head, prev_name)}</div>'''
+<div class="pnl-cards">{_cards(statement["rows"], this_head, prev_name, ly_name)}</div>'''
     return f'''<div class="ph"><h1>Profit &amp; Loss</h1>
-<p class="through" id="pnl-period">{portal.h(period)}. Compared with {portal.h(prev_name)}.</p></div>
+<p class="through" id="pnl-period">{portal.h(period)}. Compared with {portal.h(prev_name)}. {portal.h(ly_name)} is the same month last year.</p></div>
 {alert}{ok_text}{_form(month, today_d)}
 {stats}
 <section class="card" id="pnl-statement"><h2>{portal.h(_month_name(month))}</h2>
