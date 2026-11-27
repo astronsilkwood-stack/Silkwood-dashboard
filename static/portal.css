@@ -292,7 +292,7 @@ td.nowrap{white-space:nowrap}
 .pnl-card dd{margin:0}
 .pnl-card dd b{display:block;font:600 18px var(--mono);letter-spacing:-.02em}
 .pnl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
-.pnl-table{width:100%;min-width:640px;border-collapse:collapse}
+.pnl-table{width:100%;min-width:820px;border-collapse:collapse}
 .pnl-table th,.pnl-table td{padding:8px 10px;border-bottom:1px solid var(--bd);vertical-align:top}
 .pnl-table th.num,.pnl-table td.num{text-align:right;font-variant-numeric:tabular-nums}
 .pnl-table td:first-child,.pnl-table th:first-child{text-align:left;position:sticky;left:0;background:#fff;z-index:1}
